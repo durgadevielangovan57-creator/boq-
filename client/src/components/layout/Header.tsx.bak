@@ -1,0 +1,156 @@
+import { useState, useEffect, useRef } from "react";
+import { Link, useLocation } from "wouter";
+import { useData } from "@/lib/store";
+import { Search, Bell, LogOut } from "lucide-react";
+import apiFetch from "@/lib/api";
+
+export function Header() {
+  const [, setLocation] = useLocation();
+  const { user, logout } = useData();
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [alertsCount, setAlertsCount] = useState(0);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Fetch alerts count exactly as done in Sidebar.tsx
+  useEffect(() => {
+    let cancelled = false;
+    const loadAlerts = async () => {
+      try {
+        const res = await apiFetch("/alerts");
+        if (!res || !res.ok) return setAlertsCount(0);
+        const data = await res.json();
+        if (cancelled) return;
+        const list = data?.alerts || data || [];
+        setAlertsCount(Array.isArray(list) ? list.length : 0);
+      } catch (e) {
+        console.warn("load alerts count failed", e);
+        setAlertsCount(0);
+      }
+    };
+
+    loadAlerts();
+    const interval = setInterval(loadAlerts, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Click outside listener to close the dropdown
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node)
+      ) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, []);
+
+  const handleLogout = () => {
+    logout();
+    setLocation("/");
+  };
+
+  const initial = (
+    user?.fullName?.[0] ??
+    user?.username?.[0] ??
+    user?.email?.[0] ??
+    "U"
+  ).toUpperCase();
+
+  const logoHref =
+    user?.role === "admin" || user?.role === "software_team"
+      ? "/admin/overview"
+      : "/dashboard";
+
+  const getRoleBadgeClass = (role?: string) => {
+    switch (role) {
+      case "admin":
+      case "software_team":
+        return "bg-purple-100 text-purple-800 border-purple-200";
+      case "purchase_team":
+        return "bg-blue-100 text-blue-800 border-blue-200";
+      case "supplier":
+        return "bg-green-100 text-green-800 border-green-200";
+      case "pre_sales":
+        return "bg-yellow-100 text-yellow-800 border-yellow-200";
+      default:
+        return "bg-gray-100 text-gray-800 border-gray-200";
+    }
+  };
+
+  return (
+    <header className="sticky top-0 z-40 w-full h-12 bg-white border-b border-[#E5E7EB] px-4 flex items-center justify-between no-print">
+      {/* CENTER-RIGHT SECTION */}
+      <div className="flex items-center gap-2 ml-auto">
+        {/* 1. SEARCH BAR */}
+        <div className="relative w-[280px]">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-[#9CA3AF] pointer-events-none" />
+          <input
+            type="text"
+            placeholder="Search..."
+            className="w-full h-8 pl-8 pr-3 bg-[#F9FAFB] border border-[#E5E7EB] rounded-lg text-[13px] text-[#374151] placeholder-[#9CA3AF] focus:border-[#6366f1] focus:ring-2 focus:ring-[#6366f1]/10 focus:outline-none transition-all"
+          />
+        </div>
+
+        {/* 2. NOTIFICATION BELL */}
+        <button
+          onClick={() => console.log("notifications")}
+          className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-[#F3F4F6] transition-colors relative"
+          title="Notifications"
+        >
+          <Bell className="h-4 w-4 text-[#6B7280] hover:text-[#111827] transition-colors" />
+          {alertsCount > 0 && (
+            <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#EF4444] ring-1 ring-white" />
+          )}
+        </button>
+
+        {/* 3. USER AVATAR & DROPDOWN */}
+        <div className="relative" ref={dropdownRef}>
+          <div
+            onClick={() => setDropdownOpen((prev) => !prev)}
+            className="w-7 h-7 rounded-full bg-[#6366f1] text-white flex items-center justify-center text-[11px] font-semibold select-none hover:opacity-85 cursor-pointer uppercase transition-opacity"
+            title={user?.fullName || user?.username || "User profile"}
+          >
+            {initial}
+          </div>
+
+          {dropdownOpen && (
+            <div className="absolute right-0 top-10 w-[200px] bg-white border border-[#E5E7EB] rounded-[10px] shadow-[0_4px_16px_rgba(0,0,0,0.08)] py-2 z-50">
+              <div className="px-3 py-1.5 flex flex-col min-w-0">
+                <span className="text-[13px] font-semibold text-[#111827] truncate">
+                  {user?.fullName || user?.name || "User"}
+                </span>
+                <span className="text-[11px] text-[#6B7280] truncate">
+                  {user?.username || user?.email || ""}
+                </span>
+              </div>
+              <div className="h-[1px] bg-[#F3F4F6] my-1" />
+              <div className="px-3 py-1">
+                <span
+                  className={`inline-block text-[9px] font-bold px-2 py-0.5 rounded-full border ${getRoleBadgeClass(
+                    user?.role
+                  )}`}
+                >
+                  {user?.role?.toUpperCase().replace("_", " ") || "USER"}
+                </span>
+              </div>
+              <div className="h-[1px] bg-[#F3F4F6] my-1" />
+              <button
+                onClick={handleLogout}
+                className="w-full text-left px-3 py-1.5 text-[12px] text-[#EF4444] hover:bg-[#F9FAFB] flex items-center gap-2 transition-colors font-medium"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                <span>Log Out</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </header>
+  );
+}

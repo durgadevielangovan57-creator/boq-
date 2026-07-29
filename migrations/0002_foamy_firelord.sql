@@ -1,0 +1,23 @@
+CREATE TABLE "estimator_step9_cart" (
+	"id" varchar(36) PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"estimator" text NOT NULL,
+	"bill_no" text NOT NULL,
+	"s_no" integer,
+	"item" text,
+	"description" text,
+	"unit" text,
+	"qty" numeric(10, 2),
+	"rate" numeric(10, 2),
+	"amount" numeric(10, 2),
+	"material_id" uuid,
+	"batch_id" text,
+	"row_id" text,
+	"shop_id" uuid,
+	"supply_rate" numeric(10, 2),
+	"install_rate" numeric(10, 2),
+	"door_type" text,
+	"panel_type" text,
+	"sub_option" text,
+	"glazing_type" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
