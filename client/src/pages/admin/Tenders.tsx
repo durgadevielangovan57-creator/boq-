@@ -9,9 +9,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Switch } from "@/components/ui/switch";
-import { Plus, Gavel, Database, FileText, Settings, Users, Link, Trash2 } from "lucide-react";
+import { Plus, Gavel, Database, FileText, Settings, Users, Link, Trash2, LayoutTemplate } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import apiFetch from "@/lib/api";
+import { TenderFormsDialog } from "@/components/admin/TenderFormsDialog";
 import "../tenders-glass.css";
 
 function InvitationsPanel() {
@@ -54,7 +55,7 @@ function InvitationsPanel() {
       toast({ title: "Error", description: "Email is required to send an invitation", variant: "destructive" });
       return;
     }
-    
+
     try {
       const res = await apiFetch("/api/et/invitations/generate", {
         method: "POST",
@@ -65,14 +66,14 @@ function InvitationsPanel() {
       if (!res.ok) throw new Error("Failed to generate invitation");
 
       const data = await res.json();
-      
+
       if (sendEmail) {
         toast({ title: "Email Sent!", description: `The invitation was sent securely to ${inviteEmail}.` });
       } else {
         navigator.clipboard.writeText(data.link);
         toast({ title: "Link Copied", description: `The ${inviteRole} registration link has been copied to your clipboard.` });
       }
-      
+
       setIsInviteOpen(false);
       loadInvitations();
     } catch (err) {
@@ -103,7 +104,7 @@ function InvitationsPanel() {
             <span className="text-xl font-bold">{invitations.length}</span>
           </div>
         </div>
-        
+
         <Table>
           <TableHeader>
             <TableRow>
@@ -144,11 +145,11 @@ function InvitationsPanel() {
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label>Email Address</Label>
-              <Input 
-                placeholder="vendor@company.com" 
-                type="email" 
-                value={inviteEmail} 
-                onChange={e => setInviteEmail(e.target.value)} 
+              <Input
+                placeholder="vendor@company.com"
+                type="email"
+                value={inviteEmail}
+                onChange={e => setInviteEmail(e.target.value)}
               />
             </div>
           </div>
@@ -180,7 +181,7 @@ function MasterDataPanel() {
     setLoading(true);
     let url = "/api/et/master-data";
     if (categoryFilter) url += `?category=${categoryFilter}`;
-    
+
     apiFetch(url)
       .then(res => res.json())
       .then(d => setData(d.data || []))
@@ -249,7 +250,7 @@ function MasterDataPanel() {
           <Button variant={categoryFilter === "PROJECT_CATEGORY" ? "default" : "outline"} onClick={() => setCategoryFilter("PROJECT_CATEGORY")} className="justify-start"><Database className="h-4 w-4 mr-2" /> Project Categories</Button>
           <Button variant={categoryFilter === "CURRENCY" ? "default" : "outline"} onClick={() => setCategoryFilter("CURRENCY")} className="justify-start"><Database className="h-4 w-4 mr-2" /> Currencies</Button>
         </div>
-        
+
         <Table>
           <TableHeader>
             <TableRow>
@@ -289,9 +290,9 @@ function MasterDataPanel() {
           <div className="space-y-4 py-2">
             <div className="space-y-1">
               <Label>Category</Label>
-              <select 
+              <select
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
-                value={newCat} 
+                value={newCat}
                 onChange={(e) => setNewCat(e.target.value)}
               >
                 <option value="">Select Category...</option>
@@ -330,7 +331,7 @@ function TendersListPanel({ onCreate, onEdit, refreshKey }: { onCreate: () => vo
 
   // Dialog States
   const [selectedTender, setSelectedTender] = useState<any>(null);
-  
+
   const [publishOpen, setPublishOpen] = useState(false);
   const [visibilityConfig, setVisibilityConfig] = useState({ budget: false, location: false, clientInfo: false });
   const [tenderDocs, setTenderDocs] = useState<any[]>([]);
@@ -338,6 +339,9 @@ function TendersListPanel({ onCreate, onEdit, refreshKey }: { onCreate: () => vo
 
   const [extendOpen, setExtendOpen] = useState(false);
   const [newEndDate, setNewEndDate] = useState("");
+
+  const [formsTender, setFormsTender] = useState<any>(null);
+  const [formsOpen, setFormsOpen] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -445,6 +449,9 @@ function TendersListPanel({ onCreate, onEdit, refreshKey }: { onCreate: () => vo
                   </TableCell>
                   <TableCell className="text-right space-x-2">
                     <Button variant="outline" size="sm" onClick={() => onEdit(tender)}>View</Button>
+                    <Button variant="outline" size="sm" onClick={() => { setFormsTender(tender); setFormsOpen(true); }}>
+                      <LayoutTemplate className="h-3.5 w-3.5 mr-1" /> Forms
+                    </Button>
                     {!tender.is_published && tender.status !== 'Closed' && (
                       <Button variant="default" size="sm" onClick={() => openPublish(tender)}>Publish</Button>
                     )}
@@ -467,20 +474,20 @@ function TendersListPanel({ onCreate, onEdit, refreshKey }: { onCreate: () => vo
           </DialogHeader>
           <div className="space-y-6 py-4">
             <p className="text-sm text-muted-foreground">Select the information you want to be visible to vendors.</p>
-            
+
             <div className="space-y-4 border p-4 rounded-md">
               <h4 className="font-semibold text-sm">General Information</h4>
               <div className="flex items-center justify-between">
                 <Label>Share Estimated Budget</Label>
-                <Switch checked={visibilityConfig.budget} onCheckedChange={(c) => setVisibilityConfig(p => ({...p, budget: c}))} />
+                <Switch checked={visibilityConfig.budget} onCheckedChange={(c) => setVisibilityConfig(p => ({ ...p, budget: c }))} />
               </div>
               <div className="flex items-center justify-between">
                 <Label>Share Location Details</Label>
-                <Switch checked={visibilityConfig.location} onCheckedChange={(c) => setVisibilityConfig(p => ({...p, location: c}))} />
+                <Switch checked={visibilityConfig.location} onCheckedChange={(c) => setVisibilityConfig(p => ({ ...p, location: c }))} />
               </div>
               <div className="flex items-center justify-between">
                 <Label>Share Client Information</Label>
-                <Switch checked={visibilityConfig.clientInfo} onCheckedChange={(c) => setVisibilityConfig(p => ({...p, clientInfo: c}))} />
+                <Switch checked={visibilityConfig.clientInfo} onCheckedChange={(c) => setVisibilityConfig(p => ({ ...p, clientInfo: c }))} />
               </div>
             </div>
 
@@ -491,9 +498,9 @@ function TendersListPanel({ onCreate, onEdit, refreshKey }: { onCreate: () => vo
                   {tenderDocs.map((doc) => (
                     <div key={doc.id} className="flex items-center justify-between">
                       <span className="text-sm truncate w-2/3">{doc.name}</span>
-                      <Switch 
-                        checked={docsToShare.includes(doc.id)} 
-                        onCheckedChange={(c) => setDocsToShare(p => c ? [...p, doc.id] : p.filter(id => id !== doc.id))} 
+                      <Switch
+                        checked={docsToShare.includes(doc.id)}
+                        onCheckedChange={(c) => setDocsToShare(p => c ? [...p, doc.id] : p.filter(id => id !== doc.id))}
                       />
                     </div>
                   ))}
@@ -527,6 +534,8 @@ function TendersListPanel({ onCreate, onEdit, refreshKey }: { onCreate: () => vo
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <TenderFormsDialog tender={formsTender} open={formsOpen} onOpenChange={setFormsOpen} />
     </Card>
   );
 }
@@ -571,12 +580,12 @@ export default function AdminTenders() {
   const [clientInfoEnabled, setClientInfoEnabled] = useState(false);
   const [clientName, setClientName] = useState("");
   const [clientInfoDetails, setClientInfoDetails] = useState("");
-  const [documents, setDocuments] = useState<{name: string, fileType: string, url: string}[]>([]);
+  const [documents, setDocuments] = useState<{ name: string, fileType: string, url: string }[]>([]);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
     const newDocs = Array.from(e.target.files).map(f => {
-      return new Promise<{name: string, fileType: string, url: string}>((resolve) => {
+      return new Promise<{ name: string, fileType: string, url: string }>((resolve) => {
         const reader = new FileReader();
         reader.onloadend = () => {
           resolve({
@@ -723,7 +732,7 @@ export default function AdminTenders() {
             <TabsTrigger value="master" className="flex gap-2"><Database className="h-4 w-4" /> Master Data</TabsTrigger>
             <TabsTrigger value="invitations" className="flex gap-2"><Users className="h-4 w-4" /> Invitations & Vendors</TabsTrigger>
           </TabsList>
-          
+
           <TabsContent value="tenders" className="mt-0">
             <TendersListPanel onCreate={handleCreateOpen} onEdit={handleEditTender} refreshKey={refreshKey} />
           </TabsContent>
@@ -786,7 +795,7 @@ export default function AdminTenders() {
                 <option value="Private">Private (Invited Only)</option>
               </select>
             </div>
-            
+
             {/* Location Details */}
             <div className="col-span-2 border rounded-md p-4 space-y-4 mt-2">
               <h4 className="font-semibold text-sm">Location Details</h4>
@@ -824,7 +833,7 @@ export default function AdminTenders() {
                   <Input type="file" accept="image/*" multiple onChange={handleFileUpload} />
                 </div>
               </div>
-              
+
               {documents.length > 0 && (
                 <div className="mt-4">
                   <Label className="mb-2 block">Attached Files</Label>

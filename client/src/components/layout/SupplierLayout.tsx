@@ -27,6 +27,7 @@ interface SupplierLayoutProps {
 const navItems = [
   { label: "Dashboard", icon: LayoutDashboard, path: "/supplier/dashboard" },
   { label: "Tenders", icon: FileText, path: "/supplier/tenders" },
+  { label: "Quotes", icon: ShoppingBag, path: "/supplier/quotes" },
   { label: "My Materials", icon: ShoppingBag, path: "/supplier/my-materials" },
   { label: "Manage Materials", icon: Package, path: "/supplier/materials" },
   { label: "Proposal", icon: FileText, path: "/proposal" },
@@ -80,33 +81,33 @@ export function SupplierLayout({
         {navItems
           .filter(item => (user?.role === "vendor" ? item.label === "Tenders" || item.label === "Messages" : true))
           .map((item) => {
-          const Icon = item.icon;
-          const isActive = location === item.path || location.startsWith(item.path + "/");
-          return (
-            <button
-              key={item.path}
-              onClick={() => navigate(item.path)}
-              className={`
+            const Icon = item.icon;
+            const isActive = location === item.path || location.startsWith(item.path + "/");
+            return (
+              <button
+                key={item.path}
+                onClick={() => navigate(item.path)}
+                className={`
                 w-full flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-medium
                 transition-all duration-200 group relative
                 ${isActive
-                  ? "bg-white/20 backdrop-blur-md border border-white/25 text-white shadow-lg shadow-fuchsia-500/10"
-                  : "text-white/60 hover:bg-white/10 hover:text-white border border-transparent"
-                }
+                    ? "bg-white/20 backdrop-blur-md border border-white/25 text-white shadow-lg shadow-fuchsia-500/10"
+                    : "text-white/60 hover:bg-white/10 hover:text-white border border-transparent"
+                  }
               `}
-            >
-              <Icon
-                size={16}
-                strokeWidth={isActive ? 2 : 1.5}
-                className={isActive ? "text-white" : "text-white/50 group-hover:text-white/80"}
-              />
-              <span className="flex-1 text-left tracking-tight">{item.label}</span>
-              {isActive && (
-                <ChevronRight size={12} className="opacity-70" />
-              )}
-            </button>
-          );
-        })}
+              >
+                <Icon
+                  size={16}
+                  strokeWidth={isActive ? 2 : 1.5}
+                  className={isActive ? "text-white" : "text-white/50 group-hover:text-white/80"}
+                />
+                <span className="flex-1 text-left tracking-tight">{item.label}</span>
+                {isActive && (
+                  <ChevronRight size={12} className="opacity-70" />
+                )}
+              </button>
+            );
+          })}
       </nav>
 
       {/* Logout Section */}

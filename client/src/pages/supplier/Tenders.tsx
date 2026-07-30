@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Gavel, Save, Send, Clock, FileSpreadsheet, RefreshCw, FileText, ArrowLeft } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import apiFetch from "@/lib/api";
+import { TenderFormsPanel } from "@/components/supplier/TenderFormsPanel";
 import "../tenders-glass.css";
 
 function getTimeRemaining(endDate: string | null): string {
@@ -27,7 +28,7 @@ function getTimeRemaining(endDate: string | null): string {
 function TenderDetailView({ tender, onBack }: { tender: any; onBack: () => void }) {
   const { toast } = useToast();
   const [documents, setDocuments] = useState<any[]>([]);
-  
+
   // Quotation State
   const [deliveryTimeline, setDeliveryTimeline] = useState("");
   const [paymentTerms, setPaymentTerms] = useState("30 Days Net");
@@ -51,7 +52,7 @@ function TenderDetailView({ tender, onBack }: { tender: any; onBack: () => void 
         reader.readAsDataURL(file);
       });
     });
-    
+
     const readFiles = await Promise.all(promises);
     setAttachments(prev => [...prev, ...readFiles]);
   };
@@ -61,7 +62,7 @@ function TenderDetailView({ tender, onBack }: { tender: any; onBack: () => void 
     apiFetch(`/api/et/vendor/tenders/${tender.id}/documents`)
       .then(res => res.json())
       .then(d => setDocuments(d.documents || []))
-      .catch(() => {});
+      .catch(() => { });
 
     // Load existing submission if any
     apiFetch(`/api/et/vendor/tenders/${tender.id}/my-submission`)
@@ -81,10 +82,10 @@ function TenderDetailView({ tender, onBack }: { tender: any; onBack: () => void 
             const remarks = JSON.parse(sub.remarks || "{}");
             if (remarks.deliveryTimeline) setDeliveryTimeline(remarks.deliveryTimeline);
             if (remarks.paymentTerms) setPaymentTerms(remarks.paymentTerms);
-          } catch (e) {}
+          } catch (e) { }
         }
       })
-      .catch(() => {});
+      .catch(() => { });
   }, [tender.id]);
 
   const handleSubmit = async (statusToSave: 'Draft' | 'Submitted') => {
@@ -215,6 +216,9 @@ function TenderDetailView({ tender, onBack }: { tender: any; onBack: () => void 
           </div>
         )}
 
+        {/* Custom Forms & Summary Sheets attached by Admin */}
+        <TenderFormsPanel tenderId={tender.id} />
+
         {/* Quotation Section */}
         <div className="border-t pt-4">
           <div className="flex justify-between items-center mb-3">
@@ -228,16 +232,16 @@ function TenderDetailView({ tender, onBack }: { tender: any; onBack: () => void 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Delivery Timeline</Label>
-              <Input 
-                placeholder="e.g. 15 Days" 
-                value={deliveryTimeline} 
+              <Input
+                placeholder="e.g. 15 Days"
+                value={deliveryTimeline}
                 onChange={e => setDeliveryTimeline(e.target.value)}
                 disabled={isSubmitted || isSubmitting}
               />
             </div>
             <div className="space-y-2">
               <Label>Payment Terms</Label>
-              <select 
+              <select
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background disabled:opacity-50"
                 value={paymentTerms}
                 onChange={e => setPaymentTerms(e.target.value)}
@@ -258,9 +262,9 @@ function TenderDetailView({ tender, onBack }: { tender: any; onBack: () => void 
                       <span className="truncate max-w-[200px]">{att.name}</span>
                       <span className="text-xs text-muted-foreground ml-auto">{att.fileType || att.file_type}</span>
                       {!isSubmitted && (
-                         <Button variant="ghost" size="sm" className="h-6 px-2 text-red-500" onClick={() => setAttachments(prev => prev.filter((_, i) => i !== idx))}>
-                           Remove
-                         </Button>
+                        <Button variant="ghost" size="sm" className="h-6 px-2 text-red-500" onClick={() => setAttachments(prev => prev.filter((_, i) => i !== idx))}>
+                          Remove
+                        </Button>
                       )}
                     </div>
                   ))}
@@ -271,24 +275,24 @@ function TenderDetailView({ tender, onBack }: { tender: any; onBack: () => void 
               )}
             </div>
           </div>
-          
+
           {!isSubmitted && (
             <>
               <div className="flex justify-end gap-2 pt-6">
-                <Button 
-                  variant="outline" 
+                <Button
+                  variant="outline"
                   onClick={() => handleSubmit('Draft')}
                   disabled={isSubmitting}
                 >
-                  <Save className="w-4 h-4 mr-2" /> 
+                  <Save className="w-4 h-4 mr-2" />
                   {isSubmitting ? 'Saving...' : 'Save Draft'}
                 </Button>
-                <Button 
+                <Button
                   onClick={() => handleSubmit('Submitted')}
                   disabled={isSubmitting || !isSubmissionOpen}
                   title={isBeforeStart ? `Submission opens at ${new Date(tender.submission_start).toLocaleString()}` : (isAfterEnd ? "Submission window has closed" : "")}
                 >
-                  <Send className="w-4 h-4 mr-2" /> 
+                  <Send className="w-4 h-4 mr-2" />
                   {isSubmitting ? 'Submitting...' : 'Submit Final Quote'}
                 </Button>
               </div>
@@ -359,7 +363,7 @@ export default function VendorTenders() {
               <TabsTrigger value="submitted">Submitted</TabsTrigger>
               <TabsTrigger value="awarded">Awarded</TabsTrigger>
             </TabsList>
-            
+
             <TabsContent value="open" className="mt-0">
               <Card className="tg-card">
                 <CardContent className="p-0">

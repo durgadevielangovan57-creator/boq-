@@ -1015,6 +1015,7 @@ export function Sidebar({ isOpen, setIsOpen }: SidebarProps) {
                 <AccordionContent sectionKey="procurement">
                   <SidebarNavItem id="purchase_orders" href="/purchase-orders" icon={FileText} label="Purchase Orders" condition={isAdminOrSoftware || isPurchaseTeam} />
                   <SidebarNavItem id="tenders" href="/admin/tenders" icon={ShoppingCart} label="Tenders" condition={isAdminOrSoftware || isPurchaseTeam} />
+                  <SidebarNavItem id="form_builder" href="/admin/form-builder" icon={FileText} label="Form Builder" condition={isAdminOrSoftware || isPurchaseTeam} />
                   <SidebarNavItem id="delivery_tracker" href="/delivery-tracker" icon={Truck} label="Delivery Tracker" condition={isAdminOrSoftware || isPurchaseTeam || user?.role === 'site_engineer'} />
                   <SidebarNavItem id="po_approvals" href="/po-approvals" icon={ClipboardCheck} label="PO Approvals" condition={isAdminOrSoftware} />
                 </AccordionContent>

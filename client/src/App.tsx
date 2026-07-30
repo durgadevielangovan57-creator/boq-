@@ -15,6 +15,8 @@ import PendingApproval from "@/pages/PendingApproval";
 import Landing from "./pages/Landing";
 import VendorRegistration from "@/pages/VendorRegistration";
 import ClientRegistration from "@/pages/ClientRegistration";
+import PublicQuoteFill from "@/pages/PublicQuoteFill";
+import PrintSummarySheet from "@/pages/PrintSummarySheet";
 
 import Dashboard from "@/pages/Dashboard";
 import SoftwareDashboard from "@/pages/SoftwareDashboard";
@@ -43,6 +45,8 @@ import GeneratePO from "@/pages/GeneratePO";
 import AdminTenders from "@/pages/admin/Tenders";
 import VendorTenders from "@/pages/supplier/Tenders";
 import ClientTenders from "@/pages/client/Tenders";
+import AdminFormBuilder from "@/pages/admin/FormBuilder";
+import SupplierQuoteFill from "@/pages/supplier/QuoteFill";
 
 
 
@@ -90,6 +94,9 @@ function Router() {
       <Route path="/reset-password" component={ResetPassword} />
       <Route path="/register/vendor/:token" component={VendorRegistration} />
       <Route path="/register/client/:token" component={ClientRegistration} />
+      <Route path="/q/:token" component={PublicQuoteFill} />
+      <Route path="/admin/summary-print/:linkId" component={PrintSummarySheet} />
+      <Route path="/supplier/summary-print/:linkId" component={PrintSummarySheet} />
 
       {/* ✅ Pending approval page (MAIN) */}
       <Route path="/pending-approval" component={PendingApproval} />
@@ -150,7 +157,9 @@ function Router() {
       <Route path="/admin/spy" component={SpyDashboard} />
       <Route path="/admin/rate-reduction-history" component={RateReductionHistory} />
       <Route path="/admin/tenders" component={AdminTenders} />
+      <Route path="/admin/form-builder" component={AdminFormBuilder} />
       <Route path="/supplier/tenders" component={VendorTenders} />
+      <Route path="/supplier/quotes" component={SupplierQuoteFill} />
       <Route path="/client/tenders" component={ClientTenders} />
       <Route path="/generate-po" component={GeneratePO} />
 
@@ -203,7 +212,7 @@ function NavigationLogger() {
             module: location.split("/")[1]?.toUpperCase() || "HOME",
             details: `User navigated to ${location}`
           })
-        }).catch(() => {});
+        }).catch(() => { });
       }, 1000);
       return () => clearTimeout(timer);
     }

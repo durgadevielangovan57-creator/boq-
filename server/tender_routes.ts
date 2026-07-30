@@ -4,6 +4,7 @@ import { authMiddleware, requireRole } from "./middleware";
 import { hashPassword } from "./auth";
 import { Resend } from "resend";
 import multer from "multer";
+import { registerFormBuilderRoutes } from "./form_builder_routes";
 
 const resend = new Resend(process.env.RESEND_API_KEY || "dummy_key_to_avoid_crash");
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } }); // 100MB limit
@@ -28,7 +29,7 @@ async function logAudit(req: Request, action: string, details: string, originId:
   try {
     const user = (req as any).user;
     if (!user) return;
-    
+
     await query(
       `INSERT INTO et_audit_logs 
        (tenant_id, user_id, username, role, action, module, origin_id, details, before_data, after_data, ip_address, user_agent)
@@ -324,10 +325,10 @@ async function ensureEnterpriseTenderTables(): Promise<void> {
   await pool.query(`ALTER TABLE et_tenders ADD COLUMN IF NOT EXISTS location TEXT`);
   await pool.query(`ALTER TABLE et_tenders ADD COLUMN IF NOT EXISTS address TEXT`);
   await pool.query(`ALTER TABLE et_tenders ADD COLUMN IF NOT EXISTS start_date TIMESTAMPTZ`);
-  await pool.query(`ALTER TABLE et_tenders ALTER COLUMN start_date TYPE TIMESTAMPTZ USING start_date::timestamptz`).catch(() => {});
+  await pool.query(`ALTER TABLE et_tenders ALTER COLUMN start_date TYPE TIMESTAMPTZ USING start_date::timestamptz`).catch(() => { });
   await pool.query(`ALTER TABLE et_tenders ADD COLUMN IF NOT EXISTS end_date TIMESTAMPTZ`);
-  await pool.query(`ALTER TABLE et_tenders ALTER COLUMN end_date TYPE TIMESTAMPTZ USING end_date::timestamptz`).catch(() => {});
-  await pool.query(`ALTER TABLE et_tenders ALTER COLUMN end_date TYPE TIMESTAMPTZ USING end_date::TIMESTAMPTZ`).catch(() => {});
+  await pool.query(`ALTER TABLE et_tenders ALTER COLUMN end_date TYPE TIMESTAMPTZ USING end_date::timestamptz`).catch(() => { });
+  await pool.query(`ALTER TABLE et_tenders ALTER COLUMN end_date TYPE TIMESTAMPTZ USING end_date::TIMESTAMPTZ`).catch(() => { });
   await pool.query(`ALTER TABLE et_tenders ADD COLUMN IF NOT EXISTS num_discussions INT DEFAULT 0`);
   await pool.query(`ALTER TABLE et_tenders ADD COLUMN IF NOT EXISTS client_name TEXT`);
   await pool.query(`ALTER TABLE et_tenders ADD COLUMN IF NOT EXISTS client_info JSONB DEFAULT '{}'`);
@@ -350,19 +351,19 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
   });
 
   /* ============================ MASTER DATA ============================ */
-  
+
   app.get("/api/et/master-data", authMiddleware, async (req: Request, res: Response) => {
     try {
       const category = req.query.category as string;
       const params: any[] = [];
       let queryStr = `SELECT * FROM et_master_data WHERE is_active = true`;
-      
+
       if (category) {
         params.push(category);
         queryStr += ` AND category = $1`;
       }
       queryStr += ` ORDER BY category, sort_order ASC, code ASC`;
-      
+
       const result = await query(queryStr, params);
       res.json({ data: result.rows });
     } catch (err: any) {
@@ -423,7 +424,7 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
 
       // Generate a simple unique token
       const token = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-      
+
       // Token valid for 7 days
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 7);
@@ -433,7 +434,7 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
         [token, email, role, tenderId || null, req.user!.id, expiresAt]
       );
-      
+
       const invitation = result.rows[0];
       const link = `${process.env.FRONTEND_URL || "http://localhost:5011"}/register/${role}/${token}`;
 
@@ -441,7 +442,7 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
         if (!process.env.RESEND_API_KEY) {
           return res.status(500).json({ message: "RESEND_API_KEY is not configured on the server." });
         }
-        
+
         await resend.emails.send({
           from: process.env.FROM_EMAIL || "auth@knockturn.cloud",
           to: email,
@@ -457,7 +458,7 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
           `,
         });
       }
-      
+
       res.status(201).json({ invitation, link, emailSent: sendEmail });
     } catch (err: any) {
       res.status(500).json({ message: "Failed to generate invitation" });
@@ -490,7 +491,7 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
     try {
       await client.query("BEGIN");
       const b = req.body || {};
-      
+
       // Auto-generate tender number
       const year = new Date().getFullYear();
       const countRes = await client.query(`SELECT COUNT(*) FROM et_tenders WHERE tender_number LIKE $1`, [`ETND-${year}-%`]);
@@ -532,7 +533,7 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
 
       await client.query(`INSERT INTO et_tender_timelines (tender_id, registration_start, registration_end) VALUES ($1, $2, $3)`,
         [tender.id, b.startDate || null, b.endDate || null]);
-      await client.query(`INSERT INTO et_tender_settings (tender_id, client_visibility_config) VALUES ($1, $2)`, 
+      await client.query(`INSERT INTO et_tender_settings (tender_id, client_visibility_config) VALUES ($1, $2)`,
         [tender.id, b.visibilityConfig || '{}']);
 
       // Handle documents
@@ -627,10 +628,10 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
 
       // 1. Update status and is_published
       await client.query(`UPDATE et_tenders SET is_published = true, status = 'Published', updated_at = NOW() WHERE id = $1`, [id]);
-      
+
       // 2. Update client_visibility_config in settings
       await client.query(`UPDATE et_tender_settings SET client_visibility_config = $2, updated_at = NOW() WHERE tender_id = $1`, [id, visibilityConfig]);
-      
+
       // 3. Update documents share status
       await client.query(`UPDATE et_tender_documents SET share_with_vendor = false WHERE tender_id = $1`, [id]);
       if (documentIdsToShare && documentIdsToShare.length > 0) {
@@ -751,7 +752,7 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
     try {
       const { id } = req.params;
       const userId = req.user!.id;
-      
+
       const subRes = await query(
         `SELECT * FROM et_submissions WHERE tender_id = $1 AND vendor_id = $2 AND round_number = 0 AND bid_type = 'Commercial'`,
         [id, userId]
@@ -762,12 +763,12 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
       }
 
       const submission = subRes.rows[0];
-      
+
       const filesRes = await query(
         `SELECT id, name, file_type, url FROM et_submission_files WHERE submission_id = $1 ORDER BY uploaded_at ASC`,
         [submission.id]
       );
-      
+
       submission.attachments = filesRes.rows;
 
       res.json({ submission });
@@ -828,7 +829,7 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
       // Handle attachments (base64 encoded files)
       if (attachments && Array.isArray(attachments)) {
         await client.query(`DELETE FROM et_submission_files WHERE submission_id = $1`, [submissionId]);
-        
+
         for (const att of attachments) {
           await client.query(
             `INSERT INTO et_submission_files (submission_id, name, url, file_type) VALUES ($1, $2, $3, $4)`,
@@ -863,13 +864,13 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
         return res.json({ submission: null });
       }
       const sub = result.rows[0];
-      
+
       // Get attached files
       const filesRes = await query(
         `SELECT id, name, file_type, uploaded_at FROM et_submission_files WHERE submission_id = $1 ORDER BY uploaded_at ASC`,
         [sub.id]
       );
-      
+
       res.json({ submission: { ...sub, files: filesRes.rows } });
     } catch (err: any) {
       res.status(500).json({ message: "Failed to load submission" });
@@ -880,10 +881,10 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
   app.post("/api/et/register-vendor", async (req: Request, res: Response) => {
     const client = await pool.connect();
     try {
-      const { 
-        email, password, registerName, phone, 
-        companyName, tradeName, companyType, 
-        gstNumber, panNumber, cin 
+      const {
+        email, password, registerName, phone,
+        companyName, tradeName, companyType,
+        gstNumber, panNumber, cin
       } = req.body;
 
       if (!email || !password || !panNumber) {
@@ -901,7 +902,7 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
 
       // 2. Hash password & Create user in main BOQ users table with role "vendor"
       const hashedPassword = await hashPassword(password);
-      
+
       const userRes = await client.query(
         `INSERT INTO users (username, password, role, full_name, mobile_number, company_name, gst_number, approved) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
@@ -913,7 +914,7 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
       const profileData = {
         tradeName, companyType, cin, panNumber
       };
-      
+
       await client.query(
         `INSERT INTO et_vendor_profiles (user_id, profile_data, status) VALUES ($1, $2, $3)`,
         [userId, JSON.stringify(profileData), "Approved"] // Auto approved for prototype
@@ -956,7 +957,7 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
         [email, hashedPassword, "client", contactPerson, organizationName, "approved"]
       );
-      
+
       // 3. Mark token as registered (if provided)
       if (token) {
         await client.query(`UPDATE et_invitations SET status = 'Registered', updated_at = now() WHERE token = $1`, [token]);
@@ -974,4 +975,8 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
   });
 
   console.log("[enterprise-tender-module] Enterprise Tender Routes registered.");
+
+  // Register the isolated Form Builder / Summary Sheet / Quote module.
+  // Hooked in here (instead of server/index.ts) so index.ts never needs to change.
+  await registerFormBuilderRoutes(app);
 }
