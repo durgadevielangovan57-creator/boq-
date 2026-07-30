@@ -760,6 +760,133 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
         }
     });
 
+    // Helper: pull every materialLine/step11_item out of a project's finalized BOM version's boq_items,
+    // tagging each with whichever shop it came from (shop_id if present, else the shop name as the key).
+    async function getFinalBomMaterialLines(projectId: string): Promise<{ version: any; lines: any[] } | null> {
+        const verRes = await query(
+            `SELECT * FROM boq_versions WHERE project_id = $1 AND type = 'bom' AND is_last_final = TRUE
+       ORDER BY version_number DESC LIMIT 1`,
+            [projectId]
+        );
+        const version = verRes.rows[0];
+        if (!version) return null;
+
+        const itemsRes = await query(`SELECT id, table_data FROM boq_items WHERE version_id = $1`, [version.id]);
+        const lines: any[] = [];
+        for (const row of itemsRes.rows) {
+            const td = typeof row.table_data === "string" ? JSON.parse(row.table_data) : row.table_data;
+            if (!td) continue;
+            const raw = Array.isArray(td.materialLines) ? td.materialLines : Array.isArray(td.step11_items) ? td.step11_items : [];
+            for (const l of raw) {
+                const shopName = (l.shop_name || l.shopName || "").toString().trim();
+                if (!shopName) continue; // items without a shop can't be sourced to a vendor for this flow
+                lines.push({
+                    boqItemId: row.id,
+                    materialId: l.material_id || l.materialId || l.id || null,
+                    name: l.name || l.item_name || l.itemName || "Unnamed material",
+                    unit: l.unit || "",
+                    shopId: l.shop_id || l.shopId || null,
+                    shopName,
+                    qty: Number(l.roundOffQty || l.roundOff || l.qty || l.requiredQty || l.baseQty || 0) || 0,
+                });
+            }
+        }
+        return { version, lines };
+    }
+
+    // Admin: for a selected project, list the distinct shops that were actually sourced in its
+    // finalized BOM, resolved to the vendor login (if that shop's owner has a vendor/supplier account).
+    app.get("/api/fb/projects/:id/bom-shops", authMiddleware, requireRole(...ADMIN_ROLES), async (req: Request, res: Response) => {
+        try {
+            const data = await getFinalBomMaterialLines(req.params.id);
+            if (!data) return res.json({ shops: [], hasFinalBom: false });
+
+            const byShop = new Map<string, { shopId: string | null; shopName: string; itemCount: number }>();
+            for (const l of data.lines) {
+                const key = l.shopId || l.shopName;
+                if (!byShop.has(key)) byShop.set(key, { shopId: l.shopId, shopName: l.shopName, itemCount: 0 });
+                byShop.get(key)!.itemCount++;
+            }
+
+            const shopIds = Array.from(byShop.values()).map((s) => s.shopId).filter(Boolean);
+            const shopNames = Array.from(byShop.values()).map((s) => s.shopName);
+            let ownerRows: any[] = [];
+            if (shopIds.length > 0 || shopNames.length > 0) {
+                const r = await query(
+                    `SELECT s.id AS shop_id, s.name AS shop_name, u.id AS vendor_id, u.full_name AS vendor_name, u.company_name AS vendor_company
+           FROM shops s LEFT JOIN users u ON u.id::text = s.owner_id::text
+           WHERE s.id::text = ANY($1::text[]) OR s.name = ANY($2::text[])`,
+                    [shopIds.length ? shopIds : [""], shopNames.length ? shopNames : [""]]
+                );
+                ownerRows = r.rows;
+            }
+
+            const shops = Array.from(byShop.values()).map((s) => {
+                const owner = ownerRows.find((o) => (s.shopId && o.shop_id === s.shopId) || o.shop_name === s.shopName);
+                return {
+                    key: s.shopId || s.shopName,
+                    shopId: s.shopId,
+                    shopName: s.shopName,
+                    itemCount: s.itemCount,
+                    vendorId: owner?.vendor_id || null,
+                    vendorName: owner?.vendor_name || null,
+                    vendorCompany: owner?.vendor_company || null,
+                };
+            });
+
+            res.json({ shops, hasFinalBom: true, versionId: data.version.id });
+        } catch (err: any) {
+            console.error("[fb bom-shops]", err);
+            res.status(500).json({ message: "Failed to load shops for this project's finalized BOM" });
+        }
+    });
+
+    // Admin: for a selected project + shop, list only the materials sourced from that shop
+    // in the finalized BOM (searchable client-side; small per-shop lists).
+    app.get("/api/fb/projects/:id/bom-materials", authMiddleware, requireRole(...ADMIN_ROLES), async (req: Request, res: Response) => {
+        try {
+            const shopKey = (req.query.shop as string) || "";
+            if (!shopKey) return res.status(400).json({ message: "shop query param is required" });
+
+            const data = await getFinalBomMaterialLines(req.params.id);
+            if (!data) return res.json({ materials: [] });
+
+            const matched = data.lines.filter((l) => (l.shopId && l.shopId === shopKey) || l.shopName === shopKey);
+
+            // Resolve technical specification from the Materials Master where possible.
+            const materialIds = Array.from(new Set(matched.map((l) => l.materialId).filter(Boolean)));
+            let specById: Record<string, string> = {};
+            if (materialIds.length > 0) {
+                const specRes = await query(
+                    `SELECT id::text AS id, "technicalSpecification" AS spec FROM materials WHERE id::text = ANY($1::text[])`,
+                    [materialIds]
+                );
+                specRes.rows.forEach((r: any) => { specById[r.id] = r.spec; });
+            }
+
+            // De-dupe by material identity (same material can appear on multiple boq_items).
+            const byKey = new Map<string, any>();
+            for (const l of matched) {
+                const key = l.materialId || l.name;
+                if (!byKey.has(key)) {
+                    byKey.set(key, {
+                        materialId: l.materialId,
+                        name: l.name,
+                        unit: l.unit,
+                        spec: (l.materialId && specById[l.materialId]) || "",
+                        quantity: l.qty,
+                    });
+                } else {
+                    byKey.get(key).quantity += l.qty;
+                }
+            }
+            res.json({ materials: Array.from(byKey.values()) });
+        } catch (err: any) {
+            console.error("[fb bom-materials]", err);
+            res.status(500).json({ message: "Failed to load materials for this shop" });
+        }
+    });
+
     // ---------------------------------------------------------------
     // SUMMARY SHEET REPORT DATA (placeholder tokens + bindable tables)
     // ---------------------------------------------------------------

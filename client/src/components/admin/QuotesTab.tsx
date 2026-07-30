@@ -205,54 +205,143 @@ function CreateQuoteDialog({ open, onOpenChange, onCreated }: { open: boolean; o
 }
 
 // ------------------------------------------------------------------
-// Project Comparison Quote (2nd quote type): pick up to 4 projects,
-// pick vendors, pick materials (searchable), create + send in one go.
+// Project Comparison Quote (2nd quote type - fully separate from the
+// standard quote flow above, nothing here touches it):
+//
+// Select up to 4 projects at once (side by side) -> for each project,
+// only the shops actually sourced in its FINALIZED BOM version are
+// listed -> pick a shop -> only that shop's materials from that BOM
+// are listed (searchable) -> pick materials -> Create & Send, which
+// auto-generates a no-login public link per vendor.
 // ------------------------------------------------------------------
+type BomShop = { key: string; shopId: string | null; shopName: string; itemCount: number; vendorId: string | null; vendorName: string | null; vendorCompany: string | null };
+type BomMaterial = { materialId: string | null; name: string; unit: string; spec: string; quantity: number };
+
 function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (o: boolean) => void; onCreated: () => void }) {
     const { toast } = useToast();
     const [title, setTitle] = useState("");
     const [projects, setProjects] = useState<any[]>([]);
-    const [vendors, setVendors] = useState<any[]>([]);
+    const [vendors, setVendors] = useState<any[]>([]); // fallback / manual "send to" list
     const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
     const [selectedVendors, setSelectedVendors] = useState<string[]>([]);
-    const [materials, setMaterials] = useState<(PickedMaterial & { quantity: number })[]>([]);
-    const [pickerOpen, setPickerOpen] = useState(false);
     const [saving, setSaving] = useState(false);
     const [resultLinks, setResultLinks] = useState<{ vendorId: string; vendorName: string; link: string }[] | null>(null);
+
+    // projectId -> { loading, hasFinalBom, shops }
+    const [bomByProject, setBomByProject] = useState<Record<string, { loading: boolean; hasFinalBom: boolean; shops: BomShop[] }>>({});
+    // projectId -> [shopKey, ...] selected shops for that project
+    const [selectedShops, setSelectedShops] = useState<Record<string, string[]>>({});
+    // `${projectId}::${shopKey}` -> { loading, materials }
+    const [materialsByShop, setMaterialsByShop] = useState<Record<string, { loading: boolean; materials: BomMaterial[] }>>({});
+    // `${projectId}::${shopKey}` -> Set of picked material keys (materialId || name)
+    const [pickedByShop, setPickedByShop] = useState<Record<string, Set<string>>>({});
+    // `${projectId}::${shopKey}::${materialKey}` -> quantity override
+    const [qtyOverrides, setQtyOverrides] = useState<Record<string, number>>({});
+    // `${projectId}::${shopKey}` -> search text
+    const [searchByShop, setSearchByShop] = useState<Record<string, string>>({});
+
+    const fk = (projectId: string, shopKey: string) => `${projectId}::${shopKey}`;
 
     useEffect(() => {
         if (!open) return;
         setTitle("");
         setSelectedProjects([]);
         setSelectedVendors([]);
-        setMaterials([]);
+        setBomByProject({});
+        setSelectedShops({});
+        setMaterialsByShop({});
+        setPickedByShop({});
+        setQtyOverrides({});
+        setSearchByShop({});
         setResultLinks(null);
         apiFetch("/api/fb/projects").then((r) => r.json()).then((d) => setProjects(d.projects || [])).catch(() => { });
         apiFetch("/api/fb/vendors").then((r) => r.json()).then((d) => setVendors(d.vendors || [])).catch(() => { });
     }, [open]);
 
+    const loadShopsForProject = (projectId: string) => {
+        setBomByProject((prev) => ({ ...prev, [projectId]: { loading: true, hasFinalBom: false, shops: [] } }));
+        apiFetch(`/api/fb/projects/${projectId}/bom-shops`)
+            .then((r) => r.json())
+            .then((d) => setBomByProject((prev) => ({ ...prev, [projectId]: { loading: false, hasFinalBom: !!d.hasFinalBom, shops: d.shops || [] } })))
+            .catch(() => setBomByProject((prev) => ({ ...prev, [projectId]: { loading: false, hasFinalBom: false, shops: [] } })));
+    };
+
     const toggleProject = (id: string) => {
         setSelectedProjects((prev) => {
-            if (prev.includes(id)) return prev.filter((x) => x !== id);
+            if (prev.includes(id)) {
+                setSelectedShops((sp) => { const n = { ...sp }; delete n[id]; return n; });
+                return prev.filter((x) => x !== id);
+            }
             if (prev.length >= 4) {
                 toast({ title: "Limit reached", description: "You can select up to 4 projects at a time.", variant: "destructive" });
                 return prev;
             }
+            if (!bomByProject[id]) loadShopsForProject(id);
             return [...prev, id];
+        });
+    };
+
+    const toggleShop = (projectId: string, shop: BomShop) => {
+        setSelectedShops((prev) => {
+            const cur = prev[projectId] || [];
+            const next = cur.includes(shop.key) ? cur.filter((x) => x !== shop.key) : [...cur, shop.key];
+            return { ...prev, [projectId]: next };
+        });
+        const key = fk(projectId, shop.key);
+        if (!materialsByShop[key]) {
+            setMaterialsByShop((prev) => ({ ...prev, [key]: { loading: true, materials: [] } }));
+            apiFetch(`/api/fb/projects/${projectId}/bom-materials?shop=${encodeURIComponent(shop.key)}`)
+                .then((r) => r.json())
+                .then((d) => setMaterialsByShop((prev) => ({ ...prev, [key]: { loading: false, materials: d.materials || [] } })))
+                .catch(() => setMaterialsByShop((prev) => ({ ...prev, [key]: { loading: false, materials: [] } })));
+        }
+        // If this shop's owner has a real vendor login, pre-select them to send to (still editable below).
+        if (shop.vendorId) setSelectedVendors((prev) => (prev.includes(shop.vendorId!) ? prev : [...prev, shop.vendorId!]));
+    };
+
+    const toggleMaterial = (projectId: string, shopKey: string, materialKey: string) => {
+        const key = fk(projectId, shopKey);
+        setPickedByShop((prev) => {
+            const set = new Set(prev[key] || []);
+            if (set.has(materialKey)) set.delete(materialKey); else set.add(materialKey);
+            return { ...prev, [key]: set };
         });
     };
 
     const toggleVendor = (id: string) => setSelectedVendors((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
-    const onMaterialsPicked = (items: PickedMaterial[]) => {
-        setMaterials((prev) => [...prev, ...items.map((m) => ({ ...m, quantity: 1 }))]);
+    // Flatten everything picked, across all 4 project columns, into quote line items.
+    const buildItems = () => {
+        const items: { itemName: string; uom: string; spec: string; quantity: number; description: string }[] = [];
+        for (const projectId of selectedProjects) {
+            const project = projects.find((p) => p.id === projectId);
+            for (const shopKey of selectedShops[projectId] || []) {
+                const key = fk(projectId, shopKey);
+                const shop = (bomByProject[projectId]?.shops || []).find((s) => s.key === shopKey);
+                const mats = materialsByShop[key]?.materials || [];
+                const picked = pickedByShop[key] || new Set<string>();
+                mats.forEach((m) => {
+                    const mKey = m.materialId || m.name;
+                    if (!picked.has(mKey)) return;
+                    const qtyKey = `${key}::${mKey}`;
+                    items.push({
+                        itemName: m.name,
+                        uom: m.unit || "",
+                        spec: m.spec || "",
+                        quantity: qtyOverrides[qtyKey] ?? m.quantity ?? 1,
+                        description: `${project?.name || "Project"} • ${shop?.shopName || "Shop"}`,
+                    });
+                });
+            }
+        }
+        return items;
     };
 
-    const setMaterialQty = (idx: number, qty: number) => setMaterials((prev) => prev.map((m, i) => (i === idx ? { ...m, quantity: qty } : m)));
-    const removeMaterial = (idx: number) => setMaterials((prev) => prev.filter((_, i) => i !== idx));
+    const totalPicked = selectedProjects.reduce((sum, pid) => sum + (selectedShops[pid] || []).reduce((s2, sk) => s2 + (pickedByShop[fk(pid, sk)]?.size || 0), 0), 0);
 
     const createAndSend = async () => {
-        if (!title.trim() || selectedProjects.length === 0 || selectedVendors.length === 0 || materials.length === 0) {
+        const items = buildItems();
+        if (!title.trim() || selectedProjects.length === 0 || selectedVendors.length === 0 || items.length === 0) {
             toast({ title: "Missing info", description: "Title, at least one project, one vendor, and one material are required.", variant: "destructive" });
             return;
         }
@@ -267,7 +356,7 @@ function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }: { open:
                     description: `Project comparison quote for: ${projectNames.join(", ")}`,
                     quoteKind: "project_comparison",
                     projectIds: selectedProjects,
-                    items: materials.map((m) => ({ itemName: m.name, uom: m.unit, spec: m.description || m.category, quantity: m.quantity })),
+                    items,
                 }),
             });
             if (!createRes.ok) throw new Error();
@@ -297,7 +386,7 @@ function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }: { open:
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-[900px] max-h-[85vh] overflow-y-auto">
+            <DialogContent className="sm:max-w-[1100px] max-h-[85vh] overflow-y-auto">
                 <DialogHeader>
                     <DialogTitle>Project Comparison Quote</DialogTitle>
                 </DialogHeader>
@@ -342,8 +431,93 @@ function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }: { open:
                                 </div>
                             </div>
 
+                            {selectedProjects.length > 0 && (
+                                <div className="space-y-2">
+                                    <Label className="text-sm font-semibold flex items-center gap-1.5"><Package className="h-4 w-4" /> Pick shops &amp; materials from each project's finalized BOM</Label>
+                                    <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${selectedProjects.length}, minmax(220px, 1fr))` }}>
+                                        {selectedProjects.map((projectId) => {
+                                            const project = projects.find((p) => p.id === projectId);
+                                            const bom = bomByProject[projectId];
+                                            return (
+                                                <div key={projectId} className="border rounded-md p-2 space-y-2 min-w-[220px]">
+                                                    <p className="text-xs font-semibold truncate" title={project?.name}>{project?.name || "Project"}</p>
+                                                    {!bom || bom.loading ? (
+                                                        <p className="text-xs text-muted-foreground flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> Loading BOM…</p>
+                                                    ) : !bom.hasFinalBom ? (
+                                                        <p className="text-xs text-muted-foreground">No finalized BOM version for this project yet.</p>
+                                                    ) : bom.shops.length === 0 ? (
+                                                        <p className="text-xs text-muted-foreground">No shops found in the finalized BOM.</p>
+                                                    ) : (
+                                                        bom.shops.map((shop) => {
+                                                            const key = fk(projectId, shop.key);
+                                                            const isChecked = (selectedShops[projectId] || []).includes(shop.key);
+                                                            const matState = materialsByShop[key];
+                                                            const search = (searchByShop[key] || "").toLowerCase();
+                                                            const filteredMats = (matState?.materials || []).filter((m) => !search || m.name.toLowerCase().includes(search));
+                                                            const picked = pickedByShop[key] || new Set<string>();
+                                                            return (
+                                                                <div key={shop.key} className="border rounded-md p-1.5 space-y-1.5">
+                                                                    <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                                                                        <Checkbox checked={isChecked} onCheckedChange={() => toggleShop(projectId, shop)} />
+                                                                        <span className="flex-1 truncate" title={shop.shopName}>
+                                                                            {shop.vendorName ? `${shop.vendorName} ` : ""}({shop.shopName})
+                                                                        </span>
+                                                                        <Badge variant="outline" className="text-[9px] shrink-0">{shop.itemCount}</Badge>
+                                                                    </label>
+                                                                    {isChecked && (
+                                                                        <div className="pl-4 space-y-1.5">
+                                                                            <div className="relative">
+                                                                                <SearchIcon className="h-3 w-3 absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                                                                                <Input
+                                                                                    className="h-7 pl-6 text-xs"
+                                                                                    placeholder="Search materials…"
+                                                                                    value={searchByShop[key] || ""}
+                                                                                    onChange={(e) => setSearchByShop((prev) => ({ ...prev, [key]: e.target.value }))}
+                                                                                />
+                                                                            </div>
+                                                                            <div className="max-h-[160px] overflow-y-auto space-y-1">
+                                                                                {matState?.loading ? (
+                                                                                    <p className="text-[11px] text-muted-foreground">Loading materials…</p>
+                                                                                ) : filteredMats.length === 0 ? (
+                                                                                    <p className="text-[11px] text-muted-foreground">No materials found.</p>
+                                                                                ) : (
+                                                                                    filteredMats.map((m) => {
+                                                                                        const mKey = m.materialId || m.name;
+                                                                                        const qtyKey = `${key}::${mKey}`;
+                                                                                        const isPicked = picked.has(mKey);
+                                                                                        return (
+                                                                                            <div key={mKey} className="flex items-center gap-1.5 text-[11px]">
+                                                                                                <Checkbox checked={isPicked} onCheckedChange={() => toggleMaterial(projectId, shop.key, mKey)} />
+                                                                                                <span className="flex-1 truncate" title={m.name}>{m.name} <span className="text-muted-foreground">({m.unit || "—"})</span></span>
+                                                                                                {isPicked && (
+                                                                                                    <Input
+                                                                                                        type="number"
+                                                                                                        className="h-6 w-14 text-[11px] px-1"
+                                                                                                        value={qtyOverrides[qtyKey] ?? m.quantity}
+                                                                                                        onChange={(e) => setQtyOverrides((prev) => ({ ...prev, [qtyKey]: Number(e.target.value) }))}
+                                                                                                    />
+                                                                                                )}
+                                                                                            </div>
+                                                                                        );
+                                                                                    })
+                                                                                )}
+                                                                            </div>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            );
+                                                        })
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">{totalPicked} material line(s) selected across {selectedProjects.length} project(s).</p>
+                                </div>
+                            )}
+
                             <div className="space-y-2">
-                                <Label className="text-sm font-semibold flex items-center gap-1.5"><Users className="h-4 w-4" /> Select Vendors</Label>
+                                <Label className="text-sm font-semibold flex items-center gap-1.5"><Users className="h-4 w-4" /> Send To (auto-filled from the shops you picked above — edit as needed)</Label>
                                 <div className="grid grid-cols-2 gap-2 max-h-[160px] overflow-y-auto border rounded-md p-2">
                                     {vendors.map((v) => (
                                         <label key={v.id} className="flex items-center gap-2 text-sm border rounded-md p-2 cursor-pointer">
@@ -353,43 +527,6 @@ function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }: { open:
                                     ))}
                                     {vendors.length === 0 && <p className="text-xs text-muted-foreground col-span-2 text-center py-4">No vendors found.</p>}
                                 </div>
-                            </div>
-
-                            <div className="space-y-2">
-                                <div className="flex items-center justify-between">
-                                    <Label className="text-sm font-semibold flex items-center gap-1.5"><Package className="h-4 w-4" /> Select Materials</Label>
-                                    <Button type="button" variant="outline" size="sm" onClick={() => setPickerOpen(true)}>
-                                        <SearchIcon className="h-3.5 w-3.5 mr-1" /> Search &amp; Add Materials
-                                    </Button>
-                                </div>
-                                {materials.length > 0 && (
-                                    <div className="overflow-x-auto border rounded-md">
-                                        <Table>
-                                            <TableHeader>
-                                                <TableRow>
-                                                    <TableHead>Material</TableHead>
-                                                    <TableHead>Unit</TableHead>
-                                                    <TableHead>Qty</TableHead>
-                                                    <TableHead className="w-10" />
-                                                </TableRow>
-                                            </TableHeader>
-                                            <TableBody>
-                                                {materials.map((m, idx) => (
-                                                    <TableRow key={idx}>
-                                                        <TableCell className="font-medium">{m.name}</TableCell>
-                                                        <TableCell>{m.unit || "—"}</TableCell>
-                                                        <TableCell className="w-24">
-                                                            <Input type="number" value={m.quantity} onChange={(e) => setMaterialQty(idx, Number(e.target.value))} />
-                                                        </TableCell>
-                                                        <TableCell>
-                                                            <Button variant="ghost" size="icon" onClick={() => removeMaterial(idx)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
-                                                        </TableCell>
-                                                    </TableRow>
-                                                ))}
-                                            </TableBody>
-                                        </Table>
-                                    </div>
-                                )}
                             </div>
                         </div>
                         <DialogFooter>
@@ -402,7 +539,6 @@ function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }: { open:
                     </>
                 )}
             </DialogContent>
-            <MaterialPickerDialog open={pickerOpen} onOpenChange={setPickerOpen} multiple onPickMultiple={onMaterialsPicked} />
         </Dialog>
     );
 }
@@ -411,17 +547,49 @@ function SendQuoteDialog({ quote, open, onOpenChange, onSent }: { quote: any; op
     const { toast } = useToast();
     const [vendors, setVendors] = useState<any[]>([]);
     const [selected, setSelected] = useState<string[]>([]);
-    const [resultLinks, setResultLinks] = useState<{ vendorId: string; vendorName: string; link: string }[] | null>(null);
+    const [existingLinks, setExistingLinks] = useState<{ vendorId: string; vendorName: string; link: string }[]>([]);
+    const [loading, setLoading] = useState(false);
+
+    const buildLink = (token: string) => `${window.location.origin}/q/${token}`;
+
+    const load = () => {
+        setLoading(true);
+        Promise.all([
+            apiFetch("/api/fb/vendors").then((r) => r.json()),
+            apiFetch(`/api/fb/quotes/${quote.id}`).then((r) => r.json()),
+        ])
+            .then(([vendorsRes, quoteRes]) => {
+                setVendors(vendorsRes.vendors || []);
+                const links = (quoteRes.recipients || [])
+                    .filter((r: any) => !!r.token)
+                    .map((r: any) => ({
+                        vendorId: r.vendor_id,
+                        vendorName: r.full_name || r.username || r.vendor_id,
+                        link: buildLink(r.token),
+                    }));
+                setExistingLinks(links);
+            })
+            .catch(() => { })
+            .finally(() => setLoading(false));
+    };
 
     useEffect(() => {
         if (open) {
-            apiFetch("/api/fb/vendors").then((r) => r.json()).then((d) => setVendors(d.vendors || [])).catch(() => { });
             setSelected([]);
-            setResultLinks(null);
+            load();
         }
-    }, [open]);
+    }, [open, quote?.id]);
+
+    // Don't re-offer vendors that already have a link - keep the checkbox list for new recipients only.
+    const alreadySentIds = new Set(existingLinks.map((l) => l.vendorId));
+    const availableVendors = vendors.filter((v) => !alreadySentIds.has(v.id));
 
     const toggle = (id: string) => setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+    const copyLink = (link: string) => {
+        navigator.clipboard.writeText(link);
+        toast({ title: "Copied" });
+    };
 
     const send = async () => {
         if (selected.length === 0) {
@@ -434,13 +602,9 @@ function SendQuoteDialog({ quote, open, onOpenChange, onSent }: { quote: any; op
             body: JSON.stringify({ vendorIds: selected }),
         });
         if (res.ok) {
-            const { links } = await res.json();
-            const built = Object.entries(links as Record<string, string>).map(([vendorId, token]) => {
-                const v = vendors.find((x) => x.id === vendorId);
-                return { vendorId, vendorName: v?.fullName || v?.username || vendorId, link: `${window.location.origin}/q/${token}` };
-            });
-            setResultLinks(built);
             toast({ title: "Quote sent", description: `Sent to ${selected.length} vendor(s).` });
+            setSelected([]);
+            load(); // reload so the newly sent vendors show up with a Copy button too
             onSent();
         } else {
             toast({ title: "Error", description: "Failed to send quote", variant: "destructive" });
@@ -451,45 +615,51 @@ function SendQuoteDialog({ quote, open, onOpenChange, onSent }: { quote: any; op
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-[500px] max-h-[80vh] overflow-y-auto">
                 <DialogHeader><DialogTitle>Send Quote to Vendors</DialogTitle></DialogHeader>
-                {resultLinks ? (
-                    <div className="space-y-3 py-2">
-                        <p className="text-sm text-muted-foreground">Share these links — no login needed, works on mobile.</p>
-                        {resultLinks.map((l) => (
-                            <div key={l.vendorId} className="flex items-center justify-between border rounded-md p-2">
-                                <div>
-                                    <p className="text-sm font-medium">{l.vendorName}</p>
-                                    <p className="text-xs text-muted-foreground break-all">{l.link}</p>
-                                </div>
-                                <Button variant="outline" size="sm" onClick={() => { navigator.clipboard.writeText(l.link); toast({ title: "Copied" }); }}>
-                                    <Copy className="h-3.5 w-3.5 mr-1" /> Copy
-                                </Button>
-                            </div>
-                        ))}
-                        <DialogFooter><Button onClick={() => onOpenChange(false)}>Done</Button></DialogFooter>
-                    </div>
-                ) : (
-                    <>
-                        <div className="space-y-2 py-2">
-                            {vendors.length === 0 ? (
-                                <p className="text-sm text-muted-foreground">No vendors found.</p>
-                            ) : (
-                                vendors.map((v) => (
-                                    <div key={v.id} className="flex items-center gap-2 border rounded-md p-2">
-                                        <Checkbox checked={selected.includes(v.id)} onCheckedChange={() => toggle(v.id)} />
+                <div className="space-y-4 py-2">
+                    {existingLinks.length > 0 && (
+                        <div className="space-y-2">
+                            <Label className="text-sm font-semibold">Already sent — copy &amp; share anytime</Label>
+                            <div className="space-y-2">
+                                {existingLinks.map((l) => (
+                                    <div key={l.vendorId} className="flex items-center justify-between border rounded-md p-2">
                                         <div>
-                                            <p className="text-sm font-medium">{v.fullName || v.username}</p>
-                                            {v.companyName && <p className="text-xs text-muted-foreground">{v.companyName}</p>}
+                                            <p className="text-sm font-medium">{l.vendorName}</p>
+                                            <p className="text-xs text-muted-foreground break-all">{l.link}</p>
                                         </div>
+                                        <Button variant="outline" size="sm" onClick={() => copyLink(l.link)}>
+                                            <Copy className="h-3.5 w-3.5 mr-1" /> Copy
+                                        </Button>
                                     </div>
-                                ))
-                            )}
+                                ))}
+                            </div>
                         </div>
-                        <DialogFooter>
-                            <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-                            <Button onClick={send}><Send className="h-4 w-4 mr-1" /> Send</Button>
-                        </DialogFooter>
-                    </>
-                )}
+                    )}
+
+                    <div className="space-y-2">
+                        <Label className="text-sm font-semibold">{existingLinks.length > 0 ? "Send to more vendors" : "Select vendors"}</Label>
+                        {loading ? (
+                            <p className="text-sm text-muted-foreground">Loading…</p>
+                        ) : availableVendors.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">{existingLinks.length > 0 ? "Sent to every vendor already." : "No vendors found."}</p>
+                        ) : (
+                            availableVendors.map((v) => (
+                                <div key={v.id} className="flex items-center gap-2 border rounded-md p-2">
+                                    <Checkbox checked={selected.includes(v.id)} onCheckedChange={() => toggle(v.id)} />
+                                    <div>
+                                        <p className="text-sm font-medium">{v.fullName || v.username}</p>
+                                        {v.companyName && <p className="text-xs text-muted-foreground">{v.companyName}</p>}
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+                <DialogFooter>
+                    <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+                    {availableVendors.length > 0 && (
+                        <Button onClick={send}><Send className="h-4 w-4 mr-1" /> Send</Button>
+                    )}
+                </DialogFooter>
             </DialogContent>
         </Dialog>
     );
