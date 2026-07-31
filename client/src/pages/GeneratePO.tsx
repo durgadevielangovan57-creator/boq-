@@ -754,7 +754,7 @@ export default function GeneratePo() {
           const filtered = [];
           for (const p of projectList) {
             try {
-              const vRes = await apiFetch(`/api/boq-versions/${encodeURIComponent(p.id)}?type=boq`);
+              const vRes = await apiFetch(`/api/boq-versions/${encodeURIComponent(p.id)}?type=bom`);
               if (vRes.ok) {
                 const vData = await vRes.json();
                 const hasApproved = (vData.versions || []).some((v: any) => v.status === 'approved' || v.is_last_final);
@@ -774,53 +774,26 @@ export default function GeneratePo() {
   // Load versions when project changes
   useEffect(() => {
     if (!selectedProjectId) { setVersions([]); setSelectedVersionId(null); setBoqItems([]); setSourceBomVersionNumberById({}); return; }
-    // Generate PO works from the version explicitly marked Final — either a BOQ version
-    // marked Final in Finalize BOQ, or (if none) a BOM version marked Final in Generate
-    // BOM directly, with no requirement that a corresponding BOQ version also exist.
-    Promise.all([
-      apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=boq`, { headers: {} }).then(r => r.ok ? r.json() : null),
-      apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=bom`, { headers: {} }).then(r => r.ok ? r.json() : null),
-    ])
-      .then(([data, bomData]) => {
-        if (!data) return;
-        let list: BOMVersion[] = data.versions || [];
+    // Generate PO now works directly off BOM-type versions. Whichever BOM
+    // version is marked Final in Generate BOM is what shows here — full stop.
+    // No BOQ version, and no separate "mark BOQ final" step, is required.
+    apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=bom`, { headers: {} }).then(r => r.ok ? r.json() : null)
+      .then((bomData) => {
+        if (!bomData) return;
+        let list: BOMVersion[] = bomData.versions || [];
 
-        // Build a map of BOQ version id -> its source BOM version's number,
-        // so the UI can display the BOM version number (what the user actually
-        // recognizes) instead of the BOQ version's own independent counter.
-        const bomVersions: BOMVersion[] = bomData?.versions || [];
-        const bomNumberById: Record<string, number> = {};
-        bomVersions.forEach(v => { bomNumberById[v.id] = v.version_number; });
-        const sourceMap: Record<string, number> = {};
-        list.forEach(v => {
-          const sourceId = (v as any).source_version_id;
-          if (sourceId && bomNumberById[sourceId] !== undefined) {
-            sourceMap[v.id] = bomNumberById[sourceId];
-          }
-        });
-        setSourceBomVersionNumberById(sourceMap);
+        // No BOQ layer involved anymore, so the version number shown is
+        // simply the BOM version's own number (what's shown in Generate BOM).
+        setSourceBomVersionNumberById({});
 
-        // Priority for what Generate PO shows:
-        // 1. A BOQ version explicitly marked Final (via "Mark BOQ Final" in Finalize BOQ).
-        // 2. Otherwise, if a BOM version has been marked Final in Generate BOM, use that
-        //    BOM version directly — no need to check for or match any BOQ version at all.
-        //    BOM-final alone is sufficient. Items are fetched the same way regardless of
-        //    version type (boq_items is keyed by version_id only), so this just works.
-        // 3. Otherwise, fall back to a single version only (never the full list) so
-        //    Generate PO never shows more than one version at a time.
+        // Prefer the version marked Final. Fall back to the previous "all
+        // approved versions" behavior only for legacy projects that have
+        // never marked a version Final yet, so existing projects don't break.
         const finalOnly = list.filter(v => v.is_last_final);
         if (finalOnly.length > 0) {
           list = finalOnly;
-        } else {
-          const finalBom = bomVersions.find(v => v.is_last_final);
-          if (finalBom) {
-            list = [finalBom];
-          } else {
-            const candidates = isPurchaseTeam ? list.filter(v => v.status === 'approved') : list;
-            const latest = candidates.reduce((best: BOMVersion | null, v: BOMVersion) =>
-              !best || v.version_number > best.version_number ? v : best, null);
-            list = latest ? [latest] : [];
-          }
+        } else if (isPurchaseTeam) {
+          list = list.filter(v => v.status === 'approved');
         }
 
         setVersions(list);
@@ -834,9 +807,8 @@ export default function GeneratePo() {
       .catch(console.error);
   }, [selectedProjectId, isPurchaseTeam]);
 
-  // Display version number for a BOQ version: prefer its source BOM version's
-  // number (what the user recognizes from Generate BOM), falling back to the
-  // BOQ version's own number if no source link exists (e.g. legacy versions).
+  // Display version number: this is now just the BOM version's own number,
+  // since Generate PO works directly off BOM-type versions.
   const displayVersionNumber = useCallback((v: BOMVersion | null | undefined): number | string => {
     if (!v) return "";
     return sourceBomVersionNumberById[v.id] ?? v.version_number;
