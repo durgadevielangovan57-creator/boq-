@@ -1169,9 +1169,9 @@ export default function ManageProduct() {
                                                                     <p className="text-sm font-medium text-muted-foreground">No approved configurations found{searchQuery ? ` for "${cloneSearch}"` : ""}</p>
                                                                 </div>
                                                             ) : (
-                                                                visibleConfigs.map(config => (
+                                                                visibleConfigs.map((config, index) => (
                                                                     <div
-                                                                        key={config.id}
+                                                                        key={config.id + "-" + index}
                                                                         className="flex items-center justify-between p-4 bg-white rounded-xl border-2 border-slate-50 hover:border-primary/20 hover:bg-slate-50/50 transition-all cursor-pointer group"
                                                                         onClick={() => handleCloneConfig(config)}
                                                                     >
