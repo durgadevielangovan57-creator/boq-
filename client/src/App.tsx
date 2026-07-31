@@ -16,6 +16,7 @@ import Landing from "./pages/Landing";
 import VendorRegistration from "@/pages/VendorRegistration";
 import ClientRegistration from "@/pages/ClientRegistration";
 import PublicQuoteFill from "@/pages/PublicQuoteFill";
+import PublicQuoteFillOpen from "@/pages/PublicQuoteFillOpen";
 import PrintSummarySheet from "@/pages/PrintSummarySheet";
 
 import Dashboard from "@/pages/Dashboard";
@@ -94,6 +95,7 @@ function Router() {
       <Route path="/reset-password" component={ResetPassword} />
       <Route path="/register/vendor/:token" component={VendorRegistration} />
       <Route path="/register/client/:token" component={ClientRegistration} />
+      <Route path="/q/open/:token" component={PublicQuoteFillOpen} />
       <Route path="/q/:token" component={PublicQuoteFill} />
       <Route path="/admin/summary-print/:linkId" component={PrintSummarySheet} />
       <Route path="/supplier/summary-print/:linkId" component={PrintSummarySheet} />

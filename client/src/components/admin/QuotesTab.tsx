@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
 import html2pdf from "html2pdf.js";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -12,11 +13,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import {
     Plus, Trash2, Send, BarChart3, ArrowLeft, Search as SearchIcon, Upload, FileSpreadsheet,
-    Download, Link as LinkIcon, Copy, Loader2, FolderKanban, Users, Package,
+    Download, Link as LinkIcon, Copy, Loader2, FolderKanban, Users, Package, Save, Check, ChevronsUpDown, X
 } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { useToast } from "@/hooks/use-toast";
 import apiFetch from "@/lib/api";
-import { MaterialPickerDialog, PickedMaterial } from "@/components/admin/MaterialPickerDialog";
+import { MaterialPickerDialog, PickedMaterial } from "./MaterialPickerDialog";
 
 function emptyItem() {
     return { itemName: "", description: "", uom: "", quantity: 1, spec: "" };
@@ -288,7 +291,8 @@ function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }: { open:
             return { ...prev, [projectId]: next };
         });
         const key = fk(projectId, shop.key);
-        if (!materialsByShop[key]) {
+        const alreadyLoaded = materialsByShop[key]?.materials?.length > 0;
+        if (!alreadyLoaded) {
             setMaterialsByShop((prev) => ({ ...prev, [key]: { loading: true, materials: [] } }));
             apiFetch(`/api/fb/projects/${projectId}/bom-materials?shop=${encodeURIComponent(shop.key)}`)
                 .then((r) => r.json())
@@ -339,46 +343,34 @@ function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }: { open:
 
     const totalPicked = selectedProjects.reduce((sum, pid) => sum + (selectedShops[pid] || []).reduce((s2, sk) => s2 + (pickedByShop[fk(pid, sk)]?.size || 0), 0), 0);
 
-    const createAndSend = async () => {
+    const createQuote = async () => {
+        if (!title.trim() || selectedProjects.length === 0) {
+            return toast({ title: "Validation Error", description: "Title and at least 1 project are required.", variant: "destructive" });
+        }
         const items = buildItems();
-        if (!title.trim() || selectedProjects.length === 0 || selectedVendors.length === 0 || items.length === 0) {
-            toast({ title: "Missing info", description: "Title, at least one project, one vendor, and one material are required.", variant: "destructive" });
-            return;
+        if (items.length === 0) {
+            return toast({ title: "Validation Error", description: "Select at least 1 material.", variant: "destructive" });
         }
         setSaving(true);
         try {
-            const projectNames = projects.filter((p) => selectedProjects.includes(p.id)).map((p) => p.name);
             const createRes = await apiFetch("/api/fb/quotes", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     title,
-                    description: `Project comparison quote for: ${projectNames.join(", ")}`,
+                    description: `Project comparison quote`,
                     quoteKind: "project_comparison",
                     projectIds: selectedProjects,
                     items,
                 }),
             });
             if (!createRes.ok) throw new Error();
-            const { quote } = await createRes.json();
 
-            const sendRes = await apiFetch(`/api/fb/quotes/${quote.id}/send`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ vendorIds: selectedVendors }),
-            });
-            if (!sendRes.ok) throw new Error();
-            const { links } = await sendRes.json();
-
-            const built = Object.entries(links as Record<string, string>).map(([vendorId, token]) => {
-                const v = vendors.find((x) => x.id === vendorId);
-                return { vendorId, vendorName: v?.fullName || v?.username || vendorId, link: `${window.location.origin}/q/${token}` };
-            });
-            setResultLinks(built);
-            toast({ title: "Quote created & sent", description: `Sent to ${selectedVendors.length} vendor(s).` });
+            toast({ title: "Quote created", description: `Project comparison quote created successfully.` });
             onCreated();
+            onOpenChange(false);
         } catch {
-            toast({ title: "Error", description: "Failed to create/send this quote", variant: "destructive" });
+            toast({ title: "Error", description: "Failed to create this quote", variant: "destructive" });
         } finally {
             setSaving(false);
         }
@@ -386,32 +378,12 @@ function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }: { open:
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="sm:max-w-[1100px] max-h-[85vh] overflow-y-auto">
+            <DialogContent className="w-screen h-screen max-w-none max-h-none flex flex-col overflow-hidden m-0 rounded-none">
                 <DialogHeader>
                     <DialogTitle>Project Comparison Quote</DialogTitle>
                 </DialogHeader>
 
-                {resultLinks ? (
-                    <div className="space-y-3 py-2">
-                        <p className="text-sm text-muted-foreground">Share these links with each vendor — no login needed, works on mobile, just fill &amp; submit.</p>
-                        {resultLinks.map((l) => (
-                            <div key={l.vendorId} className="flex items-center justify-between border rounded-md p-2">
-                                <div>
-                                    <p className="text-sm font-medium">{l.vendorName}</p>
-                                    <p className="text-xs text-muted-foreground break-all">{l.link}</p>
-                                </div>
-                                <Button variant="outline" size="sm" onClick={() => { navigator.clipboard.writeText(l.link); toast({ title: "Copied" }); }}>
-                                    <Copy className="h-3.5 w-3.5 mr-1" /> Copy
-                                </Button>
-                            </div>
-                        ))}
-                        <DialogFooter>
-                            <Button onClick={() => onOpenChange(false)}>Done</Button>
-                        </DialogFooter>
-                    </div>
-                ) : (
-                    <>
-                        <div className="space-y-4 py-2">
+                <div className="space-y-4 py-2 flex-1 overflow-y-auto pr-2">
                             <div className="space-y-1.5">
                                 <Label>Quote Title</Label>
                                 <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Q3 Steel Comparison" />
@@ -419,125 +391,184 @@ function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }: { open:
 
                             <div className="space-y-2">
                                 <Label className="text-sm font-semibold flex items-center gap-1.5"><FolderKanban className="h-4 w-4" /> Select Projects (up to 4)</Label>
-                                <div className="grid grid-cols-2 gap-2 max-h-[160px] overflow-y-auto border rounded-md p-2">
-                                    {projects.map((p) => (
-                                        <label key={p.id} className="flex items-center gap-2 text-sm border rounded-md p-2 cursor-pointer">
-                                            <Checkbox checked={selectedProjects.includes(p.id)} onCheckedChange={() => toggleProject(p.id)} />
-                                            <span className="flex-1">{p.name} {p.client ? <span className="text-muted-foreground">({p.client})</span> : ""}</span>
-                                            {p.has_final_bom && <Badge variant="secondary" className="text-[10px]">Final BOM</Badge>}
-                                        </label>
-                                    ))}
-                                    {projects.length === 0 && <p className="text-xs text-muted-foreground col-span-2 text-center py-4">No projects found.</p>}
-                                </div>
+                                <Popover>
+                                    <PopoverTrigger asChild>
+                                        <Button variant="outline" className="w-full justify-between font-normal">
+                                            {selectedProjects.length > 0 ? `${selectedProjects.length} project(s) selected` : "Select projects..."}
+                                            <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+                                        </Button>
+                                    </PopoverTrigger>
+                                    <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
+                                        <Command>
+                                            <CommandInput placeholder="Search projects..." />
+                                            <CommandList>
+                                                <CommandEmpty>No project found.</CommandEmpty>
+                                                <CommandGroup>
+                                                    {projects.map((p) => (
+                                                        <CommandItem
+                                                            key={p.id}
+                                                            onSelect={() => toggleProject(p.id)}
+                                                        >
+                                                            <Check className={`mr-2 h-4 w-4 ${selectedProjects.includes(p.id) ? "opacity-100" : "opacity-0"}`} />
+                                                            <span className="flex-1 truncate">{p.name} {p.client ? <span className="text-muted-foreground">({p.client})</span> : ""}</span>
+                                                            {p.has_final_bom && <Badge variant="secondary" className="text-[10px] ml-2">Final BOM</Badge>}
+                                                        </CommandItem>
+                                                    ))}
+                                                </CommandGroup>
+                                            </CommandList>
+                                        </Command>
+                                    </PopoverContent>
+                                </Popover>
+                                {selectedProjects.length > 0 && (
+                                    <div className="flex flex-wrap gap-2 pt-2">
+                                        {selectedProjects.map(id => {
+                                            const p = projects.find(x => x.id === id);
+                                            return p ? (
+                                                <Badge key={id} variant="secondary" className="text-sm py-1 px-2 flex items-center gap-1 bg-secondary/40">
+                                                    {p.name}
+                                                    <X className="h-3 w-3 cursor-pointer hover:text-destructive" onClick={() => toggleProject(id)} />
+                                                </Badge>
+                                            ) : null;
+                                        })}
+                                    </div>
+                                )}
                             </div>
 
                             {selectedProjects.length > 0 && (
-                                <div className="space-y-2">
-                                    <Label className="text-sm font-semibold flex items-center gap-1.5"><Package className="h-4 w-4" /> Pick shops &amp; materials from each project's finalized BOM</Label>
-                                    <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${selectedProjects.length}, minmax(220px, 1fr))` }}>
-                                        {selectedProjects.map((projectId) => {
-                                            const project = projects.find((p) => p.id === projectId);
-                                            const bom = bomByProject[projectId];
-                                            return (
-                                                <div key={projectId} className="border rounded-md p-2 space-y-2 min-w-[220px]">
-                                                    <p className="text-xs font-semibold truncate" title={project?.name}>{project?.name || "Project"}</p>
-                                                    {!bom || bom.loading ? (
-                                                        <p className="text-xs text-muted-foreground flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> Loading BOM…</p>
-                                                    ) : !bom.hasFinalBom ? (
-                                                        <p className="text-xs text-muted-foreground">No finalized BOM version for this project yet.</p>
-                                                    ) : bom.shops.length === 0 ? (
-                                                        <p className="text-xs text-muted-foreground">No shops found in the finalized BOM.</p>
-                                                    ) : (
-                                                        bom.shops.map((shop) => {
-                                                            const key = fk(projectId, shop.key);
-                                                            const isChecked = (selectedShops[projectId] || []).includes(shop.key);
-                                                            const matState = materialsByShop[key];
-                                                            const search = (searchByShop[key] || "").toLowerCase();
-                                                            const filteredMats = (matState?.materials || []).filter((m) => !search || m.name.toLowerCase().includes(search));
-                                                            const picked = pickedByShop[key] || new Set<string>();
-                                                            return (
-                                                                <div key={shop.key} className="border rounded-md p-1.5 space-y-1.5">
-                                                                    <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-                                                                        <Checkbox checked={isChecked} onCheckedChange={() => toggleShop(projectId, shop)} />
-                                                                        <span className="flex-1 truncate" title={shop.shopName}>
-                                                                            {shop.vendorName ? `${shop.vendorName} ` : ""}({shop.shopName})
-                                                                        </span>
-                                                                        <Badge variant="outline" className="text-[9px] shrink-0">{shop.itemCount}</Badge>
-                                                                    </label>
-                                                                    {isChecked && (
-                                                                        <div className="pl-4 space-y-1.5">
-                                                                            <div className="relative">
-                                                                                <SearchIcon className="h-3 w-3 absolute left-1.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                                                                                <Input
-                                                                                    className="h-7 pl-6 text-xs"
-                                                                                    placeholder="Search materials…"
-                                                                                    value={searchByShop[key] || ""}
-                                                                                    onChange={(e) => setSearchByShop((prev) => ({ ...prev, [key]: e.target.value }))}
-                                                                                />
-                                                                            </div>
-                                                                            <div className="max-h-[160px] overflow-y-auto space-y-1">
-                                                                                {matState?.loading ? (
-                                                                                    <p className="text-[11px] text-muted-foreground">Loading materials…</p>
-                                                                                ) : filteredMats.length === 0 ? (
-                                                                                    <p className="text-[11px] text-muted-foreground">No materials found.</p>
-                                                                                ) : (
-                                                                                    filteredMats.map((m) => {
-                                                                                        const mKey = m.materialId || m.name;
-                                                                                        const qtyKey = `${key}::${mKey}`;
-                                                                                        const isPicked = picked.has(mKey);
-                                                                                        return (
-                                                                                            <div key={mKey} className="flex items-center gap-1.5 text-[11px]">
-                                                                                                <Checkbox checked={isPicked} onCheckedChange={() => toggleMaterial(projectId, shop.key, mKey)} />
-                                                                                                <span className="flex-1 truncate" title={m.name}>{m.name} <span className="text-muted-foreground">({m.unit || "—"})</span></span>
-                                                                                                {isPicked && (
-                                                                                                    <Input
-                                                                                                        type="number"
-                                                                                                        className="h-6 w-14 text-[11px] px-1"
-                                                                                                        value={qtyOverrides[qtyKey] ?? m.quantity}
-                                                                                                        onChange={(e) => setQtyOverrides((prev) => ({ ...prev, [qtyKey]: Number(e.target.value) }))}
-                                                                                                    />
-                                                                                                )}
-                                                                                            </div>
-                                                                                        );
-                                                                                    })
-                                                                                )}
-                                                                            </div>
-                                                                        </div>
-                                                                    )}
-                                                                </div>
-                                                            );
-                                                        })
-                                                    )}
-                                                </div>
-                                            );
-                                        })}
+                                <div className="space-y-4 flex-1 flex flex-col min-h-0">
+                                    {/* Top Section: Available Shops */}
+                                    <div className="space-y-2 shrink-0">
+                                        <Label className="text-sm font-semibold flex items-center gap-1.5"><FolderKanban className="h-4 w-4" /> Available Shops from Selected Projects</Label>
+                                        <div className="flex flex-wrap gap-4 border rounded-md p-3 bg-secondary/5 max-h-[160px] overflow-y-auto">
+                                            {selectedProjects.map((projectId) => {
+                                                const project = projects.find((p) => p.id === projectId);
+                                                const bom = bomByProject[projectId];
+                                                if (!bom) return null;
+                                                return (
+                                                    <div key={projectId} className="space-y-1.5 min-w-[200px] flex-1 max-w-[300px]">
+                                                        <p className="text-xs font-semibold text-muted-foreground truncate" title={project?.name}>{project?.name}</p>
+                                                        {bom.loading ? (
+                                                            <p className="text-xs">Loading...</p>
+                                                        ) : !bom.hasFinalBom ? (
+                                                            <p className="text-[11px] text-muted-foreground">No finalized BOM.</p>
+                                                        ) : bom.shops.length === 0 ? (
+                                                            <p className="text-[11px] text-muted-foreground">No shops.</p>
+                                                        ) : (
+                                                            <div className="flex flex-col gap-1 max-h-[100px] overflow-y-auto pr-1">
+                                                                {bom.shops.map(shop => {
+                                                                    const isChecked = (selectedShops[projectId] || []).includes(shop.key);
+                                                                    return (
+                                                                        <label key={shop.key} className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-secondary/20 p-1 rounded">
+                                                                            <Checkbox checked={isChecked} onCheckedChange={() => toggleShop(projectId, shop)} />
+                                                                            <span className="truncate flex-1" title={shop.shopName}>{shop.vendorName ? `${shop.vendorName} ` : ""}({shop.shopName})</span>
+                                                                            <Badge variant="outline" className="text-[9px] shrink-0 bg-background">{shop.itemCount}</Badge>
+                                                                        </label>
+                                                                    )
+                                                                })}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
-                                    <p className="text-xs text-muted-foreground">{totalPicked} material line(s) selected across {selectedProjects.length} project(s).</p>
+
+                                    {/* Bottom Section: Selected Shops Grid */}
+                                    <div className="space-y-2 flex-1 flex flex-col min-h-0">
+                                        <div className="flex items-center justify-between shrink-0">
+                                            <Label className="text-sm font-semibold flex items-center gap-1.5"><Package className="h-4 w-4" /> Selected Shops &amp; Materials to Compare</Label>
+                                            <p className="text-xs text-muted-foreground">{totalPicked} material line(s) selected.</p>
+                                        </div>
+                                        <div className="grid gap-3 flex-1 overflow-y-auto items-start grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 pb-4 px-1">
+                                            {selectedProjects.flatMap(projectId => {
+                                                const project = projects.find(p => p.id === projectId);
+                                                const bom = bomByProject[projectId];
+                                                if (!bom || !bom.shops) return [];
+                                                
+                                                return bom.shops.filter(shop => (selectedShops[projectId] || []).includes(shop.key)).map(shop => {
+                                                    const key = fk(projectId, shop.key);
+                                                    const matState = materialsByShop[key];
+                                                    const search = (searchByShop[key] || "").toLowerCase();
+                                                    const filteredMats = (matState?.materials || []).filter((m) => !search || m.name.toLowerCase().includes(search));
+                                                    const picked = pickedByShop[key] || new Set<string>();
+                                                    
+                                                    return (
+                                                        <div key={key} className="border rounded-md p-2 space-y-2 flex flex-col bg-card shadow-sm h-[400px]">
+                                                            <div className="flex flex-col space-y-1 border-b pb-2 shrink-0">
+                                                                <p className="text-[10px] font-semibold text-muted-foreground truncate uppercase tracking-wider" title={project?.name}>{project?.name}</p>
+                                                                <div className="flex items-center justify-between">
+                                                                    <span className="text-sm font-bold truncate flex-1 pr-2" title={shop.shopName}>
+                                                                        {shop.vendorName ? `${shop.vendorName} ` : ""}({shop.shopName})
+                                                                    </span>
+                                                                    <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive shrink-0" onClick={() => toggleShop(projectId, shop)}>
+                                                                        <Trash2 className="h-3.5 w-3.5" />
+                                                                    </Button>
+                                                                </div>
+                                                            </div>
+                                                            <div className="relative shrink-0">
+                                                                <SearchIcon className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                                                                <Input
+                                                                    className="h-8 pl-7 text-xs bg-secondary/10"
+                                                                    placeholder="Search materials…"
+                                                                    value={searchByShop[key] || ""}
+                                                                    onChange={(e) => setSearchByShop((prev) => ({ ...prev, [key]: e.target.value }))}
+                                                                />
+                                                            </div>
+                                                            <div className="flex-1 overflow-y-auto space-y-1 pr-1">
+                                                                {matState?.loading ? (
+                                                                    <div className="flex items-center justify-center h-20">
+                                                                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                                                                    </div>
+                                                                ) : filteredMats.length === 0 ? (
+                                                                    <p className="text-xs text-muted-foreground text-center py-4">No materials found.</p>
+                                                                ) : (
+                                                                    filteredMats.map((m) => {
+                                                                        const mKey = m.materialId || m.name;
+                                                                        const qtyKey = `${key}::${mKey}`;
+                                                                        const isPicked = picked.has(mKey);
+                                                                        return (
+                                                                            <label key={mKey} className={`flex items-start gap-2 text-xs p-1.5 rounded-md cursor-pointer border transition-colors ${isPicked ? 'bg-primary/5 border-primary/30' : 'hover:bg-secondary/20 border-transparent'}`}>
+                                                                                <Checkbox className="mt-0.5" checked={isPicked} onCheckedChange={() => toggleMaterial(projectId, shop.key, mKey)} />
+                                                                                <div className="flex-1 min-w-0">
+                                                                                    <p className="truncate font-medium text-[11px]" title={m.name}>{m.name}</p>
+                                                                                    <p className="text-[10px] text-muted-foreground truncate" title={m.spec}>{m.spec || "No spec"} • {m.unit || "—"}</p>
+                                                                                </div>
+                                                                                {isPicked && (
+                                                                                    <Input
+                                                                                        type="number"
+                                                                                        className="h-6 w-16 text-[11px] px-1 bg-background shrink-0 text-center"
+                                                                                        value={qtyOverrides[qtyKey] ?? m.quantity}
+                                                                                        onChange={(e) => setQtyOverrides((prev) => ({ ...prev, [qtyKey]: Number(e.target.value) }))}
+                                                                                        onClick={(e) => e.stopPropagation()}
+                                                                                    />
+                                                                                )}
+                                                                            </label>
+                                                                        );
+                                                                    })
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                });
+                                            })}
+                                            {totalPicked === 0 && selectedProjects.length > 0 && Object.keys(selectedShops).length === 0 && (
+                                                <div className="col-span-full text-center py-10 border-2 border-dashed rounded-lg text-muted-foreground">
+                                                    <Package className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                                                    <p className="text-sm">Select shops from the available list above to view their materials.</p>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
                                 </div>
                             )}
-
-                            <div className="space-y-2">
-                                <Label className="text-sm font-semibold flex items-center gap-1.5"><Users className="h-4 w-4" /> Send To (auto-filled from the shops you picked above — edit as needed)</Label>
-                                <div className="grid grid-cols-2 gap-2 max-h-[160px] overflow-y-auto border rounded-md p-2">
-                                    {vendors.map((v) => (
-                                        <label key={v.id} className="flex items-center gap-2 text-sm border rounded-md p-2 cursor-pointer">
-                                            <Checkbox checked={selectedVendors.includes(v.id)} onCheckedChange={() => toggleVendor(v.id)} />
-                                            <span>{v.fullName || v.username} {v.companyName ? <span className="text-muted-foreground">({v.companyName})</span> : ""}</span>
-                                        </label>
-                                    ))}
-                                    {vendors.length === 0 && <p className="text-xs text-muted-foreground col-span-2 text-center py-4">No vendors found.</p>}
-                                </div>
-                            </div>
                         </div>
-                        <DialogFooter>
+                        <DialogFooter className="mt-4 shrink-0">
                             <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-                            <Button onClick={createAndSend} disabled={saving}>
-                                {saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Send className="h-4 w-4 mr-1" />}
-                                Create &amp; Send
+                            <Button onClick={createQuote} disabled={saving}>
+                                {saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Save className="h-4 w-4 mr-1" />}
+                                Create Quote
                             </Button>
                         </DialogFooter>
-                    </>
-                )}
             </DialogContent>
         </Dialog>
     );
@@ -671,6 +702,7 @@ function QuoteComparisonView({ quoteId, onBack }: { quoteId: string; onBack: () 
     const [quote, setQuote] = useState<any>(null);
     const [recipients, setRecipients] = useState<any[]>([]);
     const [downloading, setDownloading] = useState(false);
+    const pdfRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         apiFetch(`/api/fb/quotes/${quoteId}`).then((r) => r.json()).then((d) => { setQuote(d.quote); setRecipients(d.recipients || []); });
@@ -683,12 +715,26 @@ function QuoteComparisonView({ quoteId, onBack }: { quoteId: string; onBack: () 
         return r?.full_name || r?.username || vid;
     };
 
+    // Lowest rate per item, so the PDF/screen can flag the best price for each row.
+    const lowestVendorForItem = (itemId: string): string | null => {
+        let best: { vid: string; rate: number } | null = null;
+        for (const vid of vendorIds) {
+            const r = responses.find((x) => x.item_id === itemId && x.vendor_id === vid);
+            if (r?.rate == null) continue;
+            const rate = Number(r.rate);
+            if (!best || rate < best.rate) best = { vid, rate };
+        }
+        return best?.vid ?? null;
+    };
+
     const downloadExcel = () => {
         const rows = items.map((it) => {
             const row: Record<string, any> = { Item: it.item_name, Qty: it.quantity, UOM: it.uom };
             vendorIds.forEach((vid) => {
                 const r = responses.find((x) => x.item_id === it.id && x.vendor_id === vid);
-                row[vendorLabel(vid)] = r?.rate ?? "";
+                const vName = vendorLabel(vid);
+                row[`${vName} - Rate`] = r?.rate ?? "";
+                row[`${vName} - Amount`] = r?.amount ?? "";
             });
             return row;
         });
@@ -699,22 +745,88 @@ function QuoteComparisonView({ quoteId, onBack }: { quoteId: string; onBack: () 
     };
 
     const downloadPdf = () => {
-        const el = document.getElementById("quote-comparison-content");
+        const el = pdfRef.current;
         if (!el) return;
         setDownloading(true);
+        const orientation: "landscape" | "portrait" = vendorIds.length > 2 ? "landscape" : "portrait";
+        const pdfOptions: any = {
+            margin: [10, 8, 10, 8],
+            filename: `${quote?.title || "Quote"}-Comparison.pdf`,
+            image: { type: "jpeg", quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true, backgroundColor: "#ffffff" },
+            jsPDF: { unit: "mm", format: "a4", orientation },
+            pagebreak: { mode: ["avoid-all", "css", "legacy"] },
+        };
         html2pdf()
-            .set({
-                margin: 10,
-                filename: `${quote?.title || "Quote"}-Comparison.pdf`,
-                image: { type: "jpeg", quality: 0.98 },
-                html2canvas: { scale: 2, useCORS: true },
-                jsPDF: { unit: "mm", format: "a4", orientation: "landscape" as const },
-            })
+            .set(pdfOptions)
             .from(el)
             .save()
             .then(() => setDownloading(false))
             .catch(() => setDownloading(false));
     };
+
+    // Plain inline-styled table used ONLY for PDF export. html2canvas can't reliably render
+    // Tailwind's shadcn table classes (modern oklch colors, border utilities), which is what
+    // was causing the missing borders / misaligned columns in the exported PDF. Keeping this
+    // fully inline-styled with explicit borders guarantees a clean, print-correct output.
+    const pdfTable = (
+        <div style={{ position: "absolute", left: "-9999px", top: "-9999px" }}>
+            <div ref={pdfRef} style={{ width: vendorIds.length > 4 ? "1500px" : "1100px", background: "#ffffff", padding: "24px", fontFamily: "Arial, Helvetica, sans-serif", color: "#111827" }}>
+                <div style={{ textAlign: "center", marginBottom: "18px", borderBottom: "2px solid #1e293b", paddingBottom: "12px" }}>
+                <div style={{ fontSize: "20px", fontWeight: 700, marginBottom: "4px" }}>{quote?.title || "Quote"}</div>
+                <div style={{ fontSize: "11px", color: "#555555" }}>
+                    Quote # {quote?.quote_number || "—"} &nbsp;•&nbsp; Rate Comparison Sheet &nbsp;•&nbsp; Generated {new Date().toLocaleDateString()}
+                </div>
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", tableLayout: "fixed" }}>
+                <thead>
+                    <tr>
+                        <th rowSpan={2} style={{ ...pdfThStyle, textAlign: "left", width: "26%" }}>Item</th>
+                        <th rowSpan={2} style={{ ...pdfThStyle, textAlign: "center", width: "10%" }}>Qty</th>
+                        {vendorIds.map((vid) => (
+                            <th key={vid} colSpan={2} style={{ ...pdfThStyle, textAlign: "center" }}>{vendorLabel(vid)}</th>
+                        ))}
+                    </tr>
+                    <tr>
+                        {vendorIds.map((vid) => [
+                            <th key={`${vid}-rate`} style={{ ...pdfThStyle, textAlign: "center", fontSize: "10px", background: "#334155" }}>Rate</th>,
+                            <th key={`${vid}-amt`} style={{ ...pdfThStyle, textAlign: "center", fontSize: "10px", background: "#334155" }}>Amount</th>
+                        ])}
+                    </tr>
+                </thead>
+                <tbody>
+                    {items.map((it, idx) => {
+                        const best = lowestVendorForItem(it.id);
+                        return (
+                            <tr key={it.id} style={{ background: idx % 2 === 0 ? "#ffffff" : "#f8fafc" }}>
+                                <td style={{ ...pdfTdStyle, textAlign: "left", fontWeight: 600 }}>{it.item_name}</td>
+                                <td style={{ ...pdfTdStyle, textAlign: "center" }}>{it.quantity} {it.uom}</td>
+                                {vendorIds.map((vid) => {
+                                    const r = responses.find((x) => x.item_id === it.id && x.vendor_id === vid);
+                                    const isBest = best === vid && r?.rate != null;
+                                    const baseStyle = {
+                                        ...pdfTdStyle,
+                                        textAlign: "center" as const,
+                                        fontWeight: isBest ? 700 : 400,
+                                        background: isBest ? "#bbf7d0" : "transparent",
+                                        color: isBest ? "#14532d" : "inherit",
+                                    };
+                                    return [
+                                        <td key={`${vid}-rate`} style={baseStyle}>{r?.rate != null ? `₹${r.rate}` : "—"}</td>,
+                                        <td key={`${vid}-amt`} style={baseStyle}>{r?.amount != null ? `₹${r.amount}` : "—"}</td>
+                                    ];
+                                })}
+                            </tr>
+                        );
+                    })}
+                </tbody>
+            </table>
+            <div style={{ marginTop: "14px", fontSize: "10px", color: "#6b7280" }}>
+                Highlighted cell = lowest rate for that item. Values shown as Rate (Total Amount).
+            </div>
+        </div>
+        </div>
+    );
 
     return (
         <Card className="tg-card">
@@ -754,38 +866,73 @@ function QuoteComparisonView({ quoteId, onBack }: { quoteId: string; onBack: () 
                     {vendorIds.length === 0 ? (
                         <p className="text-sm text-muted-foreground py-8 text-center">No vendor has responded yet.</p>
                     ) : (
-                        <div className="overflow-x-auto">
+                        <div className="overflow-x-auto border rounded-md">
                             <Table>
                                 <TableHeader>
-                                    <TableRow>
-                                        <TableHead>Item</TableHead>
-                                        <TableHead>Qty</TableHead>
-                                        {vendorIds.map((vid) => (<TableHead key={vid}>{vendorLabel(vid)}</TableHead>))}
+                                    <TableRow className="bg-slate-100 hover:bg-slate-100">
+                                        <TableHead rowSpan={2} className="border-r font-semibold text-slate-900 border-b">Item</TableHead>
+                                        <TableHead rowSpan={2} className="border-r font-semibold text-slate-900 text-center border-b">Qty</TableHead>
+                                        {vendorIds.map((vid, i) => (
+                                            <TableHead key={vid} colSpan={2} className={`font-semibold text-slate-900 text-center border-b ${i < vendorIds.length - 1 ? "border-r" : ""}`}>{vendorLabel(vid)}</TableHead>
+                                        ))}
+                                    </TableRow>
+                                    <TableRow className="bg-slate-50 hover:bg-slate-50">
+                                        {vendorIds.map((vid, i) => [
+                                            <TableHead key={`${vid}-rate`} className="font-semibold text-slate-600 text-center text-xs border-r border-b">Rate</TableHead>,
+                                            <TableHead key={`${vid}-amt`} className={`font-semibold text-slate-600 text-center text-xs border-b ${i < vendorIds.length - 1 ? "border-r" : ""}`}>Amount</TableHead>
+                                        ])}
                                     </TableRow>
                                 </TableHeader>
                                 <TableBody>
-                                    {items.map((it) => (
-                                        <TableRow key={it.id}>
-                                            <TableCell className="font-medium">{it.item_name}</TableCell>
-                                            <TableCell>{it.quantity} {it.uom}</TableCell>
-                                            {vendorIds.map((vid) => {
-                                                const r = responses.find((x) => x.item_id === it.id && x.vendor_id === vid);
-                                                return <TableCell key={vid}>{r?.rate != null ? `₹${r.rate} (₹${r.amount})` : "—"}</TableCell>;
-                                            })}
-                                        </TableRow>
-                                    ))}
+                                    {items.map((it) => {
+                                        const best = lowestVendorForItem(it.id);
+                                        return (
+                                            <TableRow key={it.id}>
+                                                <TableCell className="font-medium border-r">{it.item_name}</TableCell>
+                                                <TableCell className="border-r text-center">{it.quantity} {it.uom}</TableCell>
+                                                {vendorIds.map((vid, i) => {
+                                                    const r = responses.find((x) => x.item_id === it.id && x.vendor_id === vid);
+                                                    const isBest = best === vid && r?.rate != null;
+                                                    const isLast = i === vendorIds.length - 1;
+                                                    return [
+                                                        <TableCell key={`${vid}-rate`} className={`text-center border-r ${isBest ? "bg-green-200 text-green-900 font-bold" : ""}`}>
+                                                            {r?.rate != null ? `₹${r.rate}` : "—"}
+                                                        </TableCell>,
+                                                        <TableCell key={`${vid}-amt`} className={`text-center ${isLast ? "" : "border-r"} ${isBest ? "bg-green-200 text-green-900 font-bold" : ""}`}>
+                                                            {r?.amount != null ? `₹${r.amount}` : "—"}
+                                                        </TableCell>
+                                                    ];
+                                                })}
+                                            </TableRow>
+                                        );
+                                    })}
                                 </TableBody>
                             </Table>
                         </div>
                     )}
                 </div>
+                {vendorIds.length > 0 && createPortal(pdfTable, document.body)}
             </CardContent>
         </Card>
     );
 }
 
+const pdfThStyle: CSSProperties = {
+    border: "1px solid #334155",
+    padding: "8px 10px",
+    background: "#1e293b",
+    color: "#ffffff",
+    fontWeight: 700,
+};
+
+const pdfTdStyle: CSSProperties = {
+    border: "1px solid #cbd5e1",
+    padding: "7px 10px",
+};
+
 // Drop this in as a tab anywhere (e.g. inside Form Builder) - no page/Layout wrapper of its own.
 export function QuotesTab() {
+    const { toast } = useToast();
     const [quotes, setQuotes] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [createOpen, setCreateOpen] = useState(false);
@@ -804,6 +951,20 @@ export function QuotesTab() {
         if (!confirm("Delete this quote?")) return;
         await apiFetch(`/api/fb/quotes/${id}`, { method: "DELETE" });
         load();
+    };
+
+    const copyLink = async (id: string) => {
+        try {
+            const res = await apiFetch(`/api/fb/quotes/${id}/open-link`, { method: "POST" });
+            if (!res.ok) throw new Error();
+            const { token } = await res.json();
+            const link = `${window.location.origin}/q/open/${token}`;
+            await navigator.clipboard.writeText(link);
+            toast({ title: "Link copied", description: "Share it with any vendor — they'll enter their shop name and submit rates." });
+            load();
+        } catch {
+            toast({ title: "Error", description: "Failed to create/copy link", variant: "destructive" });
+        }
     };
 
     if (comparisonId) {
@@ -855,6 +1016,7 @@ export function QuotesTab() {
                                         <TableCell>{q.recipient_count || 0} / {q.submitted_count || 0}</TableCell>
                                         <TableCell className="text-right space-x-1">
                                             <Button variant="outline" size="sm" onClick={() => setSendTarget(q)}><Send className="h-3.5 w-3.5 mr-1" /> Send</Button>
+                                            <Button variant="outline" size="sm" onClick={() => copyLink(q.id)}><LinkIcon className="h-3.5 w-3.5 mr-1" /> Copy Link</Button>
                                             <Button variant="outline" size="sm" onClick={() => setComparisonId(q.id)}><BarChart3 className="h-3.5 w-3.5 mr-1" /> Compare</Button>
                                             <Button variant="ghost" size="icon" onClick={() => remove(q.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
                                         </TableCell>

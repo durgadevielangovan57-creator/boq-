@@ -116,6 +116,9 @@ async function ensureFormBuilderTables(): Promise<void> {
     await pool.query(`ALTER TABLE et_fb_quote_recipients ADD COLUMN IF NOT EXISTS token VARCHAR(64) UNIQUE`);
     await pool.query(`ALTER TABLE et_fb_quotes ADD COLUMN IF NOT EXISTS quote_kind VARCHAR(30) NOT NULL DEFAULT 'standard'`);
     await pool.query(`ALTER TABLE et_fb_quotes ADD COLUMN IF NOT EXISTS project_ids JSONB NOT NULL DEFAULT '[]'`);
+    // Generic "Copy Link" (not tied to a specific vendor) - anyone with the link can fill in their shop name & submit.
+    await pool.query(`ALTER TABLE et_fb_quotes ADD COLUMN IF NOT EXISTS open_token VARCHAR(64) UNIQUE`);
+    await pool.query(`ALTER TABLE et_fb_quote_recipients ADD COLUMN IF NOT EXISTS shop_name VARCHAR(255)`);
 
     // 7. Vendor's rate responses per item
     await pool.query(`
@@ -480,7 +483,7 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
             if (!quoteRes.rows[0]) return res.status(404).json({ message: "Not found" });
             const itemsRes = await query(`SELECT * FROM et_fb_quote_items WHERE quote_id = $1 ORDER BY sort_order ASC`, [req.params.id]);
             const recipientsRes = await query(
-                `SELECT r.*, u.username, u.full_name, u.company_name
+                `SELECT r.*, COALESCE(r.shop_name, u.full_name, u.username) AS full_name, u.username, u.company_name
          FROM et_fb_quote_recipients r LEFT JOIN users u ON u.id::text = r.vendor_id
          WHERE r.quote_id = $1`,
                 [req.params.id]
@@ -551,6 +554,25 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
         } catch (err: any) {
             console.error("[fb quotes:send]", err);
             res.status(500).json({ message: "Failed to send quote" });
+        }
+    });
+
+    // Admin: get (or create) the generic no-login "Copy Link" for a quote - not tied to any
+    // specific vendor. Whoever opens it fills in their own shop name and submits their rates.
+    app.post("/api/fb/quotes/:id/open-link", authMiddleware, requireRole(...ADMIN_ROLES), async (req: Request, res: Response) => {
+        try {
+            const existing = await query(`SELECT open_token FROM et_fb_quotes WHERE id = $1`, [req.params.id]);
+            if (!existing.rows[0]) return res.status(404).json({ message: "Not found" });
+            let token = existing.rows[0].open_token;
+            if (!token) {
+                token = crypto.randomBytes(20).toString("hex");
+                await query(`UPDATE et_fb_quotes SET open_token = $1 WHERE id = $2`, [token, req.params.id]);
+            }
+            await query(`UPDATE et_fb_quotes SET status = 'Sent', updated_at = now() WHERE id = $1 AND status = 'Draft'`, [req.params.id]);
+            res.json({ token });
+        } catch (err: any) {
+            console.error("[fb quotes:open-link]", err);
+            res.status(500).json({ message: "Failed to create link" });
         }
     });
 
@@ -642,8 +664,10 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
         try {
             const itemsRes = await query(`SELECT * FROM et_fb_quote_items WHERE quote_id = $1 ORDER BY sort_order ASC`, [req.params.id]);
             const responsesRes = await query(
-                `SELECT resp.*, u.full_name, u.company_name, u.username
-         FROM et_fb_quote_responses resp LEFT JOIN users u ON u.id::text = resp.vendor_id
+                `SELECT resp.*, COALESCE(rec.shop_name, u.full_name, u.username) AS full_name, u.company_name, u.username
+         FROM et_fb_quote_responses resp
+         LEFT JOIN users u ON u.id::text = resp.vendor_id
+         LEFT JOIN et_fb_quote_recipients rec ON rec.quote_id = resp.quote_id AND rec.vendor_id = resp.vendor_id
          WHERE resp.quote_id = $1`,
                 [req.params.id]
             );
@@ -728,6 +752,64 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
         }
     });
 
+    // Anyone opens {app}/q/open/:token - generic link, not tied to a vendor. They type in
+    // their own shop name and submit; each submission becomes its own recipient row.
+    app.get("/api/fb/public/quotes/open/:token", async (req: Request, res: Response) => {
+        try {
+            const quoteRes = await query(`SELECT * FROM et_fb_quotes WHERE open_token = $1`, [req.params.token]);
+            const quote = quoteRes.rows[0];
+            if (!quote) return res.status(404).json({ message: "This link is invalid or has expired." });
+
+            const itemsRes = await query(`SELECT * FROM et_fb_quote_items WHERE quote_id = $1 ORDER BY sort_order ASC`, [quote.id]);
+            res.json({ quote, items: itemsRes.rows });
+        } catch (err: any) {
+            console.error("[fb public quote:open:get]", err);
+            res.status(500).json({ message: "Failed to load quote" });
+        }
+    });
+
+    // Submits rates + shop name through the generic link - no login required.
+    app.post("/api/fb/public/quotes/open/:token/respond", async (req: Request, res: Response) => {
+        const client = await pool.connect();
+        try {
+            const { responses, shopName } = req.body;
+            if (!Array.isArray(responses)) return res.status(400).json({ message: "responses array is required" });
+            if (!shopName || !String(shopName).trim()) return res.status(400).json({ message: "Shop name is required" });
+
+            const quoteRes = await client.query(`SELECT * FROM et_fb_quotes WHERE open_token = $1`, [req.params.token]);
+            const quote = quoteRes.rows[0];
+            if (!quote) return res.status(404).json({ message: "This link is invalid or has expired." });
+
+            const vendorId = `open-${crypto.randomBytes(10).toString("hex")}`;
+
+            await client.query("BEGIN");
+            const recipientRes = await client.query(
+                `INSERT INTO et_fb_quote_recipients (quote_id, vendor_id, status, shop_name, submitted_at)
+         VALUES ($1,$2,'Submitted',$3,now())
+         RETURNING id`,
+                [quote.id, vendorId, String(shopName).trim()]
+            );
+            for (const r of responses) {
+                const itemRes = await client.query(`SELECT quantity FROM et_fb_quote_items WHERE id = $1 AND quote_id = $2`, [r.itemId, quote.id]);
+                const qty = itemRes.rows[0]?.quantity || 0;
+                const amount = r.rate != null ? Number(r.rate) * Number(qty) : null;
+                await client.query(
+                    `INSERT INTO et_fb_quote_responses (quote_id, item_id, vendor_id, rate, amount, remarks, extra)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+                    [quote.id, r.itemId, vendorId, r.rate ?? null, amount, r.remarks || null, JSON.stringify(r.extra || {})]
+                );
+            }
+            await client.query("COMMIT");
+            res.json({ message: "Quote submitted", recipientId: recipientRes.rows[0].id });
+        } catch (err: any) {
+            await client.query("ROLLBACK");
+            console.error("[fb public quote:open:respond]", err);
+            res.status(500).json({ message: "Failed to submit quote" });
+        } finally {
+            client.release();
+        }
+    });
+
     // ---------------------------------------------------------------
     // PROJECTS (for the "Project Comparison Quote" flow)
     // ---------------------------------------------------------------
@@ -780,12 +862,13 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
             for (const l of raw) {
                 const shopName = (l.shop_name || l.shopName || "").toString().trim();
                 if (!shopName) continue; // items without a shop can't be sourced to a vendor for this flow
+                const rawShopId = l.shop_id || l.shopId;
                 lines.push({
                     boqItemId: row.id,
                     materialId: l.material_id || l.materialId || l.id || null,
                     name: l.name || l.item_name || l.itemName || "Unnamed material",
                     unit: l.unit || "",
-                    shopId: l.shop_id || l.shopId || null,
+                    shopId: rawShopId ? String(rawShopId) : null,
                     shopName,
                     qty: Number(l.roundOffQty || l.roundOff || l.qty || l.requiredQty || l.baseQty || 0) || 0,
                 });
@@ -851,14 +934,27 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
             const data = await getFinalBomMaterialLines(req.params.id);
             if (!data) return res.json({ materials: [] });
 
-            const matched = data.lines.filter((l) => (l.shopId && l.shopId === shopKey) || l.shopName === shopKey);
+            // Robust matching: try shopId === shopKey OR shopName === shopKey (case-insensitive, trimmed).
+            const shopKeyTrimmed = shopKey.trim();
+            const shopKeyLower = shopKeyTrimmed.toLowerCase();
+            const matched = data.lines.filter((l) => {
+                if (l.shopId && String(l.shopId).trim() === shopKeyTrimmed) return true;
+                if (l.shopName && l.shopName.trim().toLowerCase() === shopKeyLower) return true;
+                return false;
+            });
+            
+            console.log("[fb bom-materials] projectId:", req.params.id, "shopKey:", JSON.stringify(shopKey), "matched:", matched.length, "lines total:", data.lines.length);
+            if (matched.length === 0 && data.lines.length > 0) {
+                const uniqueKeys = new Set(data.lines.map((l: any) => JSON.stringify({ shopId: l.shopId, shopName: l.shopName })));
+                console.log("[fb bom-materials] All distinct shop keys in BOM:", Array.from(uniqueKeys));
+            }
 
             // Resolve technical specification from the Materials Master where possible.
             const materialIds = Array.from(new Set(matched.map((l) => l.materialId).filter(Boolean)));
             let specById: Record<string, string> = {};
             if (materialIds.length > 0) {
                 const specRes = await query(
-                    `SELECT id::text AS id, "technicalSpecification" AS spec FROM materials WHERE id::text = ANY($1::text[])`,
+                    `SELECT id::text AS id, technicalspecification AS spec FROM materials WHERE id::text = ANY($1::text[])`,
                     [materialIds]
                 );
                 specRes.rows.forEach((r: any) => { specById[r.id] = r.spec; });
