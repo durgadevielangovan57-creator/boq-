@@ -5568,7 +5568,7 @@ export async function registerRoutes(
         // Ensure is_disabled column exists
 
         const { type, excludeApproved } = req.query;
-        let q = `SELECT id, project_id, project_name, project_client, project_location, version_number, status, type, is_locked, is_last_final, is_disabled, is_boq_submission, last_template_snapshot, created_at, updated_at, category_order 
+        let q = `SELECT id, project_id, project_name, project_client, project_location, version_number, status, type, is_locked, is_last_final, is_disabled, is_boq_submission, last_template_snapshot, created_at, updated_at, category_order, source_version_id 
                  FROM boq_versions 
                  WHERE project_id = $1`;
         const params: any[] = [projectId];
@@ -11022,6 +11022,10 @@ export async function registerRoutes(
           WHERE v.id::TEXT = po.version_id::TEXT
           LIMIT 1
         )) as version_number,
+        COALESCE(
+          (SELECT v.is_last_final FROM boq_versions v WHERE v.id::TEXT = po.version_id::TEXT LIMIT 1),
+          true
+        ) as is_current_final_version,
         (SELECT STRING_AGG(item, ' ') FROM purchase_order_items WHERE po_id = po.id) as materials_list
         FROM purchase_orders po
         LEFT JOIN boq_projects p ON po.project_id = p.id
@@ -11239,11 +11243,11 @@ export async function registerRoutes(
       if (status !== undefined) {
         setFields.push(`status = $${paramCount++}`);
         params.push(status);
-        
+
         // Auto-sync the tracker's internal delivery_status to completed
         if (status === "delivered") {
-            setFields.push(`delivery_status = $${paramCount++}`);
-            params.push('completed');
+          setFields.push(`delivery_status = $${paramCount++}`);
+          params.push('completed');
         }
       }
       if (delivery_date !== undefined) {
@@ -11529,16 +11533,16 @@ export async function registerRoutes(
       const { total, delivered } = countsResult.rows[0];
       let newDeliveryStatus = "pending";
       let additionalUpdates = "";
-      
+
       if (total > 0 && delivered === total) {
-          newDeliveryStatus = "completed";
-          additionalUpdates = ", status = 'delivered'"; // Mark PO as delivered if all items are delivered
+        newDeliveryStatus = "completed";
+        additionalUpdates = ", status = 'delivered'"; // Mark PO as delivered if all items are delivered
       }
       else if (delivered > 0) {
-          newDeliveryStatus = "partial";
-          additionalUpdates = ", status = 'ordered'"; // Revert to ordered if partially delivered
+        newDeliveryStatus = "partial";
+        additionalUpdates = ", status = 'ordered'"; // Revert to ordered if partially delivered
       } else {
-          additionalUpdates = ", status = 'ordered'"; // Revert to ordered if none delivered
+        additionalUpdates = ", status = 'ordered'"; // Revert to ordered if none delivered
       }
 
       const poResult = await query(

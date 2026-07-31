@@ -87,7 +87,8 @@ import {
   ArrowRightLeft,
   Eraser,
   Percent,
-  History
+  History,
+  Star
 } from "lucide-react";
 import { BoqAnalysisDialog } from "@/components/BoqAnalysisDialog";
 import { RateSuggestionPopover } from "@/components/RateSuggestionPopover";
@@ -222,6 +223,7 @@ type BOQVersion = {
   project_location?: string;
   is_disabled?: boolean;
   is_boq_submission?: boolean;
+  is_last_final?: boolean;
 };
 
 type BOMItem = {
@@ -998,10 +1000,20 @@ export default function FinalizeBoq() {
 
 
 
-  // BOM versions: show approved versions for selection, plus versions that have
-  // been submitted for finance approval (so they don't disappear from this
-  // dropdown the moment they're submitted — mirrors filteredBoqVersions below).
+  // BOM versions: Finalize BOQ should only ever receive the ONE BOM version that
+  // has been explicitly "Marked as Final" in Generate BOM. Approved (but not
+  // Final) versions, and draft versions, must never appear here — this is what
+  // enforces the controlled Generate BOM -> Finalize BOQ promotion workflow.
+  //
+  // Fallback: if this project has no version marked Final yet (e.g. an older
+  // project created before this workflow existed), fall back to the previous
+  // behavior of listing approved/submitted/pending/edit-requested versions so
+  // existing projects keep working exactly as before until someone marks a
+  // version Final for the first time.
   const filteredBomVersions = React.useMemo(() => {
+    const finalOnly = bomVersions.filter(v => !v.is_disabled && v.is_last_final);
+    if (finalOnly.length > 0) return finalOnly;
+
     return bomVersions.filter(v =>
       !v.is_disabled && (
         v.status === "approved" ||
@@ -1647,7 +1659,10 @@ export default function FinalizeBoq() {
           if (selectedBomVersionId && bomList.some((v: BOQVersion) => v.id === selectedBomVersionId)) {
             // keep existing
           } else {
-            const selectable = bomList.filter((v: BOQVersion) => v.status === "approved" && !v.is_disabled);
+            const finalBom = bomList.filter((v: BOQVersion) => v.is_last_final && !v.is_disabled);
+            const selectable = finalBom.length > 0
+              ? finalBom
+              : bomList.filter((v: BOQVersion) => v.status === "approved" && !v.is_disabled);
             approved = selectable[0] || null;
 
             if (approved) {
@@ -1923,8 +1938,12 @@ export default function FinalizeBoq() {
   }, [selectedProjectId, toast]);
 
   useEffect(() => {
-    loadBoqItemsAndEdits(selectedBoqVersionId || selectedBomVersionId);
-  }, [selectedBomVersionId, selectedBoqVersionId, loadBoqItemsAndEdits, refreshKey]);
+    // The materials/items table should only ever show BOQ Version content.
+    // Selecting a BOM version by itself (the "incoming" Final BOM shown for
+    // reference) must not populate this table — it stays empty until the
+    // user clicks "Create BOQ Version" and a BOQ version is selected.
+    loadBoqItemsAndEdits(selectedBoqVersionId || null);
+  }, [selectedBoqVersionId, loadBoqItemsAndEdits, refreshKey]);
 
   useEffect(() => {
     const activeVersionId = selectedBoqVersionId || selectedBomVersionId;
@@ -4231,10 +4250,47 @@ export default function FinalizeBoq() {
                         </SelectTrigger>
                         <SelectContent className="max-h-[300px] overflow-y-auto">
                           {filteredBoqVersions.map((v) => (
-                            <SelectItem value={v.id} key={v.id}>BOQ V{v.version_number} ({v.status})</SelectItem>
+                            <SelectItem value={v.id} key={v.id}>
+                              <div className="flex items-center justify-between w-full gap-2">
+                                <span>BOQ C{v.version_number} ({v.status})</span>
+                                {v.is_last_final && <span className="bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold shrink-0 flex items-center">Final</span>}
+                              </div>
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
+                      {(() => {
+                        const currentBoqV = filteredBoqVersions.find(v => v.id === selectedBoqVersionId);
+                        const showMarkBoqFinal = currentBoqV && currentBoqV.status === "approved" && !currentBoqV.is_last_final;
+                        return showMarkBoqFinal ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-9 w-9 text-slate-400 hover:text-green-600 border border-slate-200 hover:bg-green-50 bg-white shadow-sm shrink-0"
+                            title="Mark this BOQ Version as Final — only this version will be available in Generate PO"
+                            onClick={async () => {
+                              if (!selectedBoqVersionId) return;
+                              if (!confirm("Mark this BOQ version as Final? Only this version will then be available in Generate PO.")) return;
+                              try {
+                                const resp = await apiFetch(`/api/boq-versions/${encodeURIComponent(selectedBoqVersionId)}/make-final`, { method: "POST" });
+                                if (resp.ok) {
+                                  toast({ title: "Success", description: "BOQ Version marked as Final" });
+                                  const boqResp = await apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId!)}?type=boq`);
+                                  if (boqResp.ok) {
+                                    const boqData = await boqResp.json();
+                                    setBoqVersions(boqData.versions || []);
+                                  }
+                                }
+                              } catch (e) {
+                                console.error("Failed to mark BOQ version final", e);
+                                toast({ title: "Error", description: "Failed to mark as final", variant: "destructive" });
+                              }
+                            }}
+                          >
+                            <Star className="h-4 w-4" />
+                          </Button>
+                        ) : null;
+                      })()}
                       <Button
                         variant="ghost"
                         size="icon"
@@ -4721,6 +4777,13 @@ export default function FinalizeBoq() {
                 </Button>
               )}
             </div>
+
+            {!selectedBoqVersionId && selectedBomVersionId && (
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 text-center">
+                <p className="text-sm font-semibold text-blue-800">This is the incoming Final BOM Version.</p>
+                <p className="text-xs text-blue-600 mt-1">Click "+ Create" next to BOQ Version above to bring its materials in and start working on the BOQ.</p>
+              </div>
+            )}
 
             {/* Search and Category Filters */}
             <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-4">

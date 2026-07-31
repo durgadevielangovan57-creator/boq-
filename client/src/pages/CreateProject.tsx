@@ -634,211 +634,211 @@ export default function CreateProject() {
               ) : (
                 <ul className="space-y-3">
                   {filteredProjects.map((p) => (
-                  <li key={p.id} className="border rounded">
-                    <div className="flex items-center justify-between p-3">
-                      <div className="flex items-center gap-4">
-                        <button
-                          className="text-slate-400 hover:text-blue-600 transition-colors"
-                          onClick={() => toggleProject(p.id)}
-                          aria-expanded={!!expanded[p.id]}
-                        >
-                          {expanded[p.id] ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-                        </button>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            {editingProjectId === p.id ? (
-                              <div className="flex items-center gap-2">
-                                <Input
-                                  className="h-7 text-sm w-48 py-1"
-                                  value={editingProjectName}
-                                  onChange={(e) => setEditingProjectName(e.target.value)}
-                                  autoFocus
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') saveProjectName(p.id);
-                                    if (e.key === 'Escape') setEditingProjectId(null);
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                />
-                                <Button size="sm" className="h-7 px-2 bg-indigo-600 hover:bg-indigo-700 text-white" onClick={(e) => { e.stopPropagation(); saveProjectName(p.id); }}>Save</Button>
-                                <Button size="sm" variant="ghost" className="h-7 px-2" onClick={(e) => { e.stopPropagation(); setEditingProjectId(null); }}>Cancel</Button>
+                    <li key={p.id} className="border rounded">
+                      <div className="flex items-center justify-between p-3">
+                        <div className="flex items-center gap-4">
+                          <button
+                            className="text-slate-400 hover:text-blue-600 transition-colors"
+                            onClick={() => toggleProject(p.id)}
+                            aria-expanded={!!expanded[p.id]}
+                          >
+                            {expanded[p.id] ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                          </button>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              {editingProjectId === p.id ? (
+                                <div className="flex items-center gap-2">
+                                  <Input
+                                    className="h-7 text-sm w-48 py-1"
+                                    value={editingProjectName}
+                                    onChange={(e) => setEditingProjectName(e.target.value)}
+                                    autoFocus
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') saveProjectName(p.id);
+                                      if (e.key === 'Escape') setEditingProjectId(null);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <Button size="sm" className="h-7 px-2 bg-indigo-600 hover:bg-indigo-700 text-white" onClick={(e) => { e.stopPropagation(); saveProjectName(p.id); }}>Save</Button>
+                                  <Button size="sm" variant="ghost" className="h-7 px-2" onClick={(e) => { e.stopPropagation(); setEditingProjectId(null); }}>Cancel</Button>
+                                </div>
+                              ) : (
+                                <>
+                                  <span className="font-extrabold text-slate-800">{p.name}</span>
+                                  <Badge className={cn("ml-2 text-[10px] font-bold border-none", getProjectStatusMeta(p.project_status).color)}>
+                                    {getProjectStatusMeta(p.project_status).label}
+                                  </Badge>
+                                  <button
+                                    className="text-slate-400 hover:text-indigo-600 transition-colors ml-1"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingProjectId(p.id);
+                                      setEditingProjectName(p.name);
+                                    }}
+                                    title="Edit Project Name"
+                                  >
+                                    <Pencil size={14} />
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                            <div className="text-[10px] text-slate-500 flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-1">
+                              <span className="flex items-center gap-1 font-medium"><User className="w-3 h-3 text-slate-400" /> {p.client || "—"}</span>
+                              <span className="flex items-center gap-1 font-medium"><MapPin className="w-3 h-3 text-slate-400" /> {p.location || "—"}</span>
+                              <span className="flex items-center gap-1 font-medium"><Calculator className="w-3 h-3 text-slate-400" /> {p.budget || "—"}</span>
+                              {p.gst_no && <span className="flex items-center gap-1 font-medium"><Receipt className="w-3 h-3 text-slate-400" /> {p.gst_no}</span>}
+
+                              <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2 ml-auto">
+                                {p.bom_version_number && (
+                                  <div className="flex items-center gap-1.5 flex-wrap justify-end bg-white p-1 rounded border border-slate-100 shadow-sm">
+                                    <span className="bg-indigo-50 text-indigo-700 text-[9px] px-1.5 py-0.5 rounded font-bold border border-indigo-200 uppercase tracking-tight">
+                                      BOM V{p.bom_version_number}
+                                    </span>
+                                    {p.bom_version_price && (
+                                      <span className="flex items-center gap-1 font-extrabold text-slate-700 text-[11px] px-1">
+                                        <Calculator className="w-3 h-3 text-indigo-400" /> ₹{parseFloat(p.bom_version_price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                                {p.boq_version_number && (
+                                  <div className="flex items-center gap-1.5 flex-wrap justify-end bg-white p-1 rounded border border-slate-100 shadow-sm">
+                                    <span className="bg-blue-50 text-blue-700 text-[9px] px-1.5 py-0.5 rounded font-bold border border-blue-200 uppercase tracking-tight">
+                                      BOQ C{p.boq_version_number}
+                                    </span>
+                                    {p.boq_version_price && (
+                                      <span className="flex items-center gap-1 font-extrabold text-green-700 text-[11px] px-1">
+                                        <Calculator className="w-3 h-3 text-green-500" /> ₹{parseFloat(p.boq_version_price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                                {!p.bom_version_number && !p.boq_version_number && (
+                                  <span className="bg-slate-100 text-slate-600 text-[9px] px-1.5 py-0.5 rounded font-bold border border-slate-200 uppercase tracking-tight">
+                                    Draft / Started
+                                  </span>
+                                )}
                               </div>
-                            ) : (
-                              <>
-                                <span className="font-extrabold text-slate-800">{p.name}</span>
-                                <Badge className={cn("ml-2 text-[10px] font-bold border-none", getProjectStatusMeta(p.project_status).color)}>
-                                  {getProjectStatusMeta(p.project_status).label}
-                                </Badge>
-                                <button
-                                  className="text-slate-400 hover:text-indigo-600 transition-colors ml-1"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setEditingProjectId(p.id);
-                                    setEditingProjectName(p.name);
-                                  }}
-                                  title="Edit Project Name"
-                                >
-                                  <Pencil size={14} />
-                                </button>
-                              </>
-                            )}
-                          </div>
-                          <div className="text-[10px] text-slate-500 flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-1">
-                            <span className="flex items-center gap-1 font-medium"><User className="w-3 h-3 text-slate-400" /> {p.client || "—"}</span>
-                            <span className="flex items-center gap-1 font-medium"><MapPin className="w-3 h-3 text-slate-400" /> {p.location || "—"}</span>
-                            <span className="flex items-center gap-1 font-medium"><Calculator className="w-3 h-3 text-slate-400" /> {p.budget || "—"}</span>
-                            {p.gst_no && <span className="flex items-center gap-1 font-medium"><Receipt className="w-3 h-3 text-slate-400" /> {p.gst_no}</span>}
-                            
-                            <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2 ml-auto">
-                              {p.bom_version_number && (
-                                <div className="flex items-center gap-1.5 flex-wrap justify-end bg-white p-1 rounded border border-slate-100 shadow-sm">
-                                  <span className="bg-indigo-50 text-indigo-700 text-[9px] px-1.5 py-0.5 rounded font-bold border border-indigo-200 uppercase tracking-tight">
-                                    BOM V{p.bom_version_number}
-                                  </span>
-                                  {p.bom_version_price && (
-                                    <span className="flex items-center gap-1 font-extrabold text-slate-700 text-[11px] px-1">
-                                      <Calculator className="w-3 h-3 text-indigo-400" /> ₹{parseFloat(p.bom_version_price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-                              {p.boq_version_number && (
-                                <div className="flex items-center gap-1.5 flex-wrap justify-end bg-white p-1 rounded border border-slate-100 shadow-sm">
-                                  <span className="bg-blue-50 text-blue-700 text-[9px] px-1.5 py-0.5 rounded font-bold border border-blue-200 uppercase tracking-tight">
-                                    BOQ V{p.boq_version_number}
-                                  </span>
-                                  {p.boq_version_price && (
-                                    <span className="flex items-center gap-1 font-extrabold text-green-700 text-[11px] px-1">
-                                      <Calculator className="w-3 h-3 text-green-500" /> ₹{parseFloat(p.boq_version_price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-                              {!p.bom_version_number && !p.boq_version_number && (
-                                <span className="bg-slate-100 text-slate-600 text-[9px] px-1.5 py-0.5 rounded font-bold border border-slate-200 uppercase tracking-tight">
-                                  Draft / Started
-                                </span>
-                              )}
                             </div>
                           </div>
                         </div>
+                        <div className="flex items-center gap-2 px-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-indigo-500 hover:bg-indigo-50 hover:text-indigo-700"
+                            onClick={(e) => { e.stopPropagation(); handleClone(p); }}
+                            title="Clone Project"
+                          >
+                            <Copy size={16} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                            onClick={() => setEditingProjectData(p)}
+                            title="Edit Project Details"
+                          >
+                            <Pencil size={16} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-red-500 hover:bg-red-50"
+                            onClick={() => deleteProject(p.id)}
+                          >
+                            <Trash2 size={16} />
+                          </Button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2 px-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 w-8 p-0 text-indigo-500 hover:bg-indigo-50 hover:text-indigo-700"
-                          onClick={(e) => { e.stopPropagation(); handleClone(p); }}
-                          title="Clone Project"
-                        >
-                          <Copy size={16} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 w-8 p-0 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
-                          onClick={() => setEditingProjectData(p)}
-                          title="Edit Project Details"
-                        >
-                          <Pencil size={16} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 w-8 p-0 text-red-500 hover:bg-red-50"
-                          onClick={() => deleteProject(p.id)}
-                        >
-                          <Trash2 size={16} />
-                        </Button>
-                      </div>
-                    </div>
 
-                    {expanded[p.id] && (
-                      <div className="p-3 border-t">
-                        {projectVersions[p.id] ? (
-                          projectVersions[p.id].length === 0 ? (
-                            <div className="text-sm text-muted-foreground">
-                              No versions for this project.
-                            </div>
-                          ) : (
-                            <div className="space-y-4">
-                              {projectVersions[p.id].map((v: any) => (
-                                <div key={v.id} className="border rounded p-3 bg-gray-50 flex items-start gap-3">
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedVersions.has(v.id)}
-                                    onChange={(e) => {
-                                      const newSelected = new Set(selectedVersions);
-                                      if (e.target.checked) {
-                                        newSelected.add(v.id);
-                                      } else {
-                                        newSelected.delete(v.id);
-                                      }
-                                      setSelectedVersions(newSelected);
-                                    }}
-                                    className="mt-1 w-4 h-4 cursor-pointer"
-                                  />
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center justify-between mb-2">
-                                      <div className="font-medium">
-                                        V{v.version_number}
+                      {expanded[p.id] && (
+                        <div className="p-3 border-t">
+                          {projectVersions[p.id] ? (
+                            projectVersions[p.id].length === 0 ? (
+                              <div className="text-sm text-muted-foreground">
+                                No versions for this project.
+                              </div>
+                            ) : (
+                              <div className="space-y-4">
+                                {projectVersions[p.id].map((v: any) => (
+                                  <div key={v.id} className="border rounded p-3 bg-gray-50 flex items-start gap-3">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedVersions.has(v.id)}
+                                      onChange={(e) => {
+                                        const newSelected = new Set(selectedVersions);
+                                        if (e.target.checked) {
+                                          newSelected.add(v.id);
+                                        } else {
+                                          newSelected.delete(v.id);
+                                        }
+                                        setSelectedVersions(newSelected);
+                                      }}
+                                      className="mt-1 w-4 h-4 cursor-pointer"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center justify-between mb-2">
+                                        <div className="font-medium">
+                                          V{v.version_number}
+                                        </div>
+                                        <div
+                                          className={`text-xs px-2 py-0.5 rounded ${v.status === "submitted" ? "bg-green-100 text-green-800" : "bg-gray-100 text-muted-foreground"}`}
+                                        >
+                                          {v.status}
+                                        </div>
                                       </div>
-                                      <div
-                                        className={`text-xs px-2 py-0.5 rounded ${v.status === "submitted" ? "bg-green-100 text-green-800" : "bg-gray-100 text-muted-foreground"}`}
-                                      >
-                                        {v.status}
-                                      </div>
+
+                                      {v.status === "submitted" ? (
+                                        <div className="mb-2">
+                                          {versionItems[v.id] ? (
+                                            versionItems[v.id].length > 0 ? (
+                                              renderStep11Table(versionItems[v.id])
+                                            ) : (
+                                              <div className="text-sm text-muted-foreground">
+                                                No items in this version
+                                              </div>
+                                            )
+                                          ) : (
+                                            <div className="text-sm text-muted-foreground">
+                                              Loading items...
+                                            </div>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <div className="mb-2">
+                                          {versionItems[v.id] ? (
+                                            versionItems[v.id].length > 0 ? (
+                                              renderStep11Table(versionItems[v.id])
+                                            ) : (
+                                              <div className="text-sm text-muted-foreground">
+                                                No items added yet
+                                              </div>
+                                            )
+                                          ) : (
+                                            <div className="text-sm text-muted-foreground">
+                                              Loading items...
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
                                     </div>
-
-                                    {v.status === "submitted" ? (
-                                      <div className="mb-2">
-                                        {versionItems[v.id] ? (
-                                          versionItems[v.id].length > 0 ? (
-                                            renderStep11Table(versionItems[v.id])
-                                          ) : (
-                                            <div className="text-sm text-muted-foreground">
-                                              No items in this version
-                                            </div>
-                                          )
-                                        ) : (
-                                          <div className="text-sm text-muted-foreground">
-                                            Loading items...
-                                          </div>
-                                        )}
-                                      </div>
-                                    ) : (
-                                      <div className="mb-2">
-                                        {versionItems[v.id] ? (
-                                          versionItems[v.id].length > 0 ? (
-                                            renderStep11Table(versionItems[v.id])
-                                          ) : (
-                                            <div className="text-sm text-muted-foreground">
-                                              No items added yet
-                                            </div>
-                                          )
-                                        ) : (
-                                          <div className="text-sm text-muted-foreground">
-                                            Loading items...
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
                                   </div>
-                                </div>
-                              ))}
+                                ))}
+                              </div>
+                            )
+                          ) : (
+                            <div className="text-sm text-muted-foreground">
+                              Loading versions...
                             </div>
-                          )
-                        ) : (
-                          <div className="text-sm text-muted-foreground">
-                            Loading versions...
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+                          )}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -1052,4 +1052,3 @@ export default function CreateProject() {
     </Layout>
   );
 }
-

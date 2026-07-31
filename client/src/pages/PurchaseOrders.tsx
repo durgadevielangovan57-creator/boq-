@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { Layout } from "@/components/layout/Layout";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
 import {
     Card,
     CardContent,
@@ -22,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
     FileDown,
+    FileSpreadsheet,
     Search,
     Plus,
     Filter,
@@ -80,6 +82,8 @@ interface PurchaseOrder {
     project_name?: string;
     vendor_name?: string;
     version_number?: string;
+    version_id?: string;
+    is_current_final_version?: boolean;
     materials_list?: string;
 }
 
@@ -216,6 +220,64 @@ export default function PurchaseOrders() {
         }
     };
 
+    const [downloadingExcelId, setDownloadingExcelId] = useState<string | null>(null);
+
+    const handleDownloadExcel = async (po: PurchaseOrder, e: React.MouseEvent) => {
+        e.stopPropagation();
+        setDownloadingExcelId(po.id);
+        try {
+            // Fetch PO Detail for items — same source of truth used by the PDF export.
+            const res = await apiFetch(`/api/purchase-orders/${po.id}`);
+            if (!res.ok) throw new Error("Failed to fetch PO details");
+            const data = await res.json();
+            const poDetail = data.purchaseOrder;
+            const poItems = data.items || [];
+
+            const headerRows: any[][] = [
+                ["PURCHASE ORDER"],
+                [],
+                ["PO Number", poDetail.po_number],
+                ["Date", new Date(poDetail.created_at).toLocaleDateString()],
+                ["Project", poDetail.project_name || "N/A"],
+                ["Vendor", poDetail.vendor_name || "N/A"],
+                [],
+            ];
+
+            const tableHeader = ["S.No", "Item", "Unit", "HSN/SAC", "Qty", "Rate", "Amount"];
+            const tableRows = poItems.map((item: any, idx: number) => [
+                idx + 1,
+                item.item || "N/A",
+                item.unit || "N/A",
+                item.hsn_code || item.sac_code || "N/A",
+                parseFloat(item.qty || 0),
+                parseFloat(item.rate || 0),
+                parseFloat(item.amount || 0),
+            ]);
+
+            const footerRow = [
+                "", "", "", "", "", "Total Amount",
+                parseFloat(poDetail.total_amount || 0),
+            ];
+
+            const sheetData = [...headerRows, tableHeader, ...tableRows, footerRow];
+            const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
+            worksheet["!cols"] = [
+                { wch: 6 }, { wch: 35 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 14 },
+            ];
+
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Purchase Order");
+            XLSX.writeFile(workbook, `PO_${poDetail.po_number}.xlsx`);
+
+            toast({ title: "Success", description: "Excel file generated successfully" });
+        } catch (error) {
+            console.error("Excel Export Error:", error);
+            toast({ title: "Error", description: "Failed to generate Excel file", variant: "destructive" });
+        } finally {
+            setDownloadingExcelId(null);
+        }
+    };
+
     useEffect(() => {
         fetchData();
     }, []);
@@ -231,7 +293,8 @@ export default function PurchaseOrders() {
             if (poRes.ok && projectRes.ok) {
                 const poData = await poRes.json();
                 const projectData = await projectRes.json();
-                setPurchaseOrders(poData.purchaseOrders || []);
+                const allPOs: PurchaseOrder[] = poData.purchaseOrders || [];
+                setPurchaseOrders(allPOs.filter(po => po.is_current_final_version !== false));
                 setProjects(projectData.projects || []);
             }
         } catch (error) {
@@ -613,7 +676,7 @@ export default function PurchaseOrders() {
                     </Card>
                 )}
 
-                {(!showProjectList || selectedProjectId === "all") && (
+                {(!showProjectList || (selectedProjectId as string) === "all") && (
                     <Card className="border-slate-200 shadow-sm">
                         <CardHeader className="pb-3">
                             <div className="flex flex-wrap gap-4 items-center justify-between">
@@ -807,6 +870,20 @@ export default function PurchaseOrders() {
                                                                     >
                                                                         <FileDown className="h-4 w-4" />
                                                                     </Button>
+                                                                    <Button
+                                                                        variant="ghost"
+                                                                        size="sm"
+                                                                        className="h-8 w-8 p-0 text-green-600 hover:text-green-800 hover:bg-green-50"
+                                                                        onClick={(e) => handleDownloadExcel(mainPo!, e)}
+                                                                        disabled={(user?.role === 'purchase_team' && mainPo!.status !== 'approved') || downloadingExcelId === mainPo!.id}
+                                                                        title="Download Excel"
+                                                                    >
+                                                                        {downloadingExcelId === mainPo!.id ? (
+                                                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                                                        ) : (
+                                                                            <FileSpreadsheet className="h-4 w-4" />
+                                                                        )}
+                                                                    </Button>
                                                                     <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
                                                                         <ChevronRight className="h-4 w-4" />
                                                                     </Button>
@@ -885,6 +962,20 @@ export default function PurchaseOrders() {
                                                                         disabled={user?.role === 'purchase_team' && subPo.status !== 'approved'}
                                                                     >
                                                                         <FileDown className="h-3.5 w-3.5" />
+                                                                    </Button>
+                                                                    <Button
+                                                                        variant="ghost"
+                                                                        size="sm"
+                                                                        className="h-7 w-7 p-0 text-green-500 hover:text-green-700"
+                                                                        onClick={(e) => handleDownloadExcel(subPo, e)}
+                                                                        disabled={(user?.role === 'purchase_team' && subPo.status !== 'approved') || downloadingExcelId === subPo.id}
+                                                                        title="Download Excel"
+                                                                    >
+                                                                        {downloadingExcelId === subPo.id ? (
+                                                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                                        ) : (
+                                                                            <FileSpreadsheet className="h-3.5 w-3.5" />
+                                                                        )}
                                                                     </Button>
                                                                 </TableCell>
                                                             </TableRow>

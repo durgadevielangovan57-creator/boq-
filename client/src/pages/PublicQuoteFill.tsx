@@ -47,6 +47,15 @@ export default function PublicQuoteFill() {
     const setRate = (itemId: string, patch: any) => setRates((prev) => ({ ...prev, [itemId]: { ...prev[itemId], ...patch } }));
 
     const submit = async () => {
+        const missing = items.some((it) => {
+            const rate = rates[it.id]?.rate;
+            return rate === undefined || rate === null || String(rate).trim() === "" || isNaN(Number(rate));
+        });
+        if (missing) {
+            setError("Please enter a valid rate for every item before submitting.");
+            return;
+        }
+        setError("");
         setSaving(true);
         try {
             const responses = items.map((it) => ({ itemId: it.id, rate: rates[it.id]?.rate || null, remarks: rates[it.id]?.remarks || "" }));
@@ -72,7 +81,7 @@ export default function PublicQuoteFill() {
         );
     }
 
-    if (error) {
+    if (error && !quote) {
         return (
             <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
                 <p className="text-sm text-muted-foreground">{error}</p>
@@ -131,6 +140,8 @@ export default function PublicQuoteFill() {
                         </CardContent>
                     </Card>
                 ))}
+
+                {error && <p className="text-sm text-destructive text-center">{error}</p>}
 
                 <Button className="w-full" size="lg" onClick={submit} disabled={saving}>
                     {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Send className="h-4 w-4 mr-2" />}

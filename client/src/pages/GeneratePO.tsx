@@ -25,7 +25,7 @@ import * as XLSX from 'xlsx';
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
 type Project = { id: string; name: string; client: string; budget: string; location?: string; status?: string };
-type BOMVersion = { id: string; project_id: string; version_number: number; status: "draft" | "submitted" | "pending_approval" | "approved" | "rejected" | "edit_requested"; created_at: string; rejection_reason?: string; updated_at: string; project_name?: string; project_client?: string; project_location?: string };
+type BOMVersion = { id: string; project_id: string; version_number: number; status: "draft" | "submitted" | "pending_approval" | "approved" | "rejected" | "edit_requested"; created_at: string; rejection_reason?: string; updated_at: string; project_name?: string; project_client?: string; project_location?: string; is_last_final?: boolean; type?: "bom" | "boq" };
 type BOMItem = { id: string; estimator: string; session_id: string; table_data: any; created_at: string };
 type Product = { id: string; name: string; code: string; category?: string; subcategory?: string; description?: string; category_name?: string; subcategory_name?: string; tax_code_type?: string; tax_code_value?: string; hsn_code?: string; sac_code?: string };
 type Step11Item = { id?: string; s_no?: number; title?: string; description?: string; unit?: string; qty?: number; supply_rate?: number; install_rate?: number;[key: string]: any };
@@ -291,11 +291,11 @@ function BoqItemCard({ boqItem, boqIdx, isVersionSubmitted, expandedProductIds, 
       const sRate = Number(getEditedValue(itemKey, "supply_rate", line.supplyRate));
       const iRate = Number(getEditedValue(itemKey, "install_rate", line.installRate));
       const rate = Number(getEditedValue(itemKey, "rate", sRate + iRate)) || (sRate + iRate);
-      
+
       const isFrozenQty = (line.freezeAndEdit === true || line.freezeAndEdit === "true" || line.freezeAndEdit === 1 || line.freeze_and_edit === true || line.freeze_and_edit === "true" || line.freeze_and_edit === 1);
       const base = Number(tableData.configBasis?.baseRequiredQty) || 1;
       const reqQty = isFrozenQty ? Number((qty * base).toFixed(2)) : Number((qty * (tableData.targetRequiredQty || 1)).toFixed(2));
-      
+
       const applyR = line.apply_rounding !== undefined ? Boolean(line.apply_rounding) : (line.applyRounding !== undefined ? Boolean(line.applyRounding) : true);
       const roundOff = applyR ? Math.ceil(reqQty) : reqQty;
       return {
@@ -622,6 +622,11 @@ export default function GeneratePo() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [boqItems, setBoqItems] = useState<BOMItem[]>([]);
   const [versions, setVersions] = useState<BOMVersion[]>([]);
+  // Maps a BOQ version's id -> the version_number of the BOM version it was
+  // created from (via source_version_id). Used purely for display: Generate PO
+  // shows the originating BOM version number, since that's what the material
+  // ultimately traces back to, rather than the BOQ's own independent counter.
+  const [sourceBomVersionNumberById, setSourceBomVersionNumberById] = useState<Record<string, number>>({});
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [history, setHistory] = useState<BOMHistory[]>([]);
@@ -749,10 +754,10 @@ export default function GeneratePo() {
           const filtered = [];
           for (const p of projectList) {
             try {
-              const vRes = await apiFetch(`/api/boq-versions/${encodeURIComponent(p.id)}`);
+              const vRes = await apiFetch(`/api/boq-versions/${encodeURIComponent(p.id)}?type=boq`);
               if (vRes.ok) {
                 const vData = await vRes.json();
-                const hasApproved = (vData.versions || []).some((v: any) => v.status === 'approved');
+                const hasApproved = (vData.versions || []).some((v: any) => v.status === 'approved' || v.is_last_final);
                 if (hasApproved) filtered.push(p);
               }
             } catch (err) { console.error(err); }
@@ -768,14 +773,40 @@ export default function GeneratePo() {
 
   // Load versions when project changes
   useEffect(() => {
-    if (!selectedProjectId) { setVersions([]); setSelectedVersionId(null); setBoqItems([]); return; }
-    apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}`, { headers: {} })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
+    if (!selectedProjectId) { setVersions([]); setSelectedVersionId(null); setBoqItems([]); setSourceBomVersionNumberById({}); return; }
+    // Generate PO must only ever work from BOQ-type versions — and, within those,
+    // only the one version explicitly marked Final in Finalize BOQ. This enforces
+    // the controlled Finalize BOQ -> Generate PO promotion workflow.
+    Promise.all([
+      apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=boq`, { headers: {} }).then(r => r.ok ? r.json() : null),
+      apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=bom`, { headers: {} }).then(r => r.ok ? r.json() : null),
+    ])
+      .then(([data, bomData]) => {
         if (!data) return;
         let list: BOMVersion[] = data.versions || [];
 
-        if (isPurchaseTeam) {
+        // Build a map of BOQ version id -> its source BOM version's number,
+        // so the UI can display the BOM version number (what the user actually
+        // recognizes) instead of the BOQ version's own independent counter.
+        const bomVersions: BOMVersion[] = bomData?.versions || [];
+        const bomNumberById: Record<string, number> = {};
+        bomVersions.forEach(v => { bomNumberById[v.id] = v.version_number; });
+        const sourceMap: Record<string, number> = {};
+        list.forEach(v => {
+          const sourceId = (v as any).source_version_id;
+          if (sourceId && bomNumberById[sourceId] !== undefined) {
+            sourceMap[v.id] = bomNumberById[sourceId];
+          }
+        });
+        setSourceBomVersionNumberById(sourceMap);
+
+        // Prefer the version marked Final. Fall back to the previous "all
+        // approved BOQ versions" behavior only for legacy projects that have
+        // never marked a BOQ version Final yet, so existing projects don't break.
+        const finalOnly = list.filter(v => v.is_last_final);
+        if (finalOnly.length > 0) {
+          list = finalOnly;
+        } else if (isPurchaseTeam) {
           list = list.filter(v => v.status === 'approved');
         }
 
@@ -789,6 +820,14 @@ export default function GeneratePo() {
       })
       .catch(console.error);
   }, [selectedProjectId, isPurchaseTeam]);
+
+  // Display version number for a BOQ version: prefer its source BOM version's
+  // number (what the user recognizes from Generate BOM), falling back to the
+  // BOQ version's own number if no source link exists (e.g. legacy versions).
+  const displayVersionNumber = useCallback((v: BOMVersion | null | undefined): number | string => {
+    if (!v) return "";
+    return sourceBomVersionNumberById[v.id] ?? v.version_number;
+  }, [sourceBomVersionNumberById]);
 
   // Load History
   const loadHistory = useCallback(async () => {
@@ -1343,7 +1382,7 @@ export default function GeneratePo() {
       exportData.push(["ANNEXURE"]);
       exportData.push([`Project: ${selectedProject?.name || "-"}`]);
       exportData.push([`Client: ${selectedProject?.client || "-"}`]);
-      exportData.push([`Version: ${selectedVersion ? `V${selectedVersion.version_number} (${VERSION_LABEL[selectedVersion.status] || selectedVersion.status})` : "Draft"}`]);
+      exportData.push([`Version: ${selectedVersion ? `V${displayVersionNumber(selectedVersion)} (${VERSION_LABEL[selectedVersion.status] || selectedVersion.status})` : "Draft"}`]);
       exportData.push([]); // Spacing
       exportData.push(mainHeaders);
 
@@ -1474,7 +1513,7 @@ export default function GeneratePo() {
       }
 
       XLSX.utils.book_append_sheet(workbook, worksheet, "Annexure");
-      const filename = `${selectedProject?.name || "Annexure"}_${selectedVersion ? `V${selectedVersion.version_number}` : "draft"}_Annexure.xlsx`;
+      const filename = `${selectedProject?.name || "Annexure"}_${selectedVersion ? `V${displayVersionNumber(selectedVersion)}` : "draft"}_Annexure.xlsx`;
 
       XLSX.writeFile(workbook, filename);
       toast({ title: "Success", description: `Downloaded ${filename}` });
@@ -1528,7 +1567,7 @@ export default function GeneratePo() {
       doc.setFontSize(9);
       doc.text(`Client: ${selectedProject?.client || "-"}`, pageWidth - 10, 22, { align: "right" });
       doc.text(`Budget: ${selectedProject?.budget || "-"}`, pageWidth - 10, 28, { align: "right" });
-      doc.text(`Version: ${selectedVersion ? `V${selectedVersion.version_number}` : "Draft"}`, pageWidth - 10, 34, { align: "right" });
+      doc.text(`Version: ${selectedVersion ? `V${displayVersionNumber(selectedVersion)}` : "Draft"}`, pageWidth - 10, 34, { align: "right" });
 
       doc.setFontSize(14);
       doc.setFont("helvetica", "bold");
@@ -1667,7 +1706,7 @@ export default function GeneratePo() {
         doc.text("GST Extra", 10, finalY + 6);
       }
 
-      const filename = `${selectedProject?.name || "Annexure"}_${selectedVersion ? `V${selectedVersion.version_number}` : "draft"}_Annexure.pdf`;
+      const filename = `${selectedProject?.name || "Annexure"}_${selectedVersion ? `V${displayVersionNumber(selectedVersion)}` : "draft"}_Annexure.pdf`;
       doc.save(filename);
       toast({ title: "Success", description: `Downloaded ${filename}` });
     } catch (err) {
@@ -1710,8 +1749,8 @@ export default function GeneratePo() {
                       </SelectTrigger>
                       <SelectContent className="max-h-[300px] overflow-y-auto">
                         <div className="p-2 sticky top-0 bg-white z-10 border-b">
-                          <Input 
-                            placeholder="Search project..." 
+                          <Input
+                            placeholder="Search project..."
                             value={projectSearchTerm}
                             onChange={(e) => setProjectSearchTerm(e.target.value)}
                             onKeyDown={(e) => e.stopPropagation()}
@@ -1737,7 +1776,7 @@ export default function GeneratePo() {
                             <SelectValue placeholder="Select version" />
                           </SelectTrigger>
                           <SelectContent className="max-h-60 overflow-auto">
-                            {versions.map((v: BOMVersion) => <SelectItem value={v.id} key={v.id}>V{v.version_number} {!isPurchaseTeam && `(${VERSION_LABEL[v.status] ?? v.status})`}</SelectItem>)}
+                            {versions.map((v: BOMVersion) => <SelectItem value={v.id} key={v.id}>V{displayVersionNumber(v)} {!isPurchaseTeam && `(${VERSION_LABEL[v.status] ?? v.status})`}</SelectItem>)}
                           </SelectContent>
                         </Select>
                         {!isPurchaseTeam && (

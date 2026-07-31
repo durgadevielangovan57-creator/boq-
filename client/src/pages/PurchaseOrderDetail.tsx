@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, useLocation } from "wouter";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import * as XLSX from "xlsx";
 import { Layout } from "@/components/layout/Layout";
 import {
     Card,
@@ -38,6 +39,7 @@ import {
     X,
     Trash2,
     Download,
+    FileSpreadsheet,
     Building2,
     Truck,
     User,
@@ -324,6 +326,79 @@ export default function PurchaseOrderDetail() {
                 variant: "destructive"
             });
         });
+    };
+    const [isGeneratingExcel, setIsGeneratingExcel] = useState(false);
+
+    const handleDownloadExcel = () => {
+        if (!po) return;
+        setIsGeneratingExcel(true);
+        try {
+            const rows = displayItems.map((item, idx) => {
+                let originalQty = parseFloat(item.qty) || 0;
+                if (isReviseMode) {
+                    const sourceItem = initialItems.find(o => o.id === item.id);
+                    if (sourceItem) originalQty = parseFloat(sourceItem.qty);
+                } else if (parentItems.length > 0) {
+                    const originalItem = parentItems.find(o => {
+                        const oName = (o.item || o.item_name || "").trim();
+                        const iName = (item.item || item.item_name || "").trim();
+                        if (!oName || !iName) return false;
+                        return oName === iName && (o.description || "") === (item.description || "");
+                    });
+                    if (originalItem) originalQty = parseFloat(originalItem.qty);
+                }
+                const currentQty = parseFloat(item.qty) || 0;
+                const balanceQty = originalQty - currentQty;
+                return {
+                    "S.No": idx + 1,
+                    "Item Details": item.item || item.item_name || "",
+                    "Unit": item.unit || "",
+                    "HSN": item.hsn_code || "",
+                    "SAC": item.sac_code || "",
+                    "Original Qty": originalQty.toFixed(2),
+                    "Ordered Qty": currentQty.toFixed(2),
+                    "Balance Qty": balanceQty.toFixed(2),
+                    "Tax %": `${item.tax_rate ?? 18}%`,
+                    "Rate": parseFloat(item.rate || "0").toFixed(2),
+                    "Amount": parseFloat(item.amount || "0").toFixed(2),
+                };
+            });
+
+            const wsData = [
+                ["Concept Trunk Interiors"],
+                ["12/36A, Indira Nagar, Medavakkam, Chennai, Tamil Nadu 600100"],
+                ["GSTIN 33ASOPS5560M1Z1"],
+                [],
+                ["ANNEXURE"],
+                [`Annexure No.`, po.po_number],
+                [`Date`, po.created_at ? new Date(po.created_at).toLocaleDateString('en-IN') : ''],
+                [`BOM Version`, po.version_number ? `V${po.version_number}` : 'N/A'],
+                [],
+                [`Bill From`, po.vendor_name || "Vendor"],
+                [`Bill From Address`, [po.vendor_location, po.vendor_city, po.vendor_state, po.vendor_pincode].filter(Boolean).join(', ')],
+                [`Bill From GSTIN`, po.vendor_gstin || ''],
+                [`Deliver To`, shippingAddress || "Standard office delivery"],
+                [`Project Name`, po.project_name || po.project_client || ''],
+                [],
+            ];
+
+            const ws = XLSX.utils.aoa_to_sheet(wsData);
+            XLSX.utils.sheet_add_json(ws, rows, { origin: -1, skipHeader: false });
+
+            const totalRowIndex = wsData.length + rows.length + 1;
+            XLSX.utils.sheet_add_aoa(ws, [["", "", "", "", "", "", "", "Total Amount", `INR ${parseFloat(po.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}`]], { origin: `A${totalRowIndex}` });
+
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Annexure");
+            XLSX.writeFile(wb, `PO_${po.po_number}.xlsx`);
+
+            toast({ title: "Success", description: "Excel generated successfully" });
+        } catch (error) {
+            console.error("Excel Export Error:", error);
+            toast({ title: "Error", description: "Failed to generate Excel", variant: "destructive" });
+        } finally {
+            setIsGeneratingExcel(false);
+        }
     };
     const [comment, setComment] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -913,6 +988,16 @@ export default function PurchaseOrderDetail() {
                             {(isDownloading || isGeneratingPdf) ? "Generating..." : "Download PDF"}
                         </Button>
 
+                        <Button
+                            variant="outline"
+                            className="bg-green-600 text-white hover:bg-green-700 border-green-600"
+                            onClick={handleDownloadExcel}
+                            disabled={(user?.role !== 'admin' && !['approved', 'ordered', 'delivered'].includes(po?.status?.toLowerCase() || '')) || isGeneratingExcel}
+                        >
+                            {isGeneratingExcel ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileSpreadsheet className="h-4 w-4 mr-2" />}
+                            {isGeneratingExcel ? "Generating..." : "Download Excel"}
+                        </Button>
+
                         {po.status === "draft" && (
                             <Button onClick={() => handleStatusUpdate("pending_approval")} className="bg-blue-600 hover:bg-blue-700 text-white">
                                 Submit for Approval
@@ -1122,7 +1207,7 @@ export default function PurchaseOrderDetail() {
                                     <div className="space-y-1">
                                         <p className="text-xs text-slate-600">
                                             <span className="font-semibold text-slate-500 uppercase text-[10px] tracking-wider mr-2">Project Name:</span>
-                                            <span className="font-bold text-slate-700 uppercase">{po?.project_client || po?.project_name || '—'}</span>
+                                            <span className="font-bold text-slate-700 uppercase">{po?.project_name || po?.project_client || '—'}</span>
                                         </p>
                                     </div>
                                 </div>

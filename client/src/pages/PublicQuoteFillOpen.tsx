@@ -49,6 +49,14 @@ export default function PublicQuoteFillOpen() {
             setError("Please enter your shop name before submitting.");
             return;
         }
+        const missing = items.some((it) => {
+            const rate = rates[it.id]?.rate;
+            return rate === undefined || rate === null || String(rate).trim() === "" || isNaN(Number(rate));
+        });
+        if (missing) {
+            setError("Please enter a valid rate for every item before submitting.");
+            return;
+        }
         setError("");
         setSaving(true);
         try {

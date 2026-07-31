@@ -42,6 +42,16 @@ function QuoteFillView({ quoteId, onBack }: { quoteId: string; onBack: () => voi
     const setRate = (itemId: string, patch: any) => setRates((prev) => ({ ...prev, [itemId]: { ...prev[itemId], ...patch } }));
 
     const save = async (submit: boolean) => {
+        if (submit) {
+            const missing = items.some((it) => {
+                const rate = rates[it.id]?.rate;
+                return rate === undefined || rate === null || String(rate).trim() === "" || isNaN(Number(rate));
+            });
+            if (missing) {
+                toast({ title: "Missing rates", description: "Please enter a rate for every item before submitting.", variant: "destructive" });
+                return;
+            }
+        }
         setSaving(true);
         try {
             const responses = items.map((it) => ({ itemId: it.id, rate: rates[it.id]?.rate || null, remarks: rates[it.id]?.remarks || "" }));
