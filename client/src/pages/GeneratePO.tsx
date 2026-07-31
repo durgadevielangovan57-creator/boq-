@@ -774,9 +774,9 @@ export default function GeneratePo() {
   // Load versions when project changes
   useEffect(() => {
     if (!selectedProjectId) { setVersions([]); setSelectedVersionId(null); setBoqItems([]); setSourceBomVersionNumberById({}); return; }
-    // Generate PO must only ever work from BOQ-type versions — and, within those,
-    // only the one version explicitly marked Final in Finalize BOQ. This enforces
-    // the controlled Finalize BOQ -> Generate PO promotion workflow.
+    // Generate PO works from the version explicitly marked Final — either a BOQ version
+    // marked Final in Finalize BOQ, or (if none) a BOM version marked Final in Generate
+    // BOM directly, with no requirement that a corresponding BOQ version also exist.
     Promise.all([
       apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=boq`, { headers: {} }).then(r => r.ok ? r.json() : null),
       apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=bom`, { headers: {} }).then(r => r.ok ? r.json() : null),
@@ -800,14 +800,27 @@ export default function GeneratePo() {
         });
         setSourceBomVersionNumberById(sourceMap);
 
-        // Prefer the version marked Final. Fall back to the previous "all
-        // approved BOQ versions" behavior only for legacy projects that have
-        // never marked a BOQ version Final yet, so existing projects don't break.
+        // Priority for what Generate PO shows:
+        // 1. A BOQ version explicitly marked Final (via "Mark BOQ Final" in Finalize BOQ).
+        // 2. Otherwise, if a BOM version has been marked Final in Generate BOM, use that
+        //    BOM version directly — no need to check for or match any BOQ version at all.
+        //    BOM-final alone is sufficient. Items are fetched the same way regardless of
+        //    version type (boq_items is keyed by version_id only), so this just works.
+        // 3. Otherwise, fall back to a single version only (never the full list) so
+        //    Generate PO never shows more than one version at a time.
         const finalOnly = list.filter(v => v.is_last_final);
         if (finalOnly.length > 0) {
           list = finalOnly;
-        } else if (isPurchaseTeam) {
-          list = list.filter(v => v.status === 'approved');
+        } else {
+          const finalBom = bomVersions.find(v => v.is_last_final);
+          if (finalBom) {
+            list = [finalBom];
+          } else {
+            const candidates = isPurchaseTeam ? list.filter(v => v.status === 'approved') : list;
+            const latest = candidates.reduce((best: BOMVersion | null, v: BOMVersion) =>
+              !best || v.version_number > best.version_number ? v : best, null);
+            list = latest ? [latest] : [];
+          }
         }
 
         setVersions(list);

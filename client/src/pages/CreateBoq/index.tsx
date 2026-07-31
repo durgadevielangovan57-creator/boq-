@@ -862,7 +862,9 @@ export default function CreateBom() {
         }
         setVersions(list);
 
-        // Priority: 1. Previously selected ID (from URL or state), 2. First Draft, 3. Latest version
+        // Priority: 1. Previously selected ID (from URL or state), 2. First Draft, 3. Latest version.
+        // Note: a version marked "Last Final" stays in this list (it does not
+        // disappear) — it's just highlighted differently in the dropdown below.
         setSelectedVersionId((prev: string | null) => {
           if (prev && list.some((v: BOMVersion) => v.id === prev)) return prev;
           const draft = list.find((v: BOMVersion) => v.status === "draft");
@@ -2092,7 +2094,7 @@ export default function CreateBom() {
           computedLen = Array.isArray(currentTableData.materialLines) ? currentTableData.materialLines.length : 0;
         }
       }
-      
+
       let newTd = { ...currentTableData };
       if (itemIdx < computedLen) {
         const ml = [...(currentTableData.materialLines || [])];
@@ -3159,15 +3161,20 @@ export default function CreateBom() {
                                   <SelectValue placeholder="Select version" />
                                 </SelectTrigger>
                                 <SelectContent className="max-h-[300px] overflow-y-auto">
+                                  {/* A version marked "Last Final" stays right here in Generate BOM —
+                                      it is only highlighted differently to show it's the Final one.
+                                      It does not move or disappear. */}
                                   {versions.map((v: BOMVersion) => {
-                                    const isManualFinal = (v as any).is_last_final;
-                                    const isLatestApproved = !versions.some(x => (x as any).is_last_final) && v.status === 'approved' && v.version_number === Math.max(...versions.filter(x => x.status === 'approved').map(x => x.version_number), 0);
-                                    const isFinal = isManualFinal || isLatestApproved;
+                                    const isFinal = !!(v as any).is_last_final;
                                     return (
-                                      <SelectItem value={v.id} key={v.id}>
+                                      <SelectItem
+                                        value={v.id}
+                                        key={v.id}
+                                        className={isFinal ? "bg-green-50 focus:bg-green-100 data-[state=checked]:bg-green-100" : undefined}
+                                      >
                                         <div className="flex items-center justify-between w-full gap-2">
-                                          <span>V{v.version_number} ({VERSION_LABEL[v.status] ?? v.status})</span>
-                                          {isFinal && <span className="bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold shrink-0 flex items-center">Last Final</span>}
+                                          <span className={isFinal ? "text-green-700 font-semibold" : undefined}>V{v.version_number} ({VERSION_LABEL[v.status] ?? v.status})</span>
+                                          {isFinal && <span className="bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold shrink-0 flex items-center">Final</span>}
                                         </div>
                                       </SelectItem>
                                     );
@@ -3175,43 +3182,25 @@ export default function CreateBom() {
                                 </SelectContent>
                               </Select>
                               {(() => {
-                                const latestApprovedVer = versions.reduce((prev: any, current: any) => {
-                                  if ((current as any).is_last_final) return current;
-                                  if (prev && (prev as any).is_last_final) return prev;
-                                  return (current.status === 'approved' && (!prev || current.version_number > prev.version_number)) ? current : prev;
-                                }, null);
-
-                                const showJump = latestApprovedVer && selectedVersionId !== latestApprovedVer.id;
                                 const currentV = versions.find(v => v.id === selectedVersionId);
                                 const showMark = currentV && currentV.status === 'approved' && !(currentV as any).is_last_final;
 
                                 return (
                                   <div className="flex items-center gap-1">
-                                    {showJump && (
-                                      <Button
-                                        variant="outline"
-                                        size="icon"
-                                        className="h-9 w-9 border-green-200 text-green-600 hover:bg-green-50 shadow-sm shrink-0"
-                                        title="Jump to Last Final Version"
-                                        onClick={() => setSelectedVersionId(latestApprovedVer.id)}
-                                      >
-                                        <CheckCircle2 className="h-4 w-4" />
-                                      </Button>
-                                    )}
-
                                     {showMark && (
                                       <Button
                                         variant="outline"
                                         size="icon"
                                         className="h-9 w-9 border-slate-200 text-slate-400 hover:text-green-600 hover:border-green-200 shadow-sm shrink-0"
-                                        title="Mark this as Last Final"
+                                        title="Mark this as Last Final — it will also become available in Finalize BOQ"
                                         onClick={async () => {
-                                          if (!confirm("Are you sure you want to mark this version as the Last Final version?")) return;
+                                          if (!confirm("Mark this version as the Last Final version? It will also become available in Finalize BOQ.")) return;
                                           try {
                                             const resp = await apiFetch(`/api/boq-versions/${selectedVersionId}/make-final`, { method: "POST" });
                                             if (resp.ok) {
                                               toast({ title: "Success", description: "Version marked as Last Final" });
-                                              // Refresh versions
+                                              // Refresh the list in place — keep the same version selected,
+                                              // it just now shows the Final highlight.
                                               const boqResp = await apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId!)}?type=bom`);
                                               if (boqResp.ok) {
                                                 const boqData = await boqResp.json();
@@ -3229,6 +3218,7 @@ export default function CreateBom() {
                                     )}
                                   </div>
                                 );
+
                               })()}
                             </div>
                             <Button

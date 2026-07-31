@@ -725,6 +725,22 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
             const recipient = recipientRes.rows[0];
             if (!recipient) return res.status(404).json({ message: "This link is invalid or has expired." });
 
+            // Server-side mirror of the frontend "every item needs a valid rate" check.
+            // The frontend already blocks this, but that alone can be bypassed (stale page,
+            // direct API call, etc.), which was letting recipients get marked Submitted with
+            // missing rates. Re-validate here before allowing submit=true to take effect.
+            if (submit) {
+                const allItemsRes = await client.query(`SELECT id FROM et_fb_quote_items WHERE quote_id = $1`, [recipient.quote_id]);
+                const rateById = new Map(responses.map((r: any) => [r.itemId, r.rate]));
+                const missing = allItemsRes.rows.some((it: any) => {
+                    const rate = rateById.get(it.id);
+                    return rate === undefined || rate === null || String(rate).trim() === "" || isNaN(Number(rate));
+                });
+                if (missing) {
+                    return res.status(400).json({ message: "Please enter a valid rate for every item before submitting." });
+                }
+            }
+
             await client.query("BEGIN");
             for (const r of responses) {
                 const itemRes = await client.query(`SELECT quantity FROM et_fb_quote_items WHERE id = $1 AND quote_id = $2`, [r.itemId, recipient.quote_id]);
@@ -779,6 +795,19 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
             const quoteRes = await client.query(`SELECT * FROM et_fb_quotes WHERE open_token = $1`, [req.params.token]);
             const quote = quoteRes.rows[0];
             if (!quote) return res.status(404).json({ message: "This link is invalid or has expired." });
+
+            // This route always marks the recipient 'Submitted' immediately (no draft-save step),
+            // so re-validate server-side that every item has a valid rate — the frontend check
+            // alone can be bypassed via a direct API call.
+            const allItemsRes = await client.query(`SELECT id FROM et_fb_quote_items WHERE quote_id = $1`, [quote.id]);
+            const rateById = new Map(responses.map((r: any) => [r.itemId, r.rate]));
+            const missingRate = allItemsRes.rows.some((it: any) => {
+                const rate = rateById.get(it.id);
+                return rate === undefined || rate === null || String(rate).trim() === "" || isNaN(Number(rate));
+            });
+            if (missingRate) {
+                return res.status(400).json({ message: "Please enter a valid rate for every item before submitting." });
+            }
 
             const vendorId = `open-${crypto.randomBytes(10).toString("hex")}`;
 
@@ -942,7 +971,7 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
                 if (l.shopName && l.shopName.trim().toLowerCase() === shopKeyLower) return true;
                 return false;
             });
-            
+
             console.log("[fb bom-materials] projectId:", req.params.id, "shopKey:", JSON.stringify(shopKey), "matched:", matched.length, "lines total:", data.lines.length);
             if (matched.length === 0 && data.lines.length > 0) {
                 const uniqueKeys = new Set(data.lines.map((l: any) => JSON.stringify({ shopId: l.shopId, shopName: l.shopName })));
