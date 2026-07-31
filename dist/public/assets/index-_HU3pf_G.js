@@ -58430,7 +58430,7 @@ function(t){t.processWEBP=function(e,n,r,i){var a=new le$1(e),o=a.width,s=a.heig
  * Licensed under the MIT License.
  * http://opensource.org/licenses/mit-license
  */
-function(t){var e=function(t){for(var e=t.length,n=new Uint8Array(e),r=0;r<e;r++)n[r]=t.charCodeAt(r);return n};t.API.events.push(["addFont",function(n){var r=void 0,i=n.font,a=n.instance;if(!i.isStandardFont){if(void 0===a)throw new Error("Font does not exist in vFS, import fonts or remove declaration doc.addFont('"+i.postScriptName+"').");if("string"!=typeof(r=false===a.existsFileInVFS(i.postScriptName)?a.loadFile(i.postScriptName):a.getFileFromVFS(i.postScriptName)))throw new Error("Font is not stored as string-data in vFS, import fonts or remove declaration doc.addFont('"+i.postScriptName+"').");!function(n,r){r=/^\x00\x01\x00\x00/.test(r)?e(r):e(f(r)),n.metadata=t.API.TTFFont.open(r),n.metadata.Unicode=n.metadata.Unicode||{encoding:{},kerning:{},widths:[]},n.metadata.glyIdsUsed=[0];}(i,r);}}]);}(E),E.API.addSvgAsImage=function(t,e,n,r,a,s,u,c){if(isNaN(e)||isNaN(n))throw o.error("jsPDF.addSvgAsImage: Invalid coordinates",arguments),new Error("Invalid coordinates passed to jsPDF.addSvgAsImage");if(isNaN(r)||isNaN(a))throw o.error("jsPDF.addSvgAsImage: Invalid measurements",arguments),new Error("Invalid measurements (width and/or height) passed to jsPDF.addSvgAsImage");var l=document.createElement("canvas");l.width=r,l.height=a;var h=l.getContext("2d");h.fillStyle="#fff",h.fillRect(0,0,l.width,l.height);var f={ignoreMouse:true,ignoreAnimation:true,ignoreDimensions:true},d=this;return (i.canvg?Promise.resolve(i.canvg):__vitePreload(() => import('./index.es-r3LeBONB.js'),true              ?[]:void 0)).catch(function(t){return Promise.reject(new Error("Could not load canvg: "+t))}).then(function(t){return t.default?t.default:t}).then(function(e){return e.fromString(h,t,f)},function(){return Promise.reject(new Error("Could not load canvg."))}).then(function(t){return t.render(f)}).then(function(){d.addImage(l.toDataURL("image/jpeg",1),e,n,r,a,u,c);})},E.API.putTotalPages=function(t){var e,n=0;parseInt(this.internal.getFont().id.substr(1),10)<15?(e=new RegExp(t,"g"),n=this.internal.getNumberOfPages()):(e=new RegExp(this.pdfEscape16(t,this.internal.getFont()),"g"),n=this.pdfEscape16(this.internal.getNumberOfPages()+"",this.internal.getFont()));for(var r=1;r<=this.internal.getNumberOfPages();r++)for(var i=0;i<this.internal.pages[r].length;i++)this.internal.pages[r][i]=this.internal.pages[r][i].replace(e,n);return this},E.API.viewerPreferences=function(e,n){var r;e=e||{},n=n||false;var i,a,o,s={HideToolbar:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},HideMenubar:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},HideWindowUI:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},FitWindow:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},CenterWindow:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},DisplayDocTitle:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.4},NonFullScreenPageMode:{defaultValue:"UseNone",value:"UseNone",type:"name",explicitSet:false,valueSet:["UseNone","UseOutlines","UseThumbs","UseOC"],pdfVersion:1.3},Direction:{defaultValue:"L2R",value:"L2R",type:"name",explicitSet:false,valueSet:["L2R","R2L"],pdfVersion:1.3},ViewArea:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},ViewClip:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintArea:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintClip:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintScaling:{defaultValue:"AppDefault",value:"AppDefault",type:"name",explicitSet:false,valueSet:["AppDefault","None"],pdfVersion:1.6},Duplex:{defaultValue:"",value:"none",type:"name",explicitSet:false,valueSet:["Simplex","DuplexFlipShortEdge","DuplexFlipLongEdge","none"],pdfVersion:1.7},PickTrayByPDFSize:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.7},PrintPageRange:{defaultValue:"",value:"",type:"array",explicitSet:false,valueSet:null,pdfVersion:1.7},NumCopies:{defaultValue:1,value:1,type:"integer",explicitSet:false,valueSet:null,pdfVersion:1.7}},u=Object.keys(s),c=[],l=0,h=0,f=0;function d(t,e){var n,r=false;for(n=0;n<t.length;n+=1)t[n]===e&&(r=true);return r}if(void 0===this.internal.viewerpreferences&&(this.internal.viewerpreferences={},this.internal.viewerpreferences.configuration=JSON.parse(JSON.stringify(s)),this.internal.viewerpreferences.isSubscribed=false),r=this.internal.viewerpreferences.configuration,"reset"===e||true===n){var p=u.length;for(f=0;f<p;f+=1)r[u[f]].value=r[u[f]].defaultValue,r[u[f]].explicitSet=false;}if("object"===_typeof$H(e))for(a in e)if(o=e[a],d(u,a)&&void 0!==o){if("boolean"===r[a].type&&"boolean"==typeof o)r[a].value=o;else if("name"===r[a].type&&d(r[a].valueSet,o))r[a].value=o;else if("integer"===r[a].type&&Number.isInteger(o))r[a].value=o;else if("array"===r[a].type){for(l=0;l<o.length;l+=1)if(i=true,1===o[l].length&&"number"==typeof o[l][0])c.push(String(o[l]-1));else if(o[l].length>1){for(h=0;h<o[l].length;h+=1)"number"!=typeof o[l][h]&&(i=false);true===i&&c.push([o[l][0]-1,o[l][1]-1].join(" "));}r[a].value="["+c.join(" ")+"]";}else r[a].value=r[a].defaultValue;r[a].explicitSet=true;}return  false===this.internal.viewerpreferences.isSubscribed&&(this.internal.events.subscribe("putCatalog",function(){var t,e=[];for(t in r) true===r[t].explicitSet&&("name"===r[t].type?e.push("/"+t+" /"+r[t].value):e.push("/"+t+" "+r[t].value));0!==e.length&&this.internal.write("/ViewerPreferences\n<<\n"+e.join("\n")+"\n>>");}),this.internal.viewerpreferences.isSubscribed=true),this.internal.viewerpreferences.configuration=r,this},
+function(t){var e=function(t){for(var e=t.length,n=new Uint8Array(e),r=0;r<e;r++)n[r]=t.charCodeAt(r);return n};t.API.events.push(["addFont",function(n){var r=void 0,i=n.font,a=n.instance;if(!i.isStandardFont){if(void 0===a)throw new Error("Font does not exist in vFS, import fonts or remove declaration doc.addFont('"+i.postScriptName+"').");if("string"!=typeof(r=false===a.existsFileInVFS(i.postScriptName)?a.loadFile(i.postScriptName):a.getFileFromVFS(i.postScriptName)))throw new Error("Font is not stored as string-data in vFS, import fonts or remove declaration doc.addFont('"+i.postScriptName+"').");!function(n,r){r=/^\x00\x01\x00\x00/.test(r)?e(r):e(f(r)),n.metadata=t.API.TTFFont.open(r),n.metadata.Unicode=n.metadata.Unicode||{encoding:{},kerning:{},widths:[]},n.metadata.glyIdsUsed=[0];}(i,r);}}]);}(E),E.API.addSvgAsImage=function(t,e,n,r,a,s,u,c){if(isNaN(e)||isNaN(n))throw o.error("jsPDF.addSvgAsImage: Invalid coordinates",arguments),new Error("Invalid coordinates passed to jsPDF.addSvgAsImage");if(isNaN(r)||isNaN(a))throw o.error("jsPDF.addSvgAsImage: Invalid measurements",arguments),new Error("Invalid measurements (width and/or height) passed to jsPDF.addSvgAsImage");var l=document.createElement("canvas");l.width=r,l.height=a;var h=l.getContext("2d");h.fillStyle="#fff",h.fillRect(0,0,l.width,l.height);var f={ignoreMouse:true,ignoreAnimation:true,ignoreDimensions:true},d=this;return (i.canvg?Promise.resolve(i.canvg):__vitePreload(() => import('./index.es-BME9IXJV.js'),true              ?[]:void 0)).catch(function(t){return Promise.reject(new Error("Could not load canvg: "+t))}).then(function(t){return t.default?t.default:t}).then(function(e){return e.fromString(h,t,f)},function(){return Promise.reject(new Error("Could not load canvg."))}).then(function(t){return t.render(f)}).then(function(){d.addImage(l.toDataURL("image/jpeg",1),e,n,r,a,u,c);})},E.API.putTotalPages=function(t){var e,n=0;parseInt(this.internal.getFont().id.substr(1),10)<15?(e=new RegExp(t,"g"),n=this.internal.getNumberOfPages()):(e=new RegExp(this.pdfEscape16(t,this.internal.getFont()),"g"),n=this.pdfEscape16(this.internal.getNumberOfPages()+"",this.internal.getFont()));for(var r=1;r<=this.internal.getNumberOfPages();r++)for(var i=0;i<this.internal.pages[r].length;i++)this.internal.pages[r][i]=this.internal.pages[r][i].replace(e,n);return this},E.API.viewerPreferences=function(e,n){var r;e=e||{},n=n||false;var i,a,o,s={HideToolbar:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},HideMenubar:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},HideWindowUI:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},FitWindow:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},CenterWindow:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},DisplayDocTitle:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.4},NonFullScreenPageMode:{defaultValue:"UseNone",value:"UseNone",type:"name",explicitSet:false,valueSet:["UseNone","UseOutlines","UseThumbs","UseOC"],pdfVersion:1.3},Direction:{defaultValue:"L2R",value:"L2R",type:"name",explicitSet:false,valueSet:["L2R","R2L"],pdfVersion:1.3},ViewArea:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},ViewClip:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintArea:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintClip:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintScaling:{defaultValue:"AppDefault",value:"AppDefault",type:"name",explicitSet:false,valueSet:["AppDefault","None"],pdfVersion:1.6},Duplex:{defaultValue:"",value:"none",type:"name",explicitSet:false,valueSet:["Simplex","DuplexFlipShortEdge","DuplexFlipLongEdge","none"],pdfVersion:1.7},PickTrayByPDFSize:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.7},PrintPageRange:{defaultValue:"",value:"",type:"array",explicitSet:false,valueSet:null,pdfVersion:1.7},NumCopies:{defaultValue:1,value:1,type:"integer",explicitSet:false,valueSet:null,pdfVersion:1.7}},u=Object.keys(s),c=[],l=0,h=0,f=0;function d(t,e){var n,r=false;for(n=0;n<t.length;n+=1)t[n]===e&&(r=true);return r}if(void 0===this.internal.viewerpreferences&&(this.internal.viewerpreferences={},this.internal.viewerpreferences.configuration=JSON.parse(JSON.stringify(s)),this.internal.viewerpreferences.isSubscribed=false),r=this.internal.viewerpreferences.configuration,"reset"===e||true===n){var p=u.length;for(f=0;f<p;f+=1)r[u[f]].value=r[u[f]].defaultValue,r[u[f]].explicitSet=false;}if("object"===_typeof$H(e))for(a in e)if(o=e[a],d(u,a)&&void 0!==o){if("boolean"===r[a].type&&"boolean"==typeof o)r[a].value=o;else if("name"===r[a].type&&d(r[a].valueSet,o))r[a].value=o;else if("integer"===r[a].type&&Number.isInteger(o))r[a].value=o;else if("array"===r[a].type){for(l=0;l<o.length;l+=1)if(i=true,1===o[l].length&&"number"==typeof o[l][0])c.push(String(o[l]-1));else if(o[l].length>1){for(h=0;h<o[l].length;h+=1)"number"!=typeof o[l][h]&&(i=false);true===i&&c.push([o[l][0]-1,o[l][1]-1].join(" "));}r[a].value="["+c.join(" ")+"]";}else r[a].value=r[a].defaultValue;r[a].explicitSet=true;}return  false===this.internal.viewerpreferences.isSubscribed&&(this.internal.events.subscribe("putCatalog",function(){var t,e=[];for(t in r) true===r[t].explicitSet&&("name"===r[t].type?e.push("/"+t+" /"+r[t].value):e.push("/"+t+" "+r[t].value));0!==e.length&&this.internal.write("/ViewerPreferences\n<<\n"+e.join("\n")+"\n>>");}),this.internal.viewerpreferences.isSubscribed=true),this.internal.viewerpreferences.configuration=r,this},
 /** ====================================================================
  * @license
  * jsPDF XMP metadata plugin
@@ -115178,7 +115178,7 @@ function ManageProduct() {
     if (!approvedConfigsData) return [];
     return approvedConfigsData.filter((a) => a.status === "approved");
   }, [approvedConfigsData]);
-  const filteredCloneConfigs = reactExports.useMemo(() => {
+  reactExports.useMemo(() => {
     if (!cloneSearch || cloneSearch.trim() === "") return allApprovedConfigs;
     const query = cloneSearch.toLowerCase().trim();
     return allApprovedConfigs.filter((c) => {
@@ -115954,56 +115954,58 @@ function ManageProduct() {
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   Input,
                   {
-                    placeholder: "Search approved configurations...",
+                    placeholder: "Search by product name...",
                     className: "pl-10 h-10 border-primary/10 shadow-sm",
                     value: cloneSearch,
                     onChange: (e) => setCloneSearch(e.target.value)
                   }
                 )
               ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-[11px] font-semibold text-muted-foreground", children: [
-                "Showing ",
-                filteredCloneConfigs.length,
-                " of ",
-                allApprovedConfigs.length,
-                " approved configuration",
-                allApprovedConfigs.length === 1 ? "" : "s",
-                cloneSearch ? ` for "${cloneSearch}"` : ""
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-2 min-h-[300px]", children: [
-                filteredCloneConfigs.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col items-center justify-center py-20 text-center space-y-3", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { className: "h-10 w-10 text-muted-foreground opacity-20" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-sm font-medium text-muted-foreground", children: [
-                    'No approved configurations found for "',
-                    cloneSearch,
-                    '"'
-                  ] })
-                ] }),
-                filteredCloneConfigs.length > 0 && filteredCloneConfigs.map((config) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                  "div",
-                  {
-                    className: "flex items-center justify-between p-4 bg-white rounded-xl border-2 border-slate-50 hover:border-primary/20 hover:bg-slate-50/50 transition-all cursor-pointer group",
-                    onClick: () => handleCloneConfig(config),
-                    children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-1", children: [
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "font-bold text-sm text-slate-800 group-hover:text-primary transition-colors", children: config.product_name }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2", children: [
-                          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-xs font-semibold text-muted-foreground", children: config.config_name || "Default Config" }),
-                          /* @__PURE__ */ jsxRuntimeExports.jsx(Badge, { variant: "outline", className: "h-4 text-[8px] uppercase px-1.5 font-bold bg-green-50 text-green-700 border-green-200", children: "Approved" })
+              (() => {
+                const searchQuery = (cloneSearch || "").toLowerCase().trim();
+                const visibleConfigs = searchQuery ? allApprovedConfigs.filter((c) => (c.product_name || "").toLowerCase().includes(searchQuery)) : allApprovedConfigs;
+                return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-[11px] font-semibold text-muted-foreground", children: [
+                    "Showing ",
+                    visibleConfigs.length,
+                    " of ",
+                    allApprovedConfigs.length,
+                    " approved configuration",
+                    allApprovedConfigs.length === 1 ? "" : "s",
+                    searchQuery ? ` for "${cloneSearch}"` : ""
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-2 min-h-[300px]", children: visibleConfigs.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col items-center justify-center py-20 text-center space-y-3", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { className: "h-10 w-10 text-muted-foreground opacity-20" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-sm font-medium text-muted-foreground", children: [
+                      "No approved configurations found",
+                      searchQuery ? ` for "${cloneSearch}"` : ""
+                    ] })
+                  ] }) : visibleConfigs.map((config) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                    "div",
+                    {
+                      className: "flex items-center justify-between p-4 bg-white rounded-xl border-2 border-slate-50 hover:border-primary/20 hover:bg-slate-50/50 transition-all cursor-pointer group",
+                      onClick: () => handleCloneConfig(config),
+                      children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-1", children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "font-bold text-sm text-slate-800 group-hover:text-primary transition-colors", children: config.product_name }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2", children: [
+                            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-xs font-semibold text-muted-foreground", children: config.config_name || "Default Config" }),
+                            /* @__PURE__ */ jsxRuntimeExports.jsx(Badge, { variant: "outline", className: "h-4 text-[8px] uppercase px-1.5 font-bold bg-green-50 text-green-700 border-green-200", children: "Approved" })
+                          ] }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "text-[10px] text-muted-foreground mt-1", children: [
+                            "Updated: ",
+                            new Date(config.updated_at || config.created_at).toLocaleDateString(),
+                            " • ",
+                            config.total_cost ? `₹${Number(config.total_cost).toLocaleString()}` : "N/A"
+                          ] })
                         ] }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "text-[10px] text-muted-foreground mt-1", children: [
-                          "Updated: ",
-                          new Date(config.updated_at || config.created_at).toLocaleDateString(),
-                          " • ",
-                          config.total_cost ? `₹${Number(config.total_cost).toLocaleString()}` : "N/A"
-                        ] })
-                      ] }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "ghost", size: "sm", className: "h-8 font-bold text-primary group-hover:bg-primary group-hover:text-white transition-all", children: "Select" })
-                    ]
-                  },
-                  config.id
-                ))
-              ] })
+                        /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "ghost", size: "sm", className: "h-8 font-bold text-primary group-hover:bg-primary group-hover:text-white transition-all", children: "Select" })
+                      ]
+                    },
+                    config.id
+                  )) })
+                ] });
+              })()
             ] })
           ] }) }),
           loadingProducts ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col items-center justify-center p-20 space-y-4", children: [

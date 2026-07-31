@@ -1145,47 +1145,56 @@ export default function ManageProduct() {
                                             <div className="relative">
                                                 <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                                                 <Input
-                                                    placeholder="Search approved configurations..."
+                                                    placeholder="Search by product name..."
                                                     className="pl-10 h-10 border-primary/10 shadow-sm"
                                                     value={cloneSearch}
                                                     onChange={e => setCloneSearch(e.target.value)}
                                                 />
                                             </div>
-                                            <p className="text-[11px] font-semibold text-muted-foreground">
-                                                Showing {filteredCloneConfigs.length} of {allApprovedConfigs.length} approved configuration{allApprovedConfigs.length === 1 ? "" : "s"}
-                                                {cloneSearch ? ` for "${cloneSearch}"` : ""}
-                                            </p>
-                                            <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-2 min-h-[300px]">
-                                                {filteredCloneConfigs.length === 0 && (
-                                                    <div className="flex flex-col items-center justify-center py-20 text-center space-y-3">
-                                                        <Search className="h-10 w-10 text-muted-foreground opacity-20" />
-                                                        <p className="text-sm font-medium text-muted-foreground">No approved configurations found for "{cloneSearch}"</p>
-                                                    </div>
-                                                )}
-                                                {filteredCloneConfigs.length > 0 && (
-                                                    filteredCloneConfigs.map(config => (
-                                                        <div
-                                                            key={config.id}
-                                                            className="flex items-center justify-between p-4 bg-white rounded-xl border-2 border-slate-50 hover:border-primary/20 hover:bg-slate-50/50 transition-all cursor-pointer group"
-                                                            onClick={() => handleCloneConfig(config)}
-                                                        >
-                                                            <div className="space-y-1">
-                                                                <div className="font-bold text-sm text-slate-800 group-hover:text-primary transition-colors">
-                                                                    {config.product_name}
+                                            {(() => {
+                                                const searchQuery = (cloneSearch || "").toLowerCase().trim();
+                                                const visibleConfigs = searchQuery
+                                                    ? allApprovedConfigs.filter(c => (c.product_name || "").toLowerCase().includes(searchQuery))
+                                                    : allApprovedConfigs;
+                                                return (
+                                                    <>
+                                                        <p className="text-[11px] font-semibold text-muted-foreground">
+                                                            Showing {visibleConfigs.length} of {allApprovedConfigs.length} approved configuration{allApprovedConfigs.length === 1 ? "" : "s"}
+                                                            {searchQuery ? ` for "${cloneSearch}"` : ""}
+                                                        </p>
+                                                        <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-2 min-h-[300px]">
+                                                            {visibleConfigs.length === 0 ? (
+                                                                <div className="flex flex-col items-center justify-center py-20 text-center space-y-3">
+                                                                    <Search className="h-10 w-10 text-muted-foreground opacity-20" />
+                                                                    <p className="text-sm font-medium text-muted-foreground">No approved configurations found{searchQuery ? ` for "${cloneSearch}"` : ""}</p>
                                                                 </div>
-                                                                <div className="flex items-center gap-2">
-                                                                    <span className="text-xs font-semibold text-muted-foreground">{config.config_name || "Default Config"}</span>
-                                                                    <Badge variant="outline" className="h-4 text-[8px] uppercase px-1.5 font-bold bg-green-50 text-green-700 border-green-200">Approved</Badge>
-                                                                </div>
-                                                                <div className="text-[10px] text-muted-foreground mt-1">
-                                                                    Updated: {new Date(config.updated_at || config.created_at).toLocaleDateString()} • {config.total_cost ? `₹${Number(config.total_cost).toLocaleString()}` : 'N/A'}
-                                                                </div>
-                                                            </div>
-                                                            <Button variant="ghost" size="sm" className="h-8 font-bold text-primary group-hover:bg-primary group-hover:text-white transition-all">Select</Button>
+                                                            ) : (
+                                                                visibleConfigs.map(config => (
+                                                                    <div
+                                                                        key={config.id}
+                                                                        className="flex items-center justify-between p-4 bg-white rounded-xl border-2 border-slate-50 hover:border-primary/20 hover:bg-slate-50/50 transition-all cursor-pointer group"
+                                                                        onClick={() => handleCloneConfig(config)}
+                                                                    >
+                                                                        <div className="space-y-1">
+                                                                            <div className="font-bold text-sm text-slate-800 group-hover:text-primary transition-colors">
+                                                                                {config.product_name}
+                                                                            </div>
+                                                                            <div className="flex items-center gap-2">
+                                                                                <span className="text-xs font-semibold text-muted-foreground">{config.config_name || "Default Config"}</span>
+                                                                                <Badge variant="outline" className="h-4 text-[8px] uppercase px-1.5 font-bold bg-green-50 text-green-700 border-green-200">Approved</Badge>
+                                                                            </div>
+                                                                            <div className="text-[10px] text-muted-foreground mt-1">
+                                                                                Updated: {new Date(config.updated_at || config.created_at).toLocaleDateString()} • {config.total_cost ? `₹${Number(config.total_cost).toLocaleString()}` : 'N/A'}
+                                                                            </div>
+                                                                        </div>
+                                                                        <Button variant="ghost" size="sm" className="h-8 font-bold text-primary group-hover:bg-primary group-hover:text-white transition-all">Select</Button>
+                                                                    </div>
+                                                                ))
+                                                            )}
                                                         </div>
-                                                    ))
-                                                )}
-                                            </div>
+                                                    </>
+                                                );
+                                            })()}
                                         </div>
                                     </DialogContent>
                                 </Dialog>
