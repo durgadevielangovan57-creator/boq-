@@ -52598,6 +52598,15 @@ function PublicQuoteFill() {
   reactExports.useEffect(load, [token]);
   const setRate = (itemId, patch) => setRates((prev) => ({ ...prev, [itemId]: { ...prev[itemId], ...patch } }));
   const submit = async () => {
+    const missing = items.some((it) => {
+      const rate = rates[it.id]?.rate;
+      return rate === void 0 || rate === null || String(rate).trim() === "" || isNaN(Number(rate));
+    });
+    if (missing) {
+      setError("Please enter a valid rate for every item before submitting.");
+      return;
+    }
+    setError("");
     setSaving(true);
     try {
       const responses = items.map((it) => ({ itemId: it.id, rate: rates[it.id]?.rate || null, remarks: rates[it.id]?.remarks || "" }));
@@ -52617,7 +52626,7 @@ function PublicQuoteFill() {
   if (loading) {
     return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "min-h-screen flex items-center justify-center bg-slate-50", children: /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "h-6 w-6 animate-spin text-muted-foreground" }) });
   }
-  if (error) {
+  if (error && !quote) {
     return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "min-h-screen flex items-center justify-center bg-slate-50 p-6", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-muted-foreground", children: error }) });
   }
   if (submitted) {
@@ -52670,6 +52679,130 @@ function PublicQuoteFill() {
         ] })
       ] })
     ] }) }, it.id)),
+    error && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-destructive text-center", children: error }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { className: "w-full", size: "lg", onClick: submit, disabled: saving, children: [
+      saving ? /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "h-4 w-4 mr-2 animate-spin" }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Send, { className: "h-4 w-4 mr-2" }),
+      "Submit Quote"
+    ] })
+  ] }) });
+}
+
+function PublicQuoteFillOpen() {
+  const { token } = useParams();
+  const [quote, setQuote] = reactExports.useState(null);
+  const [items, setItems] = reactExports.useState([]);
+  const [shopName, setShopName] = reactExports.useState("");
+  const [rates, setRates] = reactExports.useState({});
+  const [loading, setLoading] = reactExports.useState(true);
+  const [saving, setSaving] = reactExports.useState(false);
+  const [error, setError] = reactExports.useState("");
+  const [submitted, setSubmitted] = reactExports.useState(false);
+  const load = () => {
+    setLoading(true);
+    apiFetch(`/api/fb/public/quotes/open/${token}`).then((r) => {
+      if (!r.ok) throw new Error("invalid");
+      return r.json();
+    }).then((d) => {
+      setQuote(d.quote);
+      setItems(d.items || []);
+      const r = {};
+      (d.items || []).forEach((it) => {
+        r[it.id] = { rate: "", remarks: "" };
+      });
+      setRates(r);
+    }).catch(() => setError("This link is invalid or has expired.")).finally(() => setLoading(false));
+  };
+  reactExports.useEffect(load, [token]);
+  const setRate = (itemId, patch) => setRates((prev) => ({ ...prev, [itemId]: { ...prev[itemId], ...patch } }));
+  const submit = async () => {
+    if (!shopName.trim()) {
+      setError("Please enter your shop name before submitting.");
+      return;
+    }
+    const missing = items.some((it) => {
+      const rate = rates[it.id]?.rate;
+      return rate === void 0 || rate === null || String(rate).trim() === "" || isNaN(Number(rate));
+    });
+    if (missing) {
+      setError("Please enter a valid rate for every item before submitting.");
+      return;
+    }
+    setError("");
+    setSaving(true);
+    try {
+      const responses = items.map((it) => ({ itemId: it.id, rate: rates[it.id]?.rate || null, remarks: rates[it.id]?.remarks || "" }));
+      const res = await apiFetch(`/api/fb/public/quotes/open/${token}/respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shopName: shopName.trim(), responses })
+      });
+      if (!res.ok) throw new Error();
+      setSubmitted(true);
+    } catch {
+      setError("Failed to submit. Please check your connection and try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (loading) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "min-h-screen flex items-center justify-center bg-slate-50", children: /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "h-6 w-6 animate-spin text-muted-foreground" }) });
+  }
+  if (error && !quote) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "min-h-screen flex items-center justify-center bg-slate-50 p-6", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-muted-foreground", children: error }) });
+  }
+  if (submitted) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "min-h-screen flex items-center justify-center bg-slate-50 p-6", children: /* @__PURE__ */ jsxRuntimeExports.jsx(Card, { className: "max-w-md w-full text-center", children: /* @__PURE__ */ jsxRuntimeExports.jsxs(CardContent, { className: "pt-10 pb-10 space-y-3", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(CircleCheck, { className: "h-12 w-12 text-green-600 mx-auto" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { className: "text-lg font-semibold", children: "Quote Submitted" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-sm text-muted-foreground", children: [
+        "Thank you, ",
+        shopName,
+        ". Your rates have been recorded."
+      ] })
+    ] }) }) });
+  }
+  return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "min-h-screen bg-slate-50 py-6 px-3 sm:px-6", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "max-w-2xl mx-auto space-y-4", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs(Card, { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(CardHeader, { className: "text-center border-b pb-4", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-center gap-2 text-muted-foreground mb-1", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(ReceiptText, { className: "h-5 w-5" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-xs uppercase tracking-wide", children: "Quote Request" })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(CardTitle, { className: "text-xl", children: quote?.title }),
+        quote?.description && /* @__PURE__ */ jsxRuntimeExports.jsx(CardDescription, { children: quote.description })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(CardContent, { className: "pt-4 space-y-1.5", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Label$3, { children: "Your Shop / Company Name *" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Input, { value: shopName, onChange: (e) => setShopName(e.target.value), placeholder: "Enter your shop name" })
+      ] })
+    ] }),
+    items.map((it, idx) => /* @__PURE__ */ jsxRuntimeExports.jsx(Card, { children: /* @__PURE__ */ jsxRuntimeExports.jsxs(CardContent, { className: "pt-6 space-y-3", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-xs text-muted-foreground", children: [
+          "Item ",
+          idx + 1
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "font-semibold", children: it.item_name }),
+        (it.description || it.spec) && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-muted-foreground", children: it.description || it.spec }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-xs text-muted-foreground mt-1", children: [
+          "Qty: ",
+          it.quantity,
+          " ",
+          it.uom
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid grid-cols-2 gap-3", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-1", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("label", { className: "text-xs font-medium", children: "Your Rate *" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(Input, { type: "number", inputMode: "decimal", value: rates[it.id]?.rate ?? "", onChange: (e) => setRate(it.id, { rate: e.target.value }), placeholder: "0.00" })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-1", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("label", { className: "text-xs font-medium", children: "Remarks" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(Input, { value: rates[it.id]?.remarks ?? "", onChange: (e) => setRate(it.id, { remarks: e.target.value }), placeholder: "Optional" })
+        ] })
+      ] })
+    ] }) }, it.id)),
+    error && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-destructive text-center", children: error }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { className: "w-full", size: "lg", onClick: submit, disabled: saving, children: [
       saving ? /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "h-4 w-4 mr-2 animate-spin" }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Send, { className: "h-4 w-4 mr-2" }),
       "Submit Quote"
@@ -58297,7 +58430,7 @@ function(t){t.processWEBP=function(e,n,r,i){var a=new le$1(e),o=a.width,s=a.heig
  * Licensed under the MIT License.
  * http://opensource.org/licenses/mit-license
  */
-function(t){var e=function(t){for(var e=t.length,n=new Uint8Array(e),r=0;r<e;r++)n[r]=t.charCodeAt(r);return n};t.API.events.push(["addFont",function(n){var r=void 0,i=n.font,a=n.instance;if(!i.isStandardFont){if(void 0===a)throw new Error("Font does not exist in vFS, import fonts or remove declaration doc.addFont('"+i.postScriptName+"').");if("string"!=typeof(r=false===a.existsFileInVFS(i.postScriptName)?a.loadFile(i.postScriptName):a.getFileFromVFS(i.postScriptName)))throw new Error("Font is not stored as string-data in vFS, import fonts or remove declaration doc.addFont('"+i.postScriptName+"').");!function(n,r){r=/^\x00\x01\x00\x00/.test(r)?e(r):e(f(r)),n.metadata=t.API.TTFFont.open(r),n.metadata.Unicode=n.metadata.Unicode||{encoding:{},kerning:{},widths:[]},n.metadata.glyIdsUsed=[0];}(i,r);}}]);}(E),E.API.addSvgAsImage=function(t,e,n,r,a,s,u,c){if(isNaN(e)||isNaN(n))throw o.error("jsPDF.addSvgAsImage: Invalid coordinates",arguments),new Error("Invalid coordinates passed to jsPDF.addSvgAsImage");if(isNaN(r)||isNaN(a))throw o.error("jsPDF.addSvgAsImage: Invalid measurements",arguments),new Error("Invalid measurements (width and/or height) passed to jsPDF.addSvgAsImage");var l=document.createElement("canvas");l.width=r,l.height=a;var h=l.getContext("2d");h.fillStyle="#fff",h.fillRect(0,0,l.width,l.height);var f={ignoreMouse:true,ignoreAnimation:true,ignoreDimensions:true},d=this;return (i.canvg?Promise.resolve(i.canvg):__vitePreload(() => import('./index.es-BpGrp3bv.js'),true              ?[]:void 0)).catch(function(t){return Promise.reject(new Error("Could not load canvg: "+t))}).then(function(t){return t.default?t.default:t}).then(function(e){return e.fromString(h,t,f)},function(){return Promise.reject(new Error("Could not load canvg."))}).then(function(t){return t.render(f)}).then(function(){d.addImage(l.toDataURL("image/jpeg",1),e,n,r,a,u,c);})},E.API.putTotalPages=function(t){var e,n=0;parseInt(this.internal.getFont().id.substr(1),10)<15?(e=new RegExp(t,"g"),n=this.internal.getNumberOfPages()):(e=new RegExp(this.pdfEscape16(t,this.internal.getFont()),"g"),n=this.pdfEscape16(this.internal.getNumberOfPages()+"",this.internal.getFont()));for(var r=1;r<=this.internal.getNumberOfPages();r++)for(var i=0;i<this.internal.pages[r].length;i++)this.internal.pages[r][i]=this.internal.pages[r][i].replace(e,n);return this},E.API.viewerPreferences=function(e,n){var r;e=e||{},n=n||false;var i,a,o,s={HideToolbar:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},HideMenubar:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},HideWindowUI:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},FitWindow:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},CenterWindow:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},DisplayDocTitle:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.4},NonFullScreenPageMode:{defaultValue:"UseNone",value:"UseNone",type:"name",explicitSet:false,valueSet:["UseNone","UseOutlines","UseThumbs","UseOC"],pdfVersion:1.3},Direction:{defaultValue:"L2R",value:"L2R",type:"name",explicitSet:false,valueSet:["L2R","R2L"],pdfVersion:1.3},ViewArea:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},ViewClip:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintArea:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintClip:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintScaling:{defaultValue:"AppDefault",value:"AppDefault",type:"name",explicitSet:false,valueSet:["AppDefault","None"],pdfVersion:1.6},Duplex:{defaultValue:"",value:"none",type:"name",explicitSet:false,valueSet:["Simplex","DuplexFlipShortEdge","DuplexFlipLongEdge","none"],pdfVersion:1.7},PickTrayByPDFSize:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.7},PrintPageRange:{defaultValue:"",value:"",type:"array",explicitSet:false,valueSet:null,pdfVersion:1.7},NumCopies:{defaultValue:1,value:1,type:"integer",explicitSet:false,valueSet:null,pdfVersion:1.7}},u=Object.keys(s),c=[],l=0,h=0,f=0;function d(t,e){var n,r=false;for(n=0;n<t.length;n+=1)t[n]===e&&(r=true);return r}if(void 0===this.internal.viewerpreferences&&(this.internal.viewerpreferences={},this.internal.viewerpreferences.configuration=JSON.parse(JSON.stringify(s)),this.internal.viewerpreferences.isSubscribed=false),r=this.internal.viewerpreferences.configuration,"reset"===e||true===n){var p=u.length;for(f=0;f<p;f+=1)r[u[f]].value=r[u[f]].defaultValue,r[u[f]].explicitSet=false;}if("object"===_typeof$H(e))for(a in e)if(o=e[a],d(u,a)&&void 0!==o){if("boolean"===r[a].type&&"boolean"==typeof o)r[a].value=o;else if("name"===r[a].type&&d(r[a].valueSet,o))r[a].value=o;else if("integer"===r[a].type&&Number.isInteger(o))r[a].value=o;else if("array"===r[a].type){for(l=0;l<o.length;l+=1)if(i=true,1===o[l].length&&"number"==typeof o[l][0])c.push(String(o[l]-1));else if(o[l].length>1){for(h=0;h<o[l].length;h+=1)"number"!=typeof o[l][h]&&(i=false);true===i&&c.push([o[l][0]-1,o[l][1]-1].join(" "));}r[a].value="["+c.join(" ")+"]";}else r[a].value=r[a].defaultValue;r[a].explicitSet=true;}return  false===this.internal.viewerpreferences.isSubscribed&&(this.internal.events.subscribe("putCatalog",function(){var t,e=[];for(t in r) true===r[t].explicitSet&&("name"===r[t].type?e.push("/"+t+" /"+r[t].value):e.push("/"+t+" "+r[t].value));0!==e.length&&this.internal.write("/ViewerPreferences\n<<\n"+e.join("\n")+"\n>>");}),this.internal.viewerpreferences.isSubscribed=true),this.internal.viewerpreferences.configuration=r,this},
+function(t){var e=function(t){for(var e=t.length,n=new Uint8Array(e),r=0;r<e;r++)n[r]=t.charCodeAt(r);return n};t.API.events.push(["addFont",function(n){var r=void 0,i=n.font,a=n.instance;if(!i.isStandardFont){if(void 0===a)throw new Error("Font does not exist in vFS, import fonts or remove declaration doc.addFont('"+i.postScriptName+"').");if("string"!=typeof(r=false===a.existsFileInVFS(i.postScriptName)?a.loadFile(i.postScriptName):a.getFileFromVFS(i.postScriptName)))throw new Error("Font is not stored as string-data in vFS, import fonts or remove declaration doc.addFont('"+i.postScriptName+"').");!function(n,r){r=/^\x00\x01\x00\x00/.test(r)?e(r):e(f(r)),n.metadata=t.API.TTFFont.open(r),n.metadata.Unicode=n.metadata.Unicode||{encoding:{},kerning:{},widths:[]},n.metadata.glyIdsUsed=[0];}(i,r);}}]);}(E),E.API.addSvgAsImage=function(t,e,n,r,a,s,u,c){if(isNaN(e)||isNaN(n))throw o.error("jsPDF.addSvgAsImage: Invalid coordinates",arguments),new Error("Invalid coordinates passed to jsPDF.addSvgAsImage");if(isNaN(r)||isNaN(a))throw o.error("jsPDF.addSvgAsImage: Invalid measurements",arguments),new Error("Invalid measurements (width and/or height) passed to jsPDF.addSvgAsImage");var l=document.createElement("canvas");l.width=r,l.height=a;var h=l.getContext("2d");h.fillStyle="#fff",h.fillRect(0,0,l.width,l.height);var f={ignoreMouse:true,ignoreAnimation:true,ignoreDimensions:true},d=this;return (i.canvg?Promise.resolve(i.canvg):__vitePreload(() => import('./index.es-r3LeBONB.js'),true              ?[]:void 0)).catch(function(t){return Promise.reject(new Error("Could not load canvg: "+t))}).then(function(t){return t.default?t.default:t}).then(function(e){return e.fromString(h,t,f)},function(){return Promise.reject(new Error("Could not load canvg."))}).then(function(t){return t.render(f)}).then(function(){d.addImage(l.toDataURL("image/jpeg",1),e,n,r,a,u,c);})},E.API.putTotalPages=function(t){var e,n=0;parseInt(this.internal.getFont().id.substr(1),10)<15?(e=new RegExp(t,"g"),n=this.internal.getNumberOfPages()):(e=new RegExp(this.pdfEscape16(t,this.internal.getFont()),"g"),n=this.pdfEscape16(this.internal.getNumberOfPages()+"",this.internal.getFont()));for(var r=1;r<=this.internal.getNumberOfPages();r++)for(var i=0;i<this.internal.pages[r].length;i++)this.internal.pages[r][i]=this.internal.pages[r][i].replace(e,n);return this},E.API.viewerPreferences=function(e,n){var r;e=e||{},n=n||false;var i,a,o,s={HideToolbar:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},HideMenubar:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},HideWindowUI:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},FitWindow:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},CenterWindow:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.3},DisplayDocTitle:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.4},NonFullScreenPageMode:{defaultValue:"UseNone",value:"UseNone",type:"name",explicitSet:false,valueSet:["UseNone","UseOutlines","UseThumbs","UseOC"],pdfVersion:1.3},Direction:{defaultValue:"L2R",value:"L2R",type:"name",explicitSet:false,valueSet:["L2R","R2L"],pdfVersion:1.3},ViewArea:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},ViewClip:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintArea:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintClip:{defaultValue:"CropBox",value:"CropBox",type:"name",explicitSet:false,valueSet:["MediaBox","CropBox","TrimBox","BleedBox","ArtBox"],pdfVersion:1.4},PrintScaling:{defaultValue:"AppDefault",value:"AppDefault",type:"name",explicitSet:false,valueSet:["AppDefault","None"],pdfVersion:1.6},Duplex:{defaultValue:"",value:"none",type:"name",explicitSet:false,valueSet:["Simplex","DuplexFlipShortEdge","DuplexFlipLongEdge","none"],pdfVersion:1.7},PickTrayByPDFSize:{defaultValue:false,value:false,type:"boolean",explicitSet:false,valueSet:[true,false],pdfVersion:1.7},PrintPageRange:{defaultValue:"",value:"",type:"array",explicitSet:false,valueSet:null,pdfVersion:1.7},NumCopies:{defaultValue:1,value:1,type:"integer",explicitSet:false,valueSet:null,pdfVersion:1.7}},u=Object.keys(s),c=[],l=0,h=0,f=0;function d(t,e){var n,r=false;for(n=0;n<t.length;n+=1)t[n]===e&&(r=true);return r}if(void 0===this.internal.viewerpreferences&&(this.internal.viewerpreferences={},this.internal.viewerpreferences.configuration=JSON.parse(JSON.stringify(s)),this.internal.viewerpreferences.isSubscribed=false),r=this.internal.viewerpreferences.configuration,"reset"===e||true===n){var p=u.length;for(f=0;f<p;f+=1)r[u[f]].value=r[u[f]].defaultValue,r[u[f]].explicitSet=false;}if("object"===_typeof$H(e))for(a in e)if(o=e[a],d(u,a)&&void 0!==o){if("boolean"===r[a].type&&"boolean"==typeof o)r[a].value=o;else if("name"===r[a].type&&d(r[a].valueSet,o))r[a].value=o;else if("integer"===r[a].type&&Number.isInteger(o))r[a].value=o;else if("array"===r[a].type){for(l=0;l<o.length;l+=1)if(i=true,1===o[l].length&&"number"==typeof o[l][0])c.push(String(o[l]-1));else if(o[l].length>1){for(h=0;h<o[l].length;h+=1)"number"!=typeof o[l][h]&&(i=false);true===i&&c.push([o[l][0]-1,o[l][1]-1].join(" "));}r[a].value="["+c.join(" ")+"]";}else r[a].value=r[a].defaultValue;r[a].explicitSet=true;}return  false===this.internal.viewerpreferences.isSubscribed&&(this.internal.events.subscribe("putCatalog",function(){var t,e=[];for(t in r) true===r[t].explicitSet&&("name"===r[t].type?e.push("/"+t+" /"+r[t].value):e.push("/"+t+" "+r[t].value));0!==e.length&&this.internal.write("/ViewerPreferences\n<<\n"+e.join("\n")+"\n>>");}),this.internal.viewerpreferences.isSubscribed=true),this.internal.viewerpreferences.configuration=r,this},
 /** ====================================================================
  * @license
  * jsPDF XMP metadata plugin
@@ -115046,9 +115179,12 @@ function ManageProduct() {
     return approvedConfigsData.filter((a) => a.status === "approved");
   }, [approvedConfigsData]);
   const filteredCloneConfigs = reactExports.useMemo(() => {
-    return allApprovedConfigs.filter(
-      (c) => fuzzySearch(cloneSearch, [c.product_name || "", c.config_name || ""])
-    );
+    if (!cloneSearch || cloneSearch.trim() === "") return allApprovedConfigs;
+    const query = cloneSearch.toLowerCase().trim();
+    return allApprovedConfigs.filter((c) => {
+      const pName = (c.product_name || "").toLowerCase();
+      return pName.includes(query);
+    });
   }, [allApprovedConfigs, cloneSearch]);
   const needsWorkProducts = reactExports.useMemo(() => {
     return filteredProducts.filter((p) => !p.is_approved);
@@ -115799,7 +115935,10 @@ function ManageProduct() {
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx(Dialog, { open: isCloneDialogOpen, onOpenChange: (open) => {
             setIsCloneDialogOpen(open);
-            if (!open) setTargetProductForClone(null);
+            if (!open) {
+              setTargetProductForClone(null);
+              setCloneSearch("");
+            }
           }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogContent, { className: "max-w-2xl max-h-[90vh] flex flex-col p-0 overflow-hidden border-none shadow-2xl", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogHeader, { className: "p-6 bg-primary/5 border-b", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogTitle, { className: "text-xl font-bold flex items-center gap-2", children: [
@@ -115822,33 +115961,49 @@ function ManageProduct() {
                   }
                 )
               ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-2 min-h-[300px]", children: filteredCloneConfigs.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col items-center justify-center py-20 text-center space-y-3", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { className: "h-10 w-10 text-muted-foreground opacity-20" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm font-medium text-muted-foreground", children: "No approved configurations found" })
-              ] }) : filteredCloneConfigs.map((config) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                "div",
-                {
-                  className: "flex items-center justify-between p-4 bg-white rounded-xl border-2 border-slate-50 hover:border-primary/20 hover:bg-slate-50/50 transition-all cursor-pointer group",
-                  onClick: () => handleCloneConfig(config),
-                  children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-1", children: [
-                      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "font-bold text-sm text-slate-800 group-hover:text-primary transition-colors", children: config.product_name }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2", children: [
-                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-xs font-semibold text-muted-foreground", children: config.config_name || "Default Config" }),
-                        /* @__PURE__ */ jsxRuntimeExports.jsx(Badge, { variant: "outline", className: "h-4 text-[8px] uppercase px-1.5 font-bold bg-green-50 text-green-700 border-green-200", children: "Approved" })
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-[11px] font-semibold text-muted-foreground", children: [
+                "Showing ",
+                filteredCloneConfigs.length,
+                " of ",
+                allApprovedConfigs.length,
+                " approved configuration",
+                allApprovedConfigs.length === 1 ? "" : "s",
+                cloneSearch ? ` for "${cloneSearch}"` : ""
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-2 min-h-[300px]", children: [
+                filteredCloneConfigs.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col items-center justify-center py-20 text-center space-y-3", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { className: "h-10 w-10 text-muted-foreground opacity-20" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-sm font-medium text-muted-foreground", children: [
+                    'No approved configurations found for "',
+                    cloneSearch,
+                    '"'
+                  ] })
+                ] }),
+                filteredCloneConfigs.length > 0 && filteredCloneConfigs.map((config) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                  "div",
+                  {
+                    className: "flex items-center justify-between p-4 bg-white rounded-xl border-2 border-slate-50 hover:border-primary/20 hover:bg-slate-50/50 transition-all cursor-pointer group",
+                    onClick: () => handleCloneConfig(config),
+                    children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-1", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "font-bold text-sm text-slate-800 group-hover:text-primary transition-colors", children: config.product_name }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2", children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-xs font-semibold text-muted-foreground", children: config.config_name || "Default Config" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx(Badge, { variant: "outline", className: "h-4 text-[8px] uppercase px-1.5 font-bold bg-green-50 text-green-700 border-green-200", children: "Approved" })
+                        ] }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "text-[10px] text-muted-foreground mt-1", children: [
+                          "Updated: ",
+                          new Date(config.updated_at || config.created_at).toLocaleDateString(),
+                          " • ",
+                          config.total_cost ? `₹${Number(config.total_cost).toLocaleString()}` : "N/A"
+                        ] })
                       ] }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "text-[10px] text-muted-foreground mt-1", children: [
-                        "Updated: ",
-                        new Date(config.updated_at || config.created_at).toLocaleDateString(),
-                        " • ",
-                        config.total_cost ? `₹${Number(config.total_cost).toLocaleString()}` : "N/A"
-                      ] })
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "ghost", size: "sm", className: "h-8 font-bold text-primary group-hover:bg-primary group-hover:text-white transition-all", children: "Select" })
-                  ]
-                },
-                config.id
-              )) })
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "ghost", size: "sm", className: "h-8 font-bold text-primary group-hover:bg-primary group-hover:text-white transition-all", children: "Select" })
+                    ]
+                  },
+                  config.id
+                ))
+              ] })
             ] })
           ] }) }),
           loadingProducts ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col items-center justify-center p-20 space-y-4", children: [
@@ -125642,6 +125797,7 @@ function GeneratePo() {
   const [projects, setProjects] = reactExports.useState([]);
   const [boqItems, setBoqItems] = reactExports.useState([]);
   const [versions, setVersions] = reactExports.useState([]);
+  const [sourceBomVersionNumberById, setSourceBomVersionNumberById] = reactExports.useState({});
   const [selectedProjectId, setSelectedProjectId] = reactExports.useState(null);
   const [selectedVersionId, setSelectedVersionId] = reactExports.useState(null);
   const [history, setHistory] = reactExports.useState([]);
@@ -125755,10 +125911,10 @@ function GeneratePo() {
         const filtered = [];
         for (const p of projectList) {
           try {
-            const vRes = await apiFetch(`/api/boq-versions/${encodeURIComponent(p.id)}`);
+            const vRes = await apiFetch(`/api/boq-versions/${encodeURIComponent(p.id)}?type=bom`);
             if (vRes.ok) {
               const vData = await vRes.json();
-              const hasApproved = (vData.versions || []).some((v) => v.status === "approved");
+              const hasApproved = (vData.versions || []).some((v) => v.status === "approved" || v.is_last_final);
               if (hasApproved) filtered.push(p);
             }
           } catch (err) {
@@ -125775,12 +125931,17 @@ function GeneratePo() {
       setVersions([]);
       setSelectedVersionId(null);
       setBoqItems([]);
+      setSourceBomVersionNumberById({});
       return;
     }
-    apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}`, { headers: {} }).then((r) => r.ok ? r.json() : null).then((data) => {
-      if (!data) return;
-      let list = data.versions || [];
-      if (isPurchaseTeam) {
+    apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=bom`, { headers: {} }).then((r) => r.ok ? r.json() : null).then((bomData) => {
+      if (!bomData) return;
+      let list = bomData.versions || [];
+      setSourceBomVersionNumberById({});
+      const finalOnly = list.filter((v) => v.is_last_final);
+      if (finalOnly.length > 0) {
+        list = finalOnly;
+      } else if (isPurchaseTeam) {
         list = list.filter((v) => v.status === "approved");
       }
       setVersions(list);
@@ -125792,6 +125953,10 @@ function GeneratePo() {
       });
     }).catch(console.error);
   }, [selectedProjectId, isPurchaseTeam]);
+  const displayVersionNumber = reactExports.useCallback((v) => {
+    if (!v) return "";
+    return sourceBomVersionNumberById[v.id] ?? v.version_number;
+  }, [sourceBomVersionNumberById]);
   const loadHistory = reactExports.useCallback(async () => {
     if (!selectedVersionId) {
       setHistory([]);
@@ -126297,7 +126462,7 @@ function GeneratePo() {
       exportData.push(["ANNEXURE"]);
       exportData.push([`Project: ${selectedProject?.name || "-"}`]);
       exportData.push([`Client: ${selectedProject?.client || "-"}`]);
-      exportData.push([`Version: ${selectedVersion ? `V${selectedVersion.version_number} (${VERSION_LABEL$1[selectedVersion.status] || selectedVersion.status})` : "Draft"}`]);
+      exportData.push([`Version: ${selectedVersion ? `V${displayVersionNumber(selectedVersion)} (${VERSION_LABEL$1[selectedVersion.status] || selectedVersion.status})` : "Draft"}`]);
       exportData.push([]);
       exportData.push(mainHeaders);
       let grandTotal = 0;
@@ -126443,7 +126608,7 @@ function GeneratePo() {
         }
       }
       utils.book_append_sheet(workbook, worksheet, "Annexure");
-      const filename = `${selectedProject?.name || "Annexure"}_${selectedVersion ? `V${selectedVersion.version_number}` : "draft"}_Annexure.xlsx`;
+      const filename = `${selectedProject?.name || "Annexure"}_${selectedVersion ? `V${displayVersionNumber(selectedVersion)}` : "draft"}_Annexure.xlsx`;
       writeFileSync(workbook, filename);
       toast({ title: "Success", description: `Downloaded ${filename}` });
     } catch (err) {
@@ -126492,7 +126657,7 @@ function GeneratePo() {
       doc.setFontSize(9);
       doc.text(`Client: ${selectedProject?.client || "-"}`, pageWidth - 10, 22, { align: "right" });
       doc.text(`Budget: ${selectedProject?.budget || "-"}`, pageWidth - 10, 28, { align: "right" });
-      doc.text(`Version: ${selectedVersion ? `V${selectedVersion.version_number}` : "Draft"}`, pageWidth - 10, 34, { align: "right" });
+      doc.text(`Version: ${selectedVersion ? `V${displayVersionNumber(selectedVersion)}` : "Draft"}`, pageWidth - 10, 34, { align: "right" });
       doc.setFontSize(14);
       doc.setFont("helvetica", "bold");
       doc.text("ANNEXURE", pageWidth / 2, 25, { align: "center" });
@@ -126639,7 +126804,7 @@ function GeneratePo() {
         doc.setFont("helvetica", "normal");
         doc.text("GST Extra", 10, finalY + 6);
       }
-      const filename = `${selectedProject?.name || "Annexure"}_${selectedVersion ? `V${selectedVersion.version_number}` : "draft"}_Annexure.pdf`;
+      const filename = `${selectedProject?.name || "Annexure"}_${selectedVersion ? `V${displayVersionNumber(selectedVersion)}` : "draft"}_Annexure.pdf`;
       doc.save(filename);
       toast({ title: "Success", description: `Downloaded ${filename}` });
     } catch (err) {
@@ -126681,7 +126846,7 @@ function GeneratePo() {
                   /* @__PURE__ */ jsxRuntimeExports.jsx(SelectTrigger, { className: "flex-1 min-w-[140px] bg-slate-50 border-slate-200 h-9 px-3", children: /* @__PURE__ */ jsxRuntimeExports.jsx(SelectValue, { placeholder: "Select version" }) }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx(SelectContent, { className: "max-h-60 overflow-auto", children: versions.map((v) => /* @__PURE__ */ jsxRuntimeExports.jsxs(SelectItem, { value: v.id, children: [
                     "V",
-                    v.version_number,
+                    displayVersionNumber(v),
                     " ",
                     !isPurchaseTeam && `(${VERSION_LABEL$1[v.status] ?? v.status})`
                   ] }, v.id)) })
@@ -130308,6 +130473,545 @@ function ReportDesigner({ schema, onChange }) {
   ] });
 }
 
+// src/primitive.tsx
+function composeEventHandlers(originalEventHandler, ourEventHandler, { checkForDefaultPrevented = true } = {}) {
+  return function handleEvent(event) {
+    originalEventHandler?.(event);
+    if (checkForDefaultPrevented === false || !event.defaultPrevented) {
+      return ourEventHandler?.(event);
+    }
+  };
+}
+
+// src/slot.tsx
+// @__NO_SIDE_EFFECTS__
+function createSlot(ownerName) {
+  const SlotClone = /* @__PURE__ */ createSlotClone(ownerName);
+  const Slot2 = reactExports.forwardRef((props, forwardedRef) => {
+    const { children, ...slotProps } = props;
+    const childrenArray = reactExports.Children.toArray(children);
+    const slottable = childrenArray.find(isSlottable);
+    if (slottable) {
+      const newElement = slottable.props.children;
+      const newChildren = childrenArray.map((child) => {
+        if (child === slottable) {
+          if (reactExports.Children.count(newElement) > 1) return reactExports.Children.only(null);
+          return reactExports.isValidElement(newElement) ? newElement.props.children : null;
+        } else {
+          return child;
+        }
+      });
+      return /* @__PURE__ */ jsxRuntimeExports.jsx(SlotClone, { ...slotProps, ref: forwardedRef, children: reactExports.isValidElement(newElement) ? reactExports.cloneElement(newElement, void 0, newChildren) : null });
+    }
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(SlotClone, { ...slotProps, ref: forwardedRef, children });
+  });
+  Slot2.displayName = `${ownerName}.Slot`;
+  return Slot2;
+}
+// @__NO_SIDE_EFFECTS__
+function createSlotClone(ownerName) {
+  const SlotClone = reactExports.forwardRef((props, forwardedRef) => {
+    const { children, ...slotProps } = props;
+    if (reactExports.isValidElement(children)) {
+      const childrenRef = getElementRef(children);
+      const props2 = mergeProps(slotProps, children.props);
+      if (children.type !== reactExports.Fragment) {
+        props2.ref = forwardedRef ? composeRefs$1(forwardedRef, childrenRef) : childrenRef;
+      }
+      return reactExports.cloneElement(children, props2);
+    }
+    return reactExports.Children.count(children) > 1 ? reactExports.Children.only(null) : null;
+  });
+  SlotClone.displayName = `${ownerName}.SlotClone`;
+  return SlotClone;
+}
+var SLOTTABLE_IDENTIFIER = Symbol("radix.slottable");
+function isSlottable(child) {
+  return reactExports.isValidElement(child) && typeof child.type === "function" && "__radixId" in child.type && child.type.__radixId === SLOTTABLE_IDENTIFIER;
+}
+function mergeProps(slotProps, childProps) {
+  const overrideProps = { ...childProps };
+  for (const propName in childProps) {
+    const slotPropValue = slotProps[propName];
+    const childPropValue = childProps[propName];
+    const isHandler = /^on[A-Z]/.test(propName);
+    if (isHandler) {
+      if (slotPropValue && childPropValue) {
+        overrideProps[propName] = (...args) => {
+          const result = childPropValue(...args);
+          slotPropValue(...args);
+          return result;
+        };
+      } else if (slotPropValue) {
+        overrideProps[propName] = slotPropValue;
+      }
+    } else if (propName === "style") {
+      overrideProps[propName] = { ...slotPropValue, ...childPropValue };
+    } else if (propName === "className") {
+      overrideProps[propName] = [slotPropValue, childPropValue].filter(Boolean).join(" ");
+    }
+  }
+  return { ...slotProps, ...overrideProps };
+}
+function getElementRef(element) {
+  let getter = Object.getOwnPropertyDescriptor(element.props, "ref")?.get;
+  let mayWarn = getter && "isReactWarning" in getter && getter.isReactWarning;
+  if (mayWarn) {
+    return element.ref;
+  }
+  getter = Object.getOwnPropertyDescriptor(element, "ref")?.get;
+  mayWarn = getter && "isReactWarning" in getter && getter.isReactWarning;
+  if (mayWarn) {
+    return element.props.ref;
+  }
+  return element.props.ref || element.ref;
+}
+
+// src/use-controllable-state.tsx
+var useInsertionEffect = React$1[" useInsertionEffect ".trim().toString()] || useLayoutEffect2;
+function useControllableState({
+  prop,
+  defaultProp,
+  onChange = () => {
+  },
+  caller
+}) {
+  const [uncontrolledProp, setUncontrolledProp, onChangeRef] = useUncontrolledState({
+    defaultProp,
+    onChange
+  });
+  const isControlled = prop !== void 0;
+  const value = isControlled ? prop : uncontrolledProp;
+  {
+    const isControlledRef = reactExports.useRef(prop !== void 0);
+    reactExports.useEffect(() => {
+      const wasControlled = isControlledRef.current;
+      if (wasControlled !== isControlled) {
+        const from = wasControlled ? "controlled" : "uncontrolled";
+        const to = isControlled ? "controlled" : "uncontrolled";
+        console.warn(
+          `${caller} is changing from ${from} to ${to}. Components should not switch from controlled to uncontrolled (or vice versa). Decide between using a controlled or uncontrolled value for the lifetime of the component.`
+        );
+      }
+      isControlledRef.current = isControlled;
+    }, [isControlled, caller]);
+  }
+  const setValue = reactExports.useCallback(
+    (nextValue) => {
+      if (isControlled) {
+        const value2 = isFunction$1(nextValue) ? nextValue(prop) : nextValue;
+        if (value2 !== prop) {
+          onChangeRef.current?.(value2);
+        }
+      } else {
+        setUncontrolledProp(nextValue);
+      }
+    },
+    [isControlled, prop, setUncontrolledProp, onChangeRef]
+  );
+  return [value, setValue];
+}
+function useUncontrolledState({
+  defaultProp,
+  onChange
+}) {
+  const [value, setValue] = reactExports.useState(defaultProp);
+  const prevValueRef = reactExports.useRef(value);
+  const onChangeRef = reactExports.useRef(onChange);
+  useInsertionEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+  reactExports.useEffect(() => {
+    if (prevValueRef.current !== value) {
+      onChangeRef.current?.(value);
+      prevValueRef.current = value;
+    }
+  }, [value, prevValueRef]);
+  return [value, setValue, onChangeRef];
+}
+function isFunction$1(value) {
+  return typeof value === "function";
+}
+
+var POPOVER_NAME = "Popover";
+var [createPopoverContext] = createContextScope$1(POPOVER_NAME, [
+  createPopperScope
+]);
+var usePopperScope = createPopperScope();
+var [PopoverProvider, usePopoverContext] = createPopoverContext(POPOVER_NAME);
+var Popover$1 = (props) => {
+  const {
+    __scopePopover,
+    children,
+    open: openProp,
+    defaultOpen,
+    onOpenChange,
+    modal = false
+  } = props;
+  const popperScope = usePopperScope(__scopePopover);
+  const triggerRef = reactExports.useRef(null);
+  const [hasCustomAnchor, setHasCustomAnchor] = reactExports.useState(false);
+  const [open, setOpen] = useControllableState({
+    prop: openProp,
+    defaultProp: defaultOpen ?? false,
+    onChange: onOpenChange,
+    caller: POPOVER_NAME
+  });
+  return /* @__PURE__ */ jsxRuntimeExports.jsx(Root2$5, { ...popperScope, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+    PopoverProvider,
+    {
+      scope: __scopePopover,
+      contentId: useId(),
+      triggerRef,
+      open,
+      onOpenChange: setOpen,
+      onOpenToggle: reactExports.useCallback(() => setOpen((prevOpen) => !prevOpen), [setOpen]),
+      hasCustomAnchor,
+      onCustomAnchorAdd: reactExports.useCallback(() => setHasCustomAnchor(true), []),
+      onCustomAnchorRemove: reactExports.useCallback(() => setHasCustomAnchor(false), []),
+      modal,
+      children
+    }
+  ) });
+};
+Popover$1.displayName = POPOVER_NAME;
+var ANCHOR_NAME = "PopoverAnchor";
+var PopoverAnchor = reactExports.forwardRef(
+  (props, forwardedRef) => {
+    const { __scopePopover, ...anchorProps } = props;
+    const context = usePopoverContext(ANCHOR_NAME, __scopePopover);
+    const popperScope = usePopperScope(__scopePopover);
+    const { onCustomAnchorAdd, onCustomAnchorRemove } = context;
+    reactExports.useEffect(() => {
+      onCustomAnchorAdd();
+      return () => onCustomAnchorRemove();
+    }, [onCustomAnchorAdd, onCustomAnchorRemove]);
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(Anchor, { ...popperScope, ...anchorProps, ref: forwardedRef });
+  }
+);
+PopoverAnchor.displayName = ANCHOR_NAME;
+var TRIGGER_NAME = "PopoverTrigger";
+var PopoverTrigger$1 = reactExports.forwardRef(
+  (props, forwardedRef) => {
+    const { __scopePopover, ...triggerProps } = props;
+    const context = usePopoverContext(TRIGGER_NAME, __scopePopover);
+    const popperScope = usePopperScope(__scopePopover);
+    const composedTriggerRef = useComposedRefs$1(forwardedRef, context.triggerRef);
+    const trigger = /* @__PURE__ */ jsxRuntimeExports.jsx(
+      Primitive$3.button,
+      {
+        type: "button",
+        "aria-haspopup": "dialog",
+        "aria-expanded": context.open,
+        "aria-controls": context.contentId,
+        "data-state": getState(context.open),
+        ...triggerProps,
+        ref: composedTriggerRef,
+        onClick: composeEventHandlers(props.onClick, context.onOpenToggle)
+      }
+    );
+    return context.hasCustomAnchor ? trigger : /* @__PURE__ */ jsxRuntimeExports.jsx(Anchor, { asChild: true, ...popperScope, children: trigger });
+  }
+);
+PopoverTrigger$1.displayName = TRIGGER_NAME;
+var PORTAL_NAME = "PopoverPortal";
+var [PortalProvider, usePortalContext] = createPopoverContext(PORTAL_NAME, {
+  forceMount: void 0
+});
+var PopoverPortal = (props) => {
+  const { __scopePopover, forceMount, children, container } = props;
+  const context = usePopoverContext(PORTAL_NAME, __scopePopover);
+  return /* @__PURE__ */ jsxRuntimeExports.jsx(PortalProvider, { scope: __scopePopover, forceMount, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Presence, { present: forceMount || context.open, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Portal$5, { asChild: true, container, children }) }) });
+};
+PopoverPortal.displayName = PORTAL_NAME;
+var CONTENT_NAME = "PopoverContent";
+var PopoverContent$1 = reactExports.forwardRef(
+  (props, forwardedRef) => {
+    const portalContext = usePortalContext(CONTENT_NAME, props.__scopePopover);
+    const { forceMount = portalContext.forceMount, ...contentProps } = props;
+    const context = usePopoverContext(CONTENT_NAME, props.__scopePopover);
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(Presence, { present: forceMount || context.open, children: context.modal ? /* @__PURE__ */ jsxRuntimeExports.jsx(PopoverContentModal, { ...contentProps, ref: forwardedRef }) : /* @__PURE__ */ jsxRuntimeExports.jsx(PopoverContentNonModal, { ...contentProps, ref: forwardedRef }) });
+  }
+);
+PopoverContent$1.displayName = CONTENT_NAME;
+var Slot = createSlot("PopoverContent.RemoveScroll");
+var PopoverContentModal = reactExports.forwardRef(
+  (props, forwardedRef) => {
+    const context = usePopoverContext(CONTENT_NAME, props.__scopePopover);
+    const contentRef = reactExports.useRef(null);
+    const composedRefs = useComposedRefs$1(forwardedRef, contentRef);
+    const isRightClickOutsideRef = reactExports.useRef(false);
+    reactExports.useEffect(() => {
+      const content = contentRef.current;
+      if (content) return hideOthers(content);
+    }, []);
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(ReactRemoveScroll, { as: Slot, allowPinchZoom: true, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+      PopoverContentImpl,
+      {
+        ...props,
+        ref: composedRefs,
+        trapFocus: context.open,
+        disableOutsidePointerEvents: true,
+        onCloseAutoFocus: composeEventHandlers(props.onCloseAutoFocus, (event) => {
+          event.preventDefault();
+          if (!isRightClickOutsideRef.current) context.triggerRef.current?.focus();
+        }),
+        onPointerDownOutside: composeEventHandlers(
+          props.onPointerDownOutside,
+          (event) => {
+            const originalEvent = event.detail.originalEvent;
+            const ctrlLeftClick = originalEvent.button === 0 && originalEvent.ctrlKey === true;
+            const isRightClick = originalEvent.button === 2 || ctrlLeftClick;
+            isRightClickOutsideRef.current = isRightClick;
+          },
+          { checkForDefaultPrevented: false }
+        ),
+        onFocusOutside: composeEventHandlers(
+          props.onFocusOutside,
+          (event) => event.preventDefault(),
+          { checkForDefaultPrevented: false }
+        )
+      }
+    ) });
+  }
+);
+var PopoverContentNonModal = reactExports.forwardRef(
+  (props, forwardedRef) => {
+    const context = usePopoverContext(CONTENT_NAME, props.__scopePopover);
+    const hasInteractedOutsideRef = reactExports.useRef(false);
+    const hasPointerDownOutsideRef = reactExports.useRef(false);
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(
+      PopoverContentImpl,
+      {
+        ...props,
+        ref: forwardedRef,
+        trapFocus: false,
+        disableOutsidePointerEvents: false,
+        onCloseAutoFocus: (event) => {
+          props.onCloseAutoFocus?.(event);
+          if (!event.defaultPrevented) {
+            if (!hasInteractedOutsideRef.current) context.triggerRef.current?.focus();
+            event.preventDefault();
+          }
+          hasInteractedOutsideRef.current = false;
+          hasPointerDownOutsideRef.current = false;
+        },
+        onInteractOutside: (event) => {
+          props.onInteractOutside?.(event);
+          if (!event.defaultPrevented) {
+            hasInteractedOutsideRef.current = true;
+            if (event.detail.originalEvent.type === "pointerdown") {
+              hasPointerDownOutsideRef.current = true;
+            }
+          }
+          const target = event.target;
+          const targetIsTrigger = context.triggerRef.current?.contains(target);
+          if (targetIsTrigger) event.preventDefault();
+          if (event.detail.originalEvent.type === "focusin" && hasPointerDownOutsideRef.current) {
+            event.preventDefault();
+          }
+        }
+      }
+    );
+  }
+);
+var PopoverContentImpl = reactExports.forwardRef(
+  (props, forwardedRef) => {
+    const {
+      __scopePopover,
+      trapFocus,
+      onOpenAutoFocus,
+      onCloseAutoFocus,
+      disableOutsidePointerEvents,
+      onEscapeKeyDown,
+      onPointerDownOutside,
+      onFocusOutside,
+      onInteractOutside,
+      ...contentProps
+    } = props;
+    const context = usePopoverContext(CONTENT_NAME, __scopePopover);
+    const popperScope = usePopperScope(__scopePopover);
+    useFocusGuards();
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(
+      FocusScope,
+      {
+        asChild: true,
+        loop: true,
+        trapped: trapFocus,
+        onMountAutoFocus: onOpenAutoFocus,
+        onUnmountAutoFocus: onCloseAutoFocus,
+        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+          DismissableLayer,
+          {
+            asChild: true,
+            disableOutsidePointerEvents,
+            onInteractOutside,
+            onEscapeKeyDown,
+            onPointerDownOutside,
+            onFocusOutside,
+            onDismiss: () => context.onOpenChange(false),
+            children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+              Content$2,
+              {
+                "data-state": getState(context.open),
+                role: "dialog",
+                id: context.contentId,
+                ...popperScope,
+                ...contentProps,
+                ref: forwardedRef,
+                style: {
+                  ...contentProps.style,
+                  // re-namespace exposed content custom properties
+                  ...{
+                    "--radix-popover-content-transform-origin": "var(--radix-popper-transform-origin)",
+                    "--radix-popover-content-available-width": "var(--radix-popper-available-width)",
+                    "--radix-popover-content-available-height": "var(--radix-popper-available-height)",
+                    "--radix-popover-trigger-width": "var(--radix-popper-anchor-width)",
+                    "--radix-popover-trigger-height": "var(--radix-popper-anchor-height)"
+                  }
+                }
+              }
+            )
+          }
+        )
+      }
+    );
+  }
+);
+var CLOSE_NAME = "PopoverClose";
+var PopoverClose = reactExports.forwardRef(
+  (props, forwardedRef) => {
+    const { __scopePopover, ...closeProps } = props;
+    const context = usePopoverContext(CLOSE_NAME, __scopePopover);
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(
+      Primitive$3.button,
+      {
+        type: "button",
+        ...closeProps,
+        ref: forwardedRef,
+        onClick: composeEventHandlers(props.onClick, () => context.onOpenChange(false))
+      }
+    );
+  }
+);
+PopoverClose.displayName = CLOSE_NAME;
+var ARROW_NAME = "PopoverArrow";
+var PopoverArrow = reactExports.forwardRef(
+  (props, forwardedRef) => {
+    const { __scopePopover, ...arrowProps } = props;
+    const popperScope = usePopperScope(__scopePopover);
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(Arrow, { ...popperScope, ...arrowProps, ref: forwardedRef });
+  }
+);
+PopoverArrow.displayName = ARROW_NAME;
+function getState(open) {
+  return open ? "open" : "closed";
+}
+var Root2 = Popover$1;
+var Trigger = PopoverTrigger$1;
+var Portal = PopoverPortal;
+var Content2 = PopoverContent$1;
+
+const Popover = Root2;
+const PopoverTrigger = Trigger;
+const PopoverContent = reactExports.forwardRef(({ className, align = "center", sideOffset = 4, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(Portal, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+  Content2,
+  {
+    ref,
+    align,
+    sideOffset,
+    className: cn(
+      "z-50 w-72 rounded-md border bg-popover p-4 text-popover-foreground shadow-md outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 origin-[--radix-popover-content-transform-origin]",
+      className
+    ),
+    ...props
+  }
+) }));
+PopoverContent.displayName = Content2.displayName;
+
+var U=1,Y$1=.9,H=.8,J=.17,p=.1,u=.999,$$1=.9999;var k$2=.99,m=/[\\\/_+.#"@\[\(\{&]/,B$1=/[\\\/_+.#"@\[\(\{&]/g,K$1=/[\s-]/,X=/[\s-]/g;function G(_,C,h,P,A,f,O){if(f===C.length)return A===_.length?U:k$2;var T=`${A},${f}`;if(O[T]!==void 0)return O[T];for(var L=P.charAt(f),c=h.indexOf(L,A),S=0,E,N,R,M;c>=0;)E=G(_,C,h,P,c+1,f+1,O),E>S&&(c===A?E*=U:m.test(_.charAt(c-1))?(E*=H,R=_.slice(A,c-1).match(B$1),R&&A>0&&(E*=Math.pow(u,R.length))):K$1.test(_.charAt(c-1))?(E*=Y$1,M=_.slice(A,c-1).match(X),M&&A>0&&(E*=Math.pow(u,M.length))):(E*=J,A>0&&(E*=Math.pow(u,c-A))),_.charAt(c)!==C.charAt(f)&&(E*=$$1)),(E<p&&h.charAt(c-1)===P.charAt(f+1)||P.charAt(f+1)===P.charAt(f)&&h.charAt(c-1)!==P.charAt(f))&&(N=G(_,C,h,P,c+1,f+2,O),N*p>E&&(E=N*p)),E>S&&(S=E),c=h.indexOf(L,c+1);return O[T]=S,S}function D(_){return _.toLowerCase().replace(X," ")}function W(_,C,h){return _=h&&h.length>0?`${_+" "+h.join(" ")}`:_,G(_,C,D(_),D(C),0,0,{})}
+
+var N='[cmdk-group=""]',Y='[cmdk-group-items=""]',be='[cmdk-group-heading=""]',le='[cmdk-item=""]',ce=`${le}:not([aria-disabled="true"])`,Z="cmdk-item-select",T="data-value",Re=(r,o,n)=>W(r,o,n),ue=reactExports.createContext(void 0),K=()=>reactExports.useContext(ue),de=reactExports.createContext(void 0),ee=()=>reactExports.useContext(de),fe=reactExports.createContext(void 0),me=reactExports.forwardRef((r,o)=>{let n=L(()=>{var e,a;return {search:"",value:(a=(e=r.value)!=null?e:r.defaultValue)!=null?a:"",selectedItemId:void 0,filtered:{count:0,items:new Map,groups:new Set}}}),u=L(()=>new Set),c=L(()=>new Map),d=L(()=>new Map),f=L(()=>new Set),p=pe(r),{label:b,children:m,value:R,onValueChange:x,filter:C,shouldFilter:S,loop:A,disablePointerSelection:ge=false,vimBindings:j=true,...O}=r,$=useId(),q=useId(),_=useId(),I=reactExports.useRef(null),v=ke();k$1(()=>{if(R!==void 0){let e=R.trim();n.current.value=e,E.emit();}},[R]),k$1(()=>{v(6,ne);},[]);let E=reactExports.useMemo(()=>({subscribe:e=>(f.current.add(e),()=>f.current.delete(e)),snapshot:()=>n.current,setState:(e,a,s)=>{var i,l,g,y;if(!Object.is(n.current[e],a)){if(n.current[e]=a,e==="search")J(),z(),v(1,W);else if(e==="value"){if(document.activeElement.hasAttribute("cmdk-input")||document.activeElement.hasAttribute("cmdk-root")){let h=document.getElementById(_);h?h.focus():(i=document.getElementById($))==null||i.focus();}if(v(7,()=>{var h;n.current.selectedItemId=(h=M())==null?void 0:h.id,E.emit();}),s||v(5,ne),((l=p.current)==null?void 0:l.value)!==void 0){let h=a!=null?a:"";(y=(g=p.current).onValueChange)==null||y.call(g,h);return}}E.emit();}},emit:()=>{f.current.forEach(e=>e());}}),[]),U=reactExports.useMemo(()=>({value:(e,a,s)=>{var i;a!==((i=d.current.get(e))==null?void 0:i.value)&&(d.current.set(e,{value:a,keywords:s}),n.current.filtered.items.set(e,te(a,s)),v(2,()=>{z(),E.emit();}));},item:(e,a)=>(u.current.add(e),a&&(c.current.has(a)?c.current.get(a).add(e):c.current.set(a,new Set([e]))),v(3,()=>{J(),z(),n.current.value||W(),E.emit();}),()=>{d.current.delete(e),u.current.delete(e),n.current.filtered.items.delete(e);let s=M();v(4,()=>{J(),(s==null?void 0:s.getAttribute("id"))===e&&W(),E.emit();});}),group:e=>(c.current.has(e)||c.current.set(e,new Set),()=>{d.current.delete(e),c.current.delete(e);}),filter:()=>p.current.shouldFilter,label:b||r["aria-label"],getDisablePointerSelection:()=>p.current.disablePointerSelection,listId:$,inputId:_,labelId:q,listInnerRef:I}),[]);function te(e,a){var i,l;let s=(l=(i=p.current)==null?void 0:i.filter)!=null?l:Re;return e?s(e,n.current.search,a):0}function z(){if(!n.current.search||p.current.shouldFilter===false)return;let e=n.current.filtered.items,a=[];n.current.filtered.groups.forEach(i=>{let l=c.current.get(i),g=0;l.forEach(y=>{let h=e.get(y);g=Math.max(h,g);}),a.push([i,g]);});let s=I.current;V().sort((i,l)=>{var h,F;let g=i.getAttribute("id"),y=l.getAttribute("id");return ((h=e.get(y))!=null?h:0)-((F=e.get(g))!=null?F:0)}).forEach(i=>{let l=i.closest(Y);l?l.appendChild(i.parentElement===l?i:i.closest(`${Y} > *`)):s.appendChild(i.parentElement===s?i:i.closest(`${Y} > *`));}),a.sort((i,l)=>l[1]-i[1]).forEach(i=>{var g;let l=(g=I.current)==null?void 0:g.querySelector(`${N}[${T}="${encodeURIComponent(i[0])}"]`);l==null||l.parentElement.appendChild(l);});}function W(){let e=V().find(s=>s.getAttribute("aria-disabled")!=="true"),a=e==null?void 0:e.getAttribute(T);E.setState("value",a||void 0);}function J(){var a,s,i,l;if(!n.current.search||p.current.shouldFilter===false){n.current.filtered.count=u.current.size;return}n.current.filtered.groups=new Set;let e=0;for(let g of u.current){let y=(s=(a=d.current.get(g))==null?void 0:a.value)!=null?s:"",h=(l=(i=d.current.get(g))==null?void 0:i.keywords)!=null?l:[],F=te(y,h);n.current.filtered.items.set(g,F),F>0&&e++;}for(let[g,y]of c.current)for(let h of y)if(n.current.filtered.items.get(h)>0){n.current.filtered.groups.add(g);break}n.current.filtered.count=e;}function ne(){var a,s,i;let e=M();e&&(((a=e.parentElement)==null?void 0:a.firstChild)===e&&((i=(s=e.closest(N))==null?void 0:s.querySelector(be))==null||i.scrollIntoView({block:"nearest"})),e.scrollIntoView({block:"nearest"}));}function M(){var e;return (e=I.current)==null?void 0:e.querySelector(`${le}[aria-selected="true"]`)}function V(){var e;return Array.from(((e=I.current)==null?void 0:e.querySelectorAll(ce))||[])}function X(e){let s=V()[e];s&&E.setState("value",s.getAttribute(T));}function Q(e){var g;let a=M(),s=V(),i=s.findIndex(y=>y===a),l=s[i+e];(g=p.current)!=null&&g.loop&&(l=i+e<0?s[s.length-1]:i+e===s.length?s[0]:s[i+e]),l&&E.setState("value",l.getAttribute(T));}function re(e){let a=M(),s=a==null?void 0:a.closest(N),i;for(;s&&!i;)s=e>0?we(s,N):De(s,N),i=s==null?void 0:s.querySelector(ce);i?E.setState("value",i.getAttribute(T)):Q(e);}let oe=()=>X(V().length-1),ie=e=>{e.preventDefault(),e.metaKey?oe():e.altKey?re(1):Q(1);},se=e=>{e.preventDefault(),e.metaKey?X(0):e.altKey?re(-1):Q(-1);};return reactExports.createElement(Primitive$3.div,{ref:o,tabIndex:-1,...O,"cmdk-root":"",onKeyDown:e=>{var s;(s=O.onKeyDown)==null||s.call(O,e);let a=e.nativeEvent.isComposing||e.keyCode===229;if(!(e.defaultPrevented||a))switch(e.key){case "n":case "j":{j&&e.ctrlKey&&ie(e);break}case "ArrowDown":{ie(e);break}case "p":case "k":{j&&e.ctrlKey&&se(e);break}case "ArrowUp":{se(e);break}case "Home":{e.preventDefault(),X(0);break}case "End":{e.preventDefault(),oe();break}case "Enter":{e.preventDefault();let i=M();if(i){let l=new Event(Z);i.dispatchEvent(l);}}}}},reactExports.createElement("label",{"cmdk-label":"",htmlFor:U.inputId,id:U.labelId,style:Te},b),B(r,e=>reactExports.createElement(de.Provider,{value:E},reactExports.createElement(ue.Provider,{value:U},e))))}),he=reactExports.forwardRef((r,o)=>{var _,I;let n=useId(),u=reactExports.useRef(null),c=reactExports.useContext(fe),d=K(),f=pe(r),p=(I=(_=f.current)==null?void 0:_.forceMount)!=null?I:c==null?void 0:c.forceMount;k$1(()=>{if(!p)return d.item(n,c==null?void 0:c.id)},[p]);let b=ve(n,u,[r.value,r.children,u],r.keywords),m=ee(),R=P$1(v=>v.value&&v.value===b.current),x=P$1(v=>p||d.filter()===false?true:v.search?v.filtered.items.get(n)>0:true);reactExports.useEffect(()=>{let v=u.current;if(!(!v||r.disabled))return v.addEventListener(Z,C),()=>v.removeEventListener(Z,C)},[x,r.onSelect,r.disabled]);function C(){var v,E;S(),(E=(v=f.current).onSelect)==null||E.call(v,b.current);}function S(){m.setState("value",b.current,true);}if(!x)return null;let{disabled:A,value:ge,onSelect:j,forceMount:O,keywords:$,...q}=r;return reactExports.createElement(Primitive$3.div,{ref:composeRefs$1(u,o),...q,id:n,"cmdk-item":"",role:"option","aria-disabled":!!A,"aria-selected":!!R,"data-disabled":!!A,"data-selected":!!R,onPointerMove:A||d.getDisablePointerSelection()?void 0:S,onClick:A?void 0:C},r.children)}),Ee=reactExports.forwardRef((r,o)=>{let{heading:n,children:u,forceMount:c,...d}=r,f=useId(),p=reactExports.useRef(null),b=reactExports.useRef(null),m=useId(),R=K(),x=P$1(S=>c||R.filter()===false?true:S.search?S.filtered.groups.has(f):true);k$1(()=>R.group(f),[]),ve(f,p,[r.value,r.heading,b]);let C=reactExports.useMemo(()=>({id:f,forceMount:c}),[c]);return reactExports.createElement(Primitive$3.div,{ref:composeRefs$1(p,o),...d,"cmdk-group":"",role:"presentation",hidden:x?void 0:true},n&&reactExports.createElement("div",{ref:b,"cmdk-group-heading":"","aria-hidden":true,id:m},n),B(r,S=>reactExports.createElement("div",{"cmdk-group-items":"",role:"group","aria-labelledby":n?m:void 0},reactExports.createElement(fe.Provider,{value:C},S))))}),ye=reactExports.forwardRef((r,o)=>{let{alwaysRender:n,...u}=r,c=reactExports.useRef(null),d=P$1(f=>!f.search);return !n&&!d?null:reactExports.createElement(Primitive$3.div,{ref:composeRefs$1(c,o),...u,"cmdk-separator":"",role:"separator"})}),Se=reactExports.forwardRef((r,o)=>{let{onValueChange:n,...u}=r,c=r.value!=null,d=ee(),f=P$1(m=>m.search),p=P$1(m=>m.selectedItemId),b=K();return reactExports.useEffect(()=>{r.value!=null&&d.setState("search",r.value);},[r.value]),reactExports.createElement(Primitive$3.input,{ref:o,...u,"cmdk-input":"",autoComplete:"off",autoCorrect:"off",spellCheck:false,"aria-autocomplete":"list",role:"combobox","aria-expanded":true,"aria-controls":b.listId,"aria-labelledby":b.labelId,"aria-activedescendant":p,id:b.inputId,type:"text",value:c?r.value:f,onChange:m=>{c||d.setState("search",m.target.value),n==null||n(m.target.value);}})}),Ce=reactExports.forwardRef((r,o)=>{let{children:n,label:u="Suggestions",...c}=r,d=reactExports.useRef(null),f=reactExports.useRef(null),p=P$1(m=>m.selectedItemId),b=K();return reactExports.useEffect(()=>{if(f.current&&d.current){let m=f.current,R=d.current,x,C=new ResizeObserver(()=>{x=requestAnimationFrame(()=>{let S=m.offsetHeight;R.style.setProperty("--cmdk-list-height",S.toFixed(1)+"px");});});return C.observe(m),()=>{cancelAnimationFrame(x),C.unobserve(m);}}},[]),reactExports.createElement(Primitive$3.div,{ref:composeRefs$1(d,o),...c,"cmdk-list":"",role:"listbox",tabIndex:-1,"aria-activedescendant":p,"aria-label":u,id:b.listId},B(r,m=>reactExports.createElement("div",{ref:composeRefs$1(f,b.listInnerRef),"cmdk-list-sizer":""},m)))}),xe=reactExports.forwardRef((r,o)=>{let{open:n,onOpenChange:u,overlayClassName:c,contentClassName:d,container:f,...p}=r;return reactExports.createElement(Root$4,{open:n,onOpenChange:u},reactExports.createElement(Portal$2,{container:f},reactExports.createElement(Overlay,{"cmdk-overlay":"",className:c}),reactExports.createElement(Content,{"aria-label":r.label,"cmdk-dialog":"",className:d},reactExports.createElement(me,{ref:o,...p}))))}),Ie=reactExports.forwardRef((r,o)=>P$1(u=>u.filtered.count===0)?reactExports.createElement(Primitive$3.div,{ref:o,...r,"cmdk-empty":"",role:"presentation"}):null),Pe=reactExports.forwardRef((r,o)=>{let{progress:n,children:u,label:c="Loading...",...d}=r;return reactExports.createElement(Primitive$3.div,{ref:o,...d,"cmdk-loading":"",role:"progressbar","aria-valuenow":n,"aria-valuemin":0,"aria-valuemax":100,"aria-label":c},B(r,f=>reactExports.createElement("div",{"aria-hidden":true},f)))}),_e=Object.assign(me,{List:Ce,Item:he,Input:Se,Group:Ee,Separator:ye,Dialog:xe,Empty:Ie,Loading:Pe});function we(r,o){let n=r.nextElementSibling;for(;n;){if(n.matches(o))return n;n=n.nextElementSibling;}}function De(r,o){let n=r.previousElementSibling;for(;n;){if(n.matches(o))return n;n=n.previousElementSibling;}}function pe(r){let o=reactExports.useRef(r);return k$1(()=>{o.current=r;}),o}var k$1=typeof window=="undefined"?reactExports.useEffect:reactExports.useLayoutEffect;function L(r){let o=reactExports.useRef();return o.current===void 0&&(o.current=r()),o}function P$1(r){let o=ee(),n=()=>r(o.snapshot());return reactExports.useSyncExternalStore(o.subscribe,n,n)}function ve(r,o,n,u=[]){let c=reactExports.useRef(),d=K();return k$1(()=>{var b;let f=(()=>{var m;for(let R of n){if(typeof R=="string")return R.trim();if(typeof R=="object"&&"current"in R)return R.current?(m=R.current.textContent)==null?void 0:m.trim():c.current}})(),p=u.map(m=>m.trim());d.value(r,f,p),(b=o.current)==null||b.setAttribute(T,f),c.current=f;}),c}var ke=()=>{let[r,o]=reactExports.useState(),n=L(()=>new Map);return k$1(()=>{n.current.forEach(u=>u()),n.current=new Map;},[r]),(u,c)=>{n.current.set(u,c),o({});}};function Me(r){let o=r.type;return typeof o=="function"?o(r.props):"render"in o?o.render(r.props):r}function B({asChild:r,children:o},n){return r&&reactExports.isValidElement(o)?reactExports.cloneElement(Me(o),{ref:o.ref},n(o.props.children)):n(o)}var Te={position:"absolute",width:"1px",height:"1px",padding:"0",margin:"-1px",overflow:"hidden",clip:"rect(0, 0, 0, 0)",whiteSpace:"nowrap",borderWidth:"0"};
+
+const Command = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+  _e,
+  {
+    ref,
+    className: cn(
+      "flex h-full w-full flex-col overflow-hidden rounded-md bg-popover text-popover-foreground",
+      className
+    ),
+    ...props
+  }
+));
+Command.displayName = _e.displayName;
+const CommandInput = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center border-b px-3", "cmdk-input-wrapper": "", children: [
+  /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { className: "mr-2 h-4 w-4 shrink-0 opacity-50" }),
+  /* @__PURE__ */ jsxRuntimeExports.jsx(
+    _e.Input,
+    {
+      ref,
+      className: cn(
+        "flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50",
+        className
+      ),
+      ...props
+    }
+  )
+] }));
+CommandInput.displayName = _e.Input.displayName;
+const CommandList = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+  _e.List,
+  {
+    ref,
+    className: cn("max-h-[300px] overflow-y-auto overflow-x-hidden", className),
+    ...props
+  }
+));
+CommandList.displayName = _e.List.displayName;
+const CommandEmpty = reactExports.forwardRef((props, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+  _e.Empty,
+  {
+    ref,
+    className: "py-6 text-center text-sm",
+    ...props
+  }
+));
+CommandEmpty.displayName = _e.Empty.displayName;
+const CommandGroup = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+  _e.Group,
+  {
+    ref,
+    className: cn(
+      "overflow-hidden p-1 text-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground",
+      className
+    ),
+    ...props
+  }
+));
+CommandGroup.displayName = _e.Group.displayName;
+const CommandSeparator = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+  _e.Separator,
+  {
+    ref,
+    className: cn("-mx-1 h-px bg-border", className),
+    ...props
+  }
+));
+CommandSeparator.displayName = _e.Separator.displayName;
+const CommandItem = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+  _e.Item,
+  {
+    ref,
+    className: cn(
+      "relative flex cursor-default gap-2 select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none data-[disabled=true]:pointer-events-none data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground data-[disabled=true]:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+      className
+    ),
+    ...props
+  }
+));
+CommandItem.displayName = _e.Item.displayName;
+
 function MaterialPickerDialog({
   open,
   onOpenChange,
@@ -130407,13 +131111,28 @@ function CreateQuoteDialog({ open, onOpenChange, onCreated }) {
   const [saving, setSaving] = reactExports.useState(false);
   const [pickerOpen, setPickerOpen] = reactExports.useState(false);
   const [pickerForRow, setPickerForRow] = reactExports.useState(null);
-  const fileInputRef = reactExports.useRef(null);
+  const [importDialogOpen, setImportDialogOpen] = reactExports.useState(false);
+  const [importFileName, setImportFileName] = reactExports.useState(null);
+  const [importHeaders, setImportHeaders] = reactExports.useState([]);
+  const [importRows, setImportRows] = reactExports.useState([]);
+  const [importMappings, setImportMappings] = reactExports.useState({
+    itemName: -1,
+    description: -1,
+    spec: -1,
+    uom: -1,
+    quantity: -1
+  });
+  const [isParsingImport, setIsParsingImport] = reactExports.useState(false);
   reactExports.useEffect(() => {
     if (open) {
       setTitle("");
       setDescription("");
       setValidUntil("");
       setItems([emptyItem()]);
+      setImportDialogOpen(false);
+      setImportFileName(null);
+      setImportHeaders([]);
+      setImportRows([]);
     }
   }, [open]);
   const setItem = (idx, patch) => setItems((prev) => prev.map((it, i) => i === idx ? { ...it, ...patch } : it));
@@ -130427,45 +131146,87 @@ function CreateQuoteDialog({ open, onOpenChange, onCreated }) {
     if (pickerForRow === null) return;
     setItem(pickerForRow, { itemName: m.name, uom: m.unit || "", spec: m.description || m.category || "" });
   };
-  const handleImportFile = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const performQuoteSmartMapping = (headers) => {
+    const mappings = { itemName: -1, description: -1, spec: -1, uom: -1, quantity: -1 };
+    headers.forEach((header, idx) => {
+      const h = header.toLowerCase().trim();
+      if (h.includes("spec")) {
+        if (mappings.spec === -1) mappings.spec = idx;
+      } else if (h.includes("desc")) {
+        if (mappings.description === -1) mappings.description = idx;
+      } else if (h.includes("item") || h.includes("material") || h.includes("name") || h.includes("product") || h.includes("particular")) {
+        if (mappings.itemName === -1) mappings.itemName = idx;
+      } else if (h === "uom" || h === "unit" || h.includes("unit")) {
+        if (mappings.uom === -1) mappings.uom = idx;
+      } else if (h.includes("qty") || h.includes("quant")) {
+        if (mappings.quantity === -1) mappings.quantity = idx;
+      }
+    });
+    return mappings;
+  };
+  const handleImportFileSelect = (file) => {
+    setImportFileName(file.name);
+    setIsParsingImport(true);
     const reader = new FileReader();
     reader.onload = (evt) => {
       try {
         const data = evt.target?.result;
         const wb = readSync(data, { type: "binary" });
         const sheet = wb.Sheets[wb.SheetNames[0]];
-        const rows = utils.sheet_to_json(sheet, { defval: "" });
-        const norm = (obj, keys) => {
-          for (const k of Object.keys(obj)) {
-            if (keys.includes(k.trim().toLowerCase())) return obj[k];
-          }
-          return "";
-        };
-        const imported = rows.map((row) => ({
-          itemName: norm(row, ["item", "item name", "material", "name"]),
-          description: norm(row, ["description"]),
-          spec: norm(row, ["spec", "specification"]),
-          uom: norm(row, ["uom", "unit"]),
-          quantity: Number(norm(row, ["qty", "quantity"])) || 1
-        })).filter((it) => it.itemName);
-        if (imported.length === 0) {
-          toast({ title: "Nothing imported", description: "Couldn't find any rows with an Item Name column.", variant: "destructive" });
+        const jsonData = utils.sheet_to_json(sheet, { header: 1 });
+        if (jsonData.length === 0) {
+          toast({ title: "Import Error", description: "The file appears to be empty.", variant: "destructive" });
+          setImportFileName(null);
           return;
         }
-        setItems((prev) => {
-          const cleaned = prev.filter((p) => p.itemName.trim());
-          return [...cleaned, ...imported];
-        });
-        toast({ title: "Imported", description: `${imported.length} item(s) added from file.` });
+        let headerRowIdx = 0;
+        while (headerRowIdx < jsonData.length && (!jsonData[headerRowIdx] || jsonData[headerRowIdx].length === 0)) headerRowIdx++;
+        if (headerRowIdx >= jsonData.length) {
+          toast({ title: "Import Error", description: "No data rows found in the file.", variant: "destructive" });
+          setImportFileName(null);
+          return;
+        }
+        const headers = jsonData[headerRowIdx].map((h) => String(h ?? "").trim());
+        const rows = jsonData.slice(headerRowIdx + 1).filter((r) => r && r.length > 0 && r.some((c) => c !== null && c !== void 0 && c !== ""));
+        setImportHeaders(headers);
+        setImportRows(rows);
+        setImportMappings(performQuoteSmartMapping(headers));
       } catch {
-        toast({ title: "Error", description: "Failed to read the file. Use .xlsx or .csv with Item Name/UOM/Quantity columns.", variant: "destructive" });
+        toast({ title: "Error Parsing File", description: "Failed to read the file. Use .xlsx, .xls, or .csv.", variant: "destructive" });
+        setImportFileName(null);
       } finally {
-        if (fileInputRef.current) fileInputRef.current.value = "";
+        setIsParsingImport(false);
       }
     };
     reader.readAsBinaryString(file);
+  };
+  const applyImportMapping = () => {
+    if (importRows.length === 0) return;
+    const getMapped = (row, field) => {
+      const colIdx = importMappings[field];
+      if (colIdx === void 0 || colIdx === -1) return "";
+      return String(row[colIdx] ?? "").trim();
+    };
+    const imported = importRows.map((row) => ({
+      itemName: getMapped(row, "itemName"),
+      description: getMapped(row, "description"),
+      spec: getMapped(row, "spec"),
+      uom: getMapped(row, "uom"),
+      quantity: Number(getMapped(row, "quantity")) || 1
+    })).filter((it) => it.itemName);
+    if (imported.length === 0) {
+      toast({ title: "Nothing imported", description: "No rows had a value in the mapped Item Name column.", variant: "destructive" });
+      return;
+    }
+    setItems((prev) => {
+      const cleaned = prev.filter((p) => p.itemName.trim());
+      return [...cleaned, ...imported];
+    });
+    toast({ title: "Imported", description: `${imported.length} item(s) added from file.` });
+    setImportDialogOpen(false);
+    setImportFileName(null);
+    setImportHeaders([]);
+    setImportRows([]);
   };
   const create = async () => {
     if (!title.trim() || items.some((i) => !i.itemName.trim())) {
@@ -130510,13 +131271,10 @@ function CreateQuoteDialog({ open, onOpenChange, onCreated }) {
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(Label$3, { className: "text-sm font-semibold", children: "Items — vendor will only fill in the Rate" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("input", { ref: fileInputRef, type: "file", accept: ".xlsx,.xls,.csv", className: "hidden", onChange: handleImportFile }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { type: "button", variant: "outline", size: "sm", onClick: () => fileInputRef.current?.click(), children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(Upload, { className: "h-3.5 w-3.5 mr-1" }),
-                " Import from Excel"
-              ] })
-            ] })
+            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { type: "button", variant: "outline", size: "sm", onClick: () => setImportDialogOpen(true), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(Upload, { className: "h-3.5 w-3.5 mr-1" }),
+              " Import from Excel"
+            ] }) })
           ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "overflow-x-auto border rounded-md", children: /* @__PURE__ */ jsxRuntimeExports.jsxs(Table$1, { children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(TableHeader, { children: /* @__PURE__ */ jsxRuntimeExports.jsxs(TableRow, { children: [
@@ -130549,7 +131307,144 @@ function CreateQuoteDialog({ open, onOpenChange, onCreated }) {
         /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { onClick: create, disabled: saving, children: "Create Quote" })
       ] })
     ] }) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(MaterialPickerDialog, { open: pickerOpen, onOpenChange: setPickerOpen, onPick: onMaterialPicked })
+    /* @__PURE__ */ jsxRuntimeExports.jsx(MaterialPickerDialog, { open: pickerOpen, onOpenChange: setPickerOpen, onPick: onMaterialPicked }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx(Dialog, { open: importDialogOpen, onOpenChange: (o) => {
+      if (!o) {
+        setImportFileName(null);
+        setImportHeaders([]);
+        setImportRows([]);
+      }
+      setImportDialogOpen(o);
+    }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogContent, { className: "sm:max-w-[900px] max-h-[85vh] flex flex-col p-0 overflow-hidden", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogHeader, { className: "px-6 py-4 bg-slate-50 border-b", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogTitle, { className: "flex items-center gap-2", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(Upload, { className: "w-5 h-5 text-emerald-600" }),
+          "Import and Map Excel Data"
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-muted-foreground", children: "Upload any spreadsheet, tell us which column is which, and we'll fill in the items for you — no fixed column names required." })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-1 overflow-y-auto p-6 space-y-6", children: !importFileName ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-4", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-10 bg-slate-50/50 hover:bg-emerald-50/20 hover:border-emerald-400 transition-all cursor-pointer relative group", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "input",
+            {
+              type: "file",
+              accept: ".xlsx,.xls,.csv",
+              className: "absolute inset-0 opacity-0 cursor-pointer",
+              onChange: (e) => {
+                const f = e.target.files?.[0];
+                if (f) handleImportFileSelect(f);
+              }
+            }
+          ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "h-14 w-14 rounded-full bg-emerald-50 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform", children: /* @__PURE__ */ jsxRuntimeExports.jsx(Upload, { className: "w-7 h-7 text-emerald-600" }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm font-bold", children: "Drag & Drop or Click to Select File" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-muted-foreground mt-1.5", children: "Supports Microsoft Excel (.xlsx, .xls) and CSV" })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "p-3 bg-indigo-50/60 rounded-xl border border-indigo-100 text-[11px] text-indigo-700 leading-relaxed", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-bold", children: "Flexible Mapping:" }),
+          " your file can have any column names/order. After uploading, you'll pick which column is the Item Name, Spec, UOM, and Quantity — the rest are ignored."
+        ] })
+      ] }) : isParsingImport ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col items-center justify-center py-20 space-y-3", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "w-8 h-8 animate-spin text-emerald-600" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm font-medium", children: "Reading file data..." })
+      ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid grid-cols-1 lg:grid-cols-12 gap-6 items-start", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "lg:col-span-6 space-y-3", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between pb-2 border-b", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { className: "text-xs font-bold uppercase tracking-wider text-slate-700", children: "Field Mapping" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(Badge, { variant: "outline", className: "bg-emerald-50 text-emerald-700 border-emerald-100 text-[10px]", children: [
+              "Parsed: ",
+              importFileName
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "space-y-3", children: [
+            { key: "itemName", label: "Item Name", desc: "Which column has the item/material name", required: true },
+            { key: "spec", label: "Spec / Specification", desc: "Which column has the item's specification" },
+            { key: "uom", label: "UOM", desc: "Which column has the unit (Kg, Nos, sqft, etc.)" },
+            { key: "quantity", label: "Quantity", desc: "Which column has the quantity (defaults to 1 if skipped)" },
+            { key: "description", label: "Description", desc: "Which column has extra notes/description" }
+          ].map((tf) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "p-3 border rounded-lg bg-slate-50/50 flex flex-col md:flex-row md:items-center justify-between gap-2", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-0.5", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs(Label$3, { className: "text-xs font-bold flex items-center gap-1", children: [
+                tf.label,
+                tf.required && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-red-500", children: "*" })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[10px] text-muted-foreground", children: tf.desc })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(
+              Select,
+              {
+                value: String(importMappings[tf.key] ?? -1),
+                onValueChange: (val) => setImportMappings((prev) => ({ ...prev, [tf.key]: Number(val) })),
+                children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(SelectTrigger, { className: "w-full md:w-[200px] h-9 text-xs", children: /* @__PURE__ */ jsxRuntimeExports.jsx(SelectValue, {}) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs(SelectContent, { children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(SelectItem, { value: "-1", className: "text-muted-foreground italic", children: "Ignore Column" }),
+                    importHeaders.map((header, hIdx) => /* @__PURE__ */ jsxRuntimeExports.jsx(SelectItem, { value: String(hIdx), className: "text-xs", children: header || `Column ${hIdx + 1}` }, hIdx))
+                  ] })
+                ]
+              }
+            )
+          ] }, tf.key)) })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "lg:col-span-6 space-y-3", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between pb-2 border-b", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("h3", { className: "text-xs font-bold uppercase tracking-wider text-slate-700", children: "Live Preview" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[10px] text-muted-foreground font-medium", children: [
+              importRows.length,
+              " row(s) detected"
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "border rounded-lg overflow-hidden bg-slate-50/30 h-[380px]", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "overflow-auto h-full", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { className: "w-full text-left text-[11px] border-collapse", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("thead", { className: "bg-slate-100 sticky top-0", children: /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { className: "border-b", children: ["itemName", "spec", "uom", "quantity", "description"].map((key) => {
+              if (importMappings[key] === -1 || importMappings[key] === void 0) return null;
+              const label = key === "itemName" ? "Item Name" : key === "uom" ? "UOM" : key === "quantity" ? "Qty" : key.charAt(0).toUpperCase() + key.slice(1);
+              return /* @__PURE__ */ jsxRuntimeExports.jsx("th", { className: "p-2 font-bold border-r", children: label }, key);
+            }) }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("tbody", { children: [
+              importRows.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "p-8 text-center text-muted-foreground italic", children: "No rows found." }) }) : importRows.slice(0, 8).map((row, rIdx) => /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { className: "border-b bg-white", children: ["itemName", "spec", "uom", "quantity", "description"].map((key) => {
+                const colIdx = importMappings[key];
+                if (colIdx === -1 || colIdx === void 0) return null;
+                return /* @__PURE__ */ jsxRuntimeExports.jsx("td", { className: "p-2 max-w-[120px] truncate border-r", children: String(row[colIdx] ?? "") || /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-slate-300 italic", children: "empty" }) }, key);
+              }) }, rIdx)),
+              importRows.length > 8 && /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { className: "p-2 text-center text-[10px] text-muted-foreground italic", children: [
+                "...and ",
+                importRows.length - 8,
+                " more row(s)"
+              ] }) })
+            ] })
+          ] }) }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-lg p-2", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-bold", children: "Tip:" }),
+            " if Quantity isn't mapped, it defaults to 1 for every row — you can adjust it afterwards in the item table."
+          ] })
+        ] })
+      ] }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogFooter, { className: "bg-slate-50 p-4 border-t flex justify-between gap-2", children: [
+        importFileName ? /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "outline", size: "sm", className: "mr-auto", disabled: isParsingImport, onClick: () => {
+          setImportFileName(null);
+          setImportHeaders([]);
+          setImportRows([]);
+        }, children: "Clear File" }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", {}),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex gap-2", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "outline", onClick: () => setImportDialogOpen(false), disabled: isParsingImport, children: "Cancel" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            Button,
+            {
+              onClick: applyImportMapping,
+              disabled: isParsingImport || !importFileName || importRows.length === 0 || importMappings.itemName === -1,
+              className: "bg-emerald-600 hover:bg-emerald-700",
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(Upload, { className: "h-3.5 w-3.5 mr-1" }),
+                " Import ",
+                importRows.length > 0 ? `${importRows.length} ` : "",
+                "Items"
+              ]
+            }
+          )
+        ] })
+      ] })
+    ] }) })
   ] });
 }
 function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }) {
@@ -130559,200 +131454,390 @@ function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }) {
   const [vendors, setVendors] = reactExports.useState([]);
   const [selectedProjects, setSelectedProjects] = reactExports.useState([]);
   const [selectedVendors, setSelectedVendors] = reactExports.useState([]);
-  const [materials, setMaterials] = reactExports.useState([]);
-  const [pickerOpen, setPickerOpen] = reactExports.useState(false);
   const [saving, setSaving] = reactExports.useState(false);
   const [resultLinks, setResultLinks] = reactExports.useState(null);
+  const [bomByProject, setBomByProject] = reactExports.useState({});
+  const [selectedShops, setSelectedShops] = reactExports.useState({});
+  const [materialsByShop, setMaterialsByShop] = reactExports.useState({});
+  const [pickedByShop, setPickedByShop] = reactExports.useState({});
+  const [qtyOverrides, setQtyOverrides] = reactExports.useState({});
+  const [searchByShop, setSearchByShop] = reactExports.useState({});
+  const [customItemByShop, setCustomItemByShop] = reactExports.useState({});
+  const fk = (projectId, shopKey) => `${projectId}::${shopKey}`;
   reactExports.useEffect(() => {
     if (!open) return;
     setTitle("");
     setSelectedProjects([]);
     setSelectedVendors([]);
-    setMaterials([]);
+    setBomByProject({});
+    setSelectedShops({});
+    setMaterialsByShop({});
+    setPickedByShop({});
+    setQtyOverrides({});
+    setSearchByShop({});
     setResultLinks(null);
     apiFetch("/api/fb/projects").then((r) => r.json()).then((d) => setProjects(d.projects || [])).catch(() => {
     });
     apiFetch("/api/fb/vendors").then((r) => r.json()).then((d) => setVendors(d.vendors || [])).catch(() => {
     });
   }, [open]);
+  const loadShopsForProject = (projectId) => {
+    setBomByProject((prev) => ({ ...prev, [projectId]: { loading: true, hasFinalBom: false, shops: [] } }));
+    apiFetch(`/api/fb/projects/${projectId}/bom-shops`).then((r) => r.json()).then((d) => setBomByProject((prev) => ({ ...prev, [projectId]: { loading: false, hasFinalBom: !!d.hasFinalBom, shops: d.shops || [] } }))).catch(() => setBomByProject((prev) => ({ ...prev, [projectId]: { loading: false, hasFinalBom: false, shops: [] } })));
+  };
   const toggleProject = (id) => {
     setSelectedProjects((prev) => {
-      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      if (prev.includes(id)) {
+        setSelectedShops((sp) => {
+          const n = { ...sp };
+          delete n[id];
+          return n;
+        });
+        return prev.filter((x) => x !== id);
+      }
       if (prev.length >= 4) {
         toast({ title: "Limit reached", description: "You can select up to 4 projects at a time.", variant: "destructive" });
         return prev;
       }
+      if (!bomByProject[id]) loadShopsForProject(id);
       return [...prev, id];
     });
   };
-  const toggleVendor = (id) => setSelectedVendors((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
-  const onMaterialsPicked = (items) => {
-    setMaterials((prev) => [...prev, ...items.map((m) => ({ ...m, quantity: 1 }))]);
+  const toggleShop = (projectId, shop) => {
+    setSelectedShops((prev) => {
+      const cur = prev[projectId] || [];
+      const next = cur.includes(shop.key) ? cur.filter((x) => x !== shop.key) : [...cur, shop.key];
+      return { ...prev, [projectId]: next };
+    });
+    const key = fk(projectId, shop.key);
+    const alreadyLoaded = materialsByShop[key]?.materials?.length > 0;
+    if (!alreadyLoaded) {
+      setMaterialsByShop((prev) => ({ ...prev, [key]: { loading: true, materials: [] } }));
+      apiFetch(`/api/fb/projects/${projectId}/bom-materials?shop=${encodeURIComponent(shop.key)}`).then((r) => r.json()).then((d) => setMaterialsByShop((prev) => ({ ...prev, [key]: { loading: false, materials: d.materials || [] } }))).catch(() => setMaterialsByShop((prev) => ({ ...prev, [key]: { loading: false, materials: [] } })));
+    }
+    if (shop.vendorId) setSelectedVendors((prev) => prev.includes(shop.vendorId) ? prev : [...prev, shop.vendorId]);
   };
-  const setMaterialQty = (idx, qty) => setMaterials((prev) => prev.map((m, i) => i === idx ? { ...m, quantity: qty } : m));
-  const removeMaterial = (idx) => setMaterials((prev) => prev.filter((_, i) => i !== idx));
-  const createAndSend = async () => {
-    if (!title.trim() || selectedProjects.length === 0 || selectedVendors.length === 0 || materials.length === 0) {
-      toast({ title: "Missing info", description: "Title, at least one project, one vendor, and one material are required.", variant: "destructive" });
-      return;
+  const toggleMaterial = (projectId, shopKey, materialKey) => {
+    const key = fk(projectId, shopKey);
+    setPickedByShop((prev) => {
+      const set = new Set(prev[key] || []);
+      if (set.has(materialKey)) set.delete(materialKey);
+      else set.add(materialKey);
+      return { ...prev, [key]: set };
+    });
+  };
+  const addCustomMaterial = (projectId, shopKey) => {
+    const key = fk(projectId, shopKey);
+    const name = (customItemByShop[key] || "").trim();
+    if (!name) return;
+    const materialId = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setMaterialsByShop((prev) => {
+      const existing = prev[key]?.materials || [];
+      return { ...prev, [key]: { loading: false, materials: [...existing, { materialId, name, unit: "", spec: "", quantity: 1 }] } };
+    });
+    setPickedByShop((prev) => {
+      const set = new Set(prev[key] || []);
+      set.add(materialId);
+      return { ...prev, [key]: set };
+    });
+    setCustomItemByShop((prev) => ({ ...prev, [key]: "" }));
+  };
+  const buildItems = () => {
+    const items = [];
+    for (const projectId of selectedProjects) {
+      const project = projects.find((p) => p.id === projectId);
+      for (const shopKey of selectedShops[projectId] || []) {
+        const key = fk(projectId, shopKey);
+        const shop = (bomByProject[projectId]?.shops || []).find((s) => s.key === shopKey);
+        const mats = materialsByShop[key]?.materials || [];
+        const picked = pickedByShop[key] || /* @__PURE__ */ new Set();
+        mats.forEach((m) => {
+          const mKey = m.materialId || m.name;
+          if (!picked.has(mKey)) return;
+          const qtyKey = `${key}::${mKey}`;
+          items.push({
+            itemName: m.name,
+            uom: m.unit || "",
+            spec: m.spec || "",
+            quantity: qtyOverrides[qtyKey] ?? m.quantity ?? 1,
+            description: `${project?.name || "Project"} • ${shop?.shopName || "Shop"}`
+          });
+        });
+      }
+    }
+    return items;
+  };
+  const totalPicked = selectedProjects.reduce((sum, pid) => sum + (selectedShops[pid] || []).reduce((s2, sk) => s2 + (pickedByShop[fk(pid, sk)]?.size || 0), 0), 0);
+  const createQuote = async () => {
+    if (!title.trim() || selectedProjects.length === 0) {
+      return toast({ title: "Validation Error", description: "Title and at least 1 project are required.", variant: "destructive" });
+    }
+    const items = buildItems();
+    if (items.length === 0) {
+      return toast({ title: "Validation Error", description: "Select at least 1 material.", variant: "destructive" });
     }
     setSaving(true);
     try {
-      const projectNames = projects.filter((p) => selectedProjects.includes(p.id)).map((p) => p.name);
       const createRes = await apiFetch("/api/fb/quotes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title,
-          description: `Project comparison quote for: ${projectNames.join(", ")}`,
+          description: `Project comparison quote`,
           quoteKind: "project_comparison",
           projectIds: selectedProjects,
-          items: materials.map((m) => ({ itemName: m.name, uom: m.unit, spec: m.description || m.category, quantity: m.quantity }))
+          items
         })
       });
       if (!createRes.ok) throw new Error();
-      const { quote } = await createRes.json();
-      const sendRes = await apiFetch(`/api/fb/quotes/${quote.id}/send`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vendorIds: selectedVendors })
-      });
-      if (!sendRes.ok) throw new Error();
-      const { links } = await sendRes.json();
-      const built = Object.entries(links).map(([vendorId, token]) => {
-        const v = vendors.find((x) => x.id === vendorId);
-        return { vendorId, vendorName: v?.fullName || v?.username || vendorId, link: `${window.location.origin}/q/${token}` };
-      });
-      setResultLinks(built);
-      toast({ title: "Quote created & sent", description: `Sent to ${selectedVendors.length} vendor(s).` });
+      toast({ title: "Quote created", description: `Project comparison quote created successfully.` });
       onCreated();
+      onOpenChange(false);
     } catch {
-      toast({ title: "Error", description: "Failed to create/send this quote", variant: "destructive" });
+      toast({ title: "Error", description: "Failed to create this quote", variant: "destructive" });
     } finally {
       setSaving(false);
     }
   };
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs(Dialog, { open, onOpenChange, children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogContent, { className: "sm:max-w-[900px] max-h-[85vh] overflow-y-auto", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx(DialogHeader, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(DialogTitle, { children: "Project Comparison Quote" }) }),
-      resultLinks ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-3 py-2", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-muted-foreground", children: "Share these links with each vendor — no login needed, works on mobile, just fill & submit." }),
-        resultLinks.map((l) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between border rounded-md p-2", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm font-medium", children: l.vendorName }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-muted-foreground break-all", children: l.link })
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { variant: "outline", size: "sm", onClick: () => {
-            navigator.clipboard.writeText(l.link);
-            toast({ title: "Copied" });
-          }, children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx(Copy, { className: "h-3.5 w-3.5 mr-1" }),
-            " Copy"
-          ] })
-        ] }, l.vendorId)),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(DialogFooter, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { onClick: () => onOpenChange(false), children: "Done" }) })
-      ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-4 py-2", children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-1.5", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx(Label$3, { children: "Quote Title" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(Input, { value: title, onChange: (e) => setTitle(e.target.value), placeholder: "e.g. Q3 Steel Comparison" })
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs(Label$3, { className: "text-sm font-semibold flex items-center gap-1.5", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(FolderKanban, { className: "h-4 w-4" }),
-              " Select Projects (up to 4)"
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid grid-cols-2 gap-2 max-h-[160px] overflow-y-auto border rounded-md p-2", children: [
-              projects.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "flex items-center gap-2 text-sm border rounded-md p-2 cursor-pointer", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(Checkbox, { checked: selectedProjects.includes(p.id), onCheckedChange: () => toggleProject(p.id) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "flex-1", children: [
-                  p.name,
-                  " ",
-                  p.client ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-muted-foreground", children: [
-                    "(",
-                    p.client,
-                    ")"
-                  ] }) : ""
-                ] }),
-                p.has_final_bom && /* @__PURE__ */ jsxRuntimeExports.jsx(Badge, { variant: "secondary", className: "text-[10px]", children: "Final BOM" })
-              ] }, p.id)),
-              projects.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-muted-foreground col-span-2 text-center py-4", children: "No projects found." })
-            ] })
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs(Label$3, { className: "text-sm font-semibold flex items-center gap-1.5", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(Users, { className: "h-4 w-4" }),
-              " Select Vendors"
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid grid-cols-2 gap-2 max-h-[160px] overflow-y-auto border rounded-md p-2", children: [
-              vendors.map((v) => /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "flex items-center gap-2 text-sm border rounded-md p-2 cursor-pointer", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(Checkbox, { checked: selectedVendors.includes(v.id), onCheckedChange: () => toggleVendor(v.id) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
-                  v.fullName || v.username,
-                  " ",
-                  v.companyName ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-muted-foreground", children: [
-                    "(",
-                    v.companyName,
-                    ")"
-                  ] }) : ""
-                ] })
-              ] }, v.id)),
-              vendors.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-muted-foreground col-span-2 text-center py-4", children: "No vendors found." })
-            ] })
-          ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs(Label$3, { className: "text-sm font-semibold flex items-center gap-1.5", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(Package, { className: "h-4 w-4" }),
-                " Select Materials"
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { type: "button", variant: "outline", size: "sm", onClick: () => setPickerOpen(true), children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { className: "h-3.5 w-3.5 mr-1" }),
-                " Search & Add Materials"
-              ] })
-            ] }),
-            materials.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "overflow-x-auto border rounded-md", children: /* @__PURE__ */ jsxRuntimeExports.jsxs(Table$1, { children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(TableHeader, { children: /* @__PURE__ */ jsxRuntimeExports.jsxs(TableRow, { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { children: "Material" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { children: "Unit" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { children: "Qty" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { className: "w-10" })
-              ] }) }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(TableBody, { children: materials.map((m, idx) => /* @__PURE__ */ jsxRuntimeExports.jsxs(TableRow, { children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx(TableCell, { className: "font-medium", children: m.name }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(TableCell, { children: m.unit || "—" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(TableCell, { className: "w-24", children: /* @__PURE__ */ jsxRuntimeExports.jsx(Input, { type: "number", value: m.quantity, onChange: (e) => setMaterialQty(idx, Number(e.target.value)) }) }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(TableCell, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "ghost", size: "icon", onClick: () => removeMaterial(idx), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Trash2, { className: "h-4 w-4 text-destructive" }) }) })
-              ] }, idx)) })
-            ] }) })
-          ] })
+  return /* @__PURE__ */ jsxRuntimeExports.jsx(Dialog, { open, onOpenChange, children: /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogContent, { className: "w-screen h-screen max-w-none max-h-none flex flex-col overflow-hidden m-0 rounded-none", children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx(DialogHeader, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(DialogTitle, { children: "Project Comparison Quote" }) }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-4 py-2 flex-1 overflow-y-auto pr-2", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-1.5", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Label$3, { children: "Quote Title" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Input, { value: title, onChange: (e) => setTitle(e.target.value), placeholder: "e.g. Q3 Steel Comparison" })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(Label$3, { className: "text-sm font-semibold flex items-center gap-1.5", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(FolderKanban, { className: "h-4 w-4" }),
+          " Select Projects (up to 4)"
         ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogFooter, { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "outline", onClick: () => onOpenChange(false), children: "Cancel" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { onClick: createAndSend, disabled: saving, children: [
-            saving ? /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "h-4 w-4 mr-1 animate-spin" }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Send, { className: "h-4 w-4 mr-1" }),
-            "Create & Send"
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(Popover, { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(PopoverTrigger, { asChild: true, children: /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { variant: "outline", className: "w-full justify-between font-normal", children: [
+            selectedProjects.length > 0 ? `${selectedProjects.length} project(s) selected` : "Select projects...",
+            /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronsUpDown, { className: "h-4 w-4 shrink-0 opacity-50" })
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(PopoverContent, { className: "w-[var(--radix-popover-trigger-width)] p-0", align: "start", children: /* @__PURE__ */ jsxRuntimeExports.jsxs(Command, { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(CommandInput, { placeholder: "Search projects..." }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(CommandList, { children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(CommandEmpty, { children: "No project found." }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(CommandGroup, { children: projects.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                CommandItem,
+                {
+                  onSelect: () => toggleProject(p.id),
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(Check, { className: `mr-2 h-4 w-4 ${selectedProjects.includes(p.id) ? "opacity-100" : "opacity-0"}` }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "flex-1 truncate", children: [
+                      p.name,
+                      " ",
+                      p.client ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-muted-foreground", children: [
+                        "(",
+                        p.client,
+                        ")"
+                      ] }) : ""
+                    ] }),
+                    p.has_final_bom && /* @__PURE__ */ jsxRuntimeExports.jsx(Badge, { variant: "secondary", className: "text-[10px] ml-2", children: "Final BOM" })
+                  ]
+                },
+                p.id
+              )) })
+            ] })
+          ] }) })
+        ] }),
+        selectedProjects.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-wrap gap-2 pt-2", children: selectedProjects.map((id) => {
+          const p = projects.find((x) => x.id === id);
+          return p ? /* @__PURE__ */ jsxRuntimeExports.jsxs(Badge, { variant: "secondary", className: "text-sm py-1 px-2 flex items-center gap-1 bg-secondary/40", children: [
+            p.name,
+            /* @__PURE__ */ jsxRuntimeExports.jsx(X$3, { className: "h-3 w-3 cursor-pointer hover:text-destructive", onClick: () => toggleProject(id) })
+          ] }, id) : null;
+        }) })
+      ] }),
+      selectedProjects.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-4 flex-1 flex flex-col min-h-0", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2 shrink-0", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs(Label$3, { className: "text-sm font-semibold flex items-center gap-1.5", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(FolderKanban, { className: "h-4 w-4" }),
+            " Available Shops from Selected Projects"
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-wrap gap-4 border rounded-md p-3 bg-secondary/5 max-h-[160px] overflow-y-auto", children: selectedProjects.map((projectId) => {
+            const project = projects.find((p) => p.id === projectId);
+            const bom = bomByProject[projectId];
+            if (!bom) return null;
+            return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-1.5 min-w-[200px] flex-1 max-w-[300px]", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs font-semibold text-muted-foreground truncate", title: project?.name, children: project?.name }),
+              bom.loading ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs", children: "Loading..." }) : !bom.hasFinalBom ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[11px] text-muted-foreground", children: "No finalized BOM." }) : bom.shops.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[11px] text-muted-foreground", children: "No shops." }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex flex-col gap-1 max-h-[100px] overflow-y-auto pr-1", children: bom.shops.map((shop) => {
+                const isChecked = (selectedShops[projectId] || []).includes(shop.key);
+                return /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "flex items-center gap-1.5 text-xs cursor-pointer hover:bg-secondary/20 p-1 rounded", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(Checkbox, { checked: isChecked, onCheckedChange: () => toggleShop(projectId, shop) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "truncate flex-1", title: shop.shopName, children: [
+                    shop.vendorName ? `${shop.vendorName} ` : "",
+                    "(",
+                    shop.shopName,
+                    ")"
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(Badge, { variant: "outline", className: "text-[9px] shrink-0 bg-background", children: shop.itemCount })
+                ] }, shop.key);
+              }) })
+            ] }, projectId);
+          }) })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2 flex-1 flex flex-col min-h-0", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between shrink-0", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(Label$3, { className: "text-sm font-semibold flex items-center gap-1.5", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(Package, { className: "h-4 w-4" }),
+              " Selected Shops & Materials to Compare"
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-xs text-muted-foreground", children: [
+              totalPicked,
+              " material line(s) selected."
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid gap-3 flex-1 overflow-y-auto items-start grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 pb-4 px-1", children: [
+            selectedProjects.flatMap((projectId) => {
+              const project = projects.find((p) => p.id === projectId);
+              const bom = bomByProject[projectId];
+              if (!bom || !bom.shops) return [];
+              return bom.shops.filter((shop) => (selectedShops[projectId] || []).includes(shop.key)).map((shop) => {
+                const key = fk(projectId, shop.key);
+                const matState = materialsByShop[key];
+                const search = (searchByShop[key] || "").toLowerCase();
+                const filteredMats = (matState?.materials || []).filter((m) => !search || m.name.toLowerCase().includes(search));
+                const picked = pickedByShop[key] || /* @__PURE__ */ new Set();
+                return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "border rounded-md p-2 space-y-2 flex flex-col bg-card shadow-sm h-[400px]", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col space-y-1 border-b pb-2 shrink-0", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-[10px] font-semibold text-muted-foreground truncate uppercase tracking-wider", title: project?.name, children: project?.name }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-sm font-bold truncate flex-1 pr-2", title: shop.shopName, children: [
+                        shop.vendorName ? `${shop.vendorName} ` : "",
+                        "(",
+                        shop.shopName,
+                        ")"
+                      ] }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "ghost", size: "icon", className: "h-6 w-6 text-muted-foreground hover:text-destructive shrink-0", onClick: () => toggleShop(projectId, shop), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Trash2, { className: "h-3.5 w-3.5" }) })
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "relative shrink-0", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { className: "h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      Input,
+                      {
+                        className: "h-8 pl-7 text-xs bg-secondary/10",
+                        placeholder: "Search materials…",
+                        value: searchByShop[key] || "",
+                        onChange: (e) => setSearchByShop((prev) => ({ ...prev, [key]: e.target.value }))
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1 shrink-0", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      Input,
+                      {
+                        className: "h-8 text-xs bg-secondary/10",
+                        placeholder: "Or type an item name manually…",
+                        value: customItemByShop[key] || "",
+                        onChange: (e) => setCustomItemByShop((prev) => ({ ...prev, [key]: e.target.value })),
+                        onKeyDown: (e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            addCustomMaterial(projectId, shop.key);
+                          }
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      Button,
+                      {
+                        type: "button",
+                        variant: "outline",
+                        size: "icon",
+                        className: "h-8 w-8 shrink-0",
+                        title: "Add this item",
+                        disabled: !(customItemByShop[key] || "").trim(),
+                        onClick: () => addCustomMaterial(projectId, shop.key),
+                        children: /* @__PURE__ */ jsxRuntimeExports.jsx(Plus, { className: "h-3.5 w-3.5" })
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex-1 overflow-y-auto space-y-1 pr-1", children: matState?.loading ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center justify-center h-20", children: /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "h-4 w-4 animate-spin text-muted-foreground" }) }) : filteredMats.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-muted-foreground text-center py-4", children: "No materials found." }) : filteredMats.map((m) => {
+                    const mKey = m.materialId || m.name;
+                    const qtyKey = `${key}::${mKey}`;
+                    const isPicked = picked.has(mKey);
+                    return /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: `flex items-start gap-2 text-xs p-1.5 rounded-md cursor-pointer border transition-colors ${isPicked ? "bg-primary/5 border-primary/30" : "hover:bg-secondary/20 border-transparent"}`, children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(Checkbox, { className: "mt-0.5", checked: isPicked, onCheckedChange: () => toggleMaterial(projectId, shop.key, mKey) }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex-1 min-w-0", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "truncate font-medium text-[11px]", title: m.name, children: m.name }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-[10px] text-muted-foreground truncate", title: m.spec, children: [
+                          m.spec || "No spec",
+                          " • ",
+                          m.unit || "—"
+                        ] })
+                      ] }),
+                      isPicked && /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        Input,
+                        {
+                          type: "number",
+                          className: "h-6 w-16 text-[11px] px-1 bg-background shrink-0 text-center",
+                          value: qtyOverrides[qtyKey] ?? m.quantity,
+                          onChange: (e) => setQtyOverrides((prev) => ({ ...prev, [qtyKey]: Number(e.target.value) })),
+                          onClick: (e) => e.stopPropagation()
+                        }
+                      )
+                    ] }, mKey);
+                  }) })
+                ] }, key);
+              });
+            }),
+            totalPicked === 0 && selectedProjects.length > 0 && Object.keys(selectedShops).length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "col-span-full text-center py-10 border-2 border-dashed rounded-lg text-muted-foreground", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(Package, { className: "h-8 w-8 mx-auto mb-2 opacity-50" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm", children: "Select shops from the available list above to view their materials." })
+            ] })
           ] })
         ] })
       ] })
     ] }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(MaterialPickerDialog, { open: pickerOpen, onOpenChange: setPickerOpen, multiple: true, onPickMultiple: onMaterialsPicked })
-  ] });
+    /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogFooter, { className: "mt-4 shrink-0", children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "outline", onClick: () => onOpenChange(false), children: "Cancel" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { onClick: createQuote, disabled: saving, children: [
+        saving ? /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "h-4 w-4 mr-1 animate-spin" }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Save, { className: "h-4 w-4 mr-1" }),
+        "Create Quote"
+      ] })
+    ] })
+  ] }) });
 }
 function SendQuoteDialog({ quote, open, onOpenChange, onSent }) {
   const { toast } = useToast();
   const [vendors, setVendors] = reactExports.useState([]);
   const [selected, setSelected] = reactExports.useState([]);
-  const [resultLinks, setResultLinks] = reactExports.useState(null);
+  const [existingLinks, setExistingLinks] = reactExports.useState([]);
+  const [loading, setLoading] = reactExports.useState(false);
+  const buildLink = (token) => `${window.location.origin}/q/${token}`;
+  const load = () => {
+    setLoading(true);
+    Promise.all([
+      apiFetch("/api/fb/vendors").then((r) => r.json()),
+      apiFetch(`/api/fb/quotes/${quote.id}`).then((r) => r.json())
+    ]).then(([vendorsRes, quoteRes]) => {
+      setVendors(vendorsRes.vendors || []);
+      const links = (quoteRes.recipients || []).filter((r) => !!r.token).map((r) => ({
+        vendorId: r.vendor_id,
+        vendorName: r.full_name || r.username || r.vendor_id,
+        link: buildLink(r.token)
+      }));
+      setExistingLinks(links);
+    }).catch(() => {
+    }).finally(() => setLoading(false));
+  };
   reactExports.useEffect(() => {
     if (open) {
-      apiFetch("/api/fb/vendors").then((r) => r.json()).then((d) => setVendors(d.vendors || [])).catch(() => {
-      });
       setSelected([]);
-      setResultLinks(null);
+      load();
     }
-  }, [open]);
+  }, [open, quote?.id]);
+  const alreadySentIds = new Set(existingLinks.map((l) => l.vendorId));
+  const availableVendors = vendors.filter((v) => !alreadySentIds.has(v.id));
   const toggle = (id) => setSelected((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  const copyLink = (link) => {
+    navigator.clipboard.writeText(link);
+    toast({ title: "Copied" });
+  };
   const send = async () => {
     if (selected.length === 0) {
       toast({ title: "Select at least one vendor", variant: "destructive" });
@@ -130764,13 +131849,9 @@ function SendQuoteDialog({ quote, open, onOpenChange, onSent }) {
       body: JSON.stringify({ vendorIds: selected })
     });
     if (res.ok) {
-      const { links } = await res.json();
-      const built = Object.entries(links).map(([vendorId, token]) => {
-        const v = vendors.find((x) => x.id === vendorId);
-        return { vendorId, vendorName: v?.fullName || v?.username || vendorId, link: `${window.location.origin}/q/${token}` };
-      });
-      setResultLinks(built);
       toast({ title: "Quote sent", description: `Sent to ${selected.length} vendor(s).` });
+      setSelected([]);
+      load();
       onSent();
     } else {
       toast({ title: "Error", description: "Failed to send quote", variant: "destructive" });
@@ -130778,36 +131859,36 @@ function SendQuoteDialog({ quote, open, onOpenChange, onSent }) {
   };
   return /* @__PURE__ */ jsxRuntimeExports.jsx(Dialog, { open, onOpenChange, children: /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogContent, { className: "sm:max-w-[500px] max-h-[80vh] overflow-y-auto", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx(DialogHeader, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(DialogTitle, { children: "Send Quote to Vendors" }) }),
-    resultLinks ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-3 py-2", children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-muted-foreground", children: "Share these links — no login needed, works on mobile." }),
-      resultLinks.map((l) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between border rounded-md p-2", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm font-medium", children: l.vendorName }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-muted-foreground break-all", children: l.link })
-        ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { variant: "outline", size: "sm", onClick: () => {
-          navigator.clipboard.writeText(l.link);
-          toast({ title: "Copied" });
-        }, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Copy, { className: "h-3.5 w-3.5 mr-1" }),
-          " Copy"
-        ] })
-      ] }, l.vendorId)),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(DialogFooter, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { onClick: () => onOpenChange(false), children: "Done" }) })
-    ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "space-y-2 py-2", children: vendors.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-muted-foreground", children: "No vendors found." }) : vendors.map((v) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2 border rounded-md p-2", children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx(Checkbox, { checked: selected.includes(v.id), onCheckedChange: () => toggle(v.id) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm font-medium", children: v.fullName || v.username }),
-          v.companyName && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-muted-foreground", children: v.companyName })
-        ] })
-      ] }, v.id)) }),
-      /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogFooter, { children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "outline", onClick: () => onOpenChange(false), children: "Cancel" }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { onClick: send, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Send, { className: "h-4 w-4 mr-1" }),
-          " Send"
-        ] })
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-4 py-2", children: [
+      existingLinks.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Label$3, { className: "text-sm font-semibold", children: "Already sent — copy & share anytime" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "space-y-2", children: existingLinks.map((l) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between border rounded-md p-2", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm font-medium", children: l.vendorName }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-muted-foreground break-all", children: l.link })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { variant: "outline", size: "sm", onClick: () => copyLink(l.link), children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(Copy, { className: "h-3.5 w-3.5 mr-1" }),
+            " Copy"
+          ] })
+        ] }, l.vendorId)) })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-2", children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Label$3, { className: "text-sm font-semibold", children: existingLinks.length > 0 ? "Send to more vendors" : "Select vendors" }),
+        loading ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-muted-foreground", children: "Loading…" }) : availableVendors.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-muted-foreground", children: existingLinks.length > 0 ? "Sent to every vendor already." : "No vendors found." }) : availableVendors.map((v) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-2 border rounded-md p-2", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx(Checkbox, { checked: selected.includes(v.id), onCheckedChange: () => toggle(v.id) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm font-medium", children: v.fullName || v.username }),
+            v.companyName && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-muted-foreground", children: v.companyName })
+          ] })
+        ] }, v.id))
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs(DialogFooter, { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "outline", onClick: () => onOpenChange(false), children: "Close" }),
+      availableVendors.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { onClick: send, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Send, { className: "h-4 w-4 mr-1" }),
+        " Send"
       ] })
     ] })
   ] }) });
@@ -130818,6 +131899,7 @@ function QuoteComparisonView({ quoteId, onBack }) {
   const [quote, setQuote] = reactExports.useState(null);
   const [recipients, setRecipients] = reactExports.useState([]);
   const [downloading, setDownloading] = reactExports.useState(false);
+  const pdfRef = reactExports.useRef(null);
   reactExports.useEffect(() => {
     apiFetch(`/api/fb/quotes/${quoteId}`).then((r) => r.json()).then((d) => {
       setQuote(d.quote);
@@ -130833,32 +131915,131 @@ function QuoteComparisonView({ quoteId, onBack }) {
     const r = responses.find((x) => x.vendor_id === vid);
     return r?.full_name || r?.username || vid;
   };
+  const lowestVendorForItem = (itemId) => {
+    let best = null;
+    for (const vid of vendorIds) {
+      const r = responses.find((x) => x.item_id === itemId && x.vendor_id === vid);
+      if (r?.rate == null) continue;
+      const rate = Number(r.rate);
+      if (!best || rate < best.rate) best = { vid, rate };
+    }
+    return best?.vid ?? null;
+  };
+  const uniqueVendorLabels = (() => {
+    const counts = {};
+    const labels = {};
+    vendorIds.forEach((vid) => {
+      const base = vendorLabel(vid) || "Vendor";
+      counts[base] = (counts[base] || 0) + 1;
+      labels[vid] = counts[base] > 1 ? `${base} (${counts[base]})` : base;
+    });
+    return labels;
+  })();
   const downloadExcel = () => {
     const rows = items.map((it) => {
       const row = { Item: it.item_name, Qty: it.quantity, UOM: it.uom };
       vendorIds.forEach((vid) => {
         const r = responses.find((x) => x.item_id === it.id && x.vendor_id === vid);
-        row[vendorLabel(vid)] = r?.rate ?? "";
+        const vName = uniqueVendorLabels[vid];
+        row[`${vName} - Rate`] = r?.rate ?? "";
+        row[`${vName} - Amount`] = r?.amount ?? "";
       });
       return row;
     });
-    const ws = utils.json_to_sheet(rows);
+    const header = ["Item", "Qty", "UOM"];
+    vendorIds.forEach((vid) => {
+      const vName = uniqueVendorLabels[vid];
+      header.push(`${vName} - Rate`, `${vName} - Amount`);
+    });
+    const ws = utils.json_to_sheet(rows, { header });
     const wb = utils.book_new();
     utils.book_append_sheet(wb, ws, "Comparison");
     writeFileSync(wb, `${quote?.title || "Quote"}-Comparison.xlsx`);
   };
   const downloadPdf = () => {
-    const el = document.getElementById("quote-comparison-content");
+    const el = pdfRef.current;
     if (!el) return;
     setDownloading(true);
-    html2pdf().set({
-      margin: 10,
+    const orientation = vendorIds.length > 2 ? "landscape" : "portrait";
+    const pdfOptions = {
+      margin: [10, 8, 10, 8],
       filename: `${quote?.title || "Quote"}-Comparison.pdf`,
       image: { type: "jpeg", quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true },
-      jsPDF: { unit: "mm", format: "a4", orientation: "landscape" }
-    }).from(el).save().then(() => setDownloading(false)).catch(() => setDownloading(false));
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        // The source table is rendered off-screen (left: -9999px). Without pinning
+        // scrollX/scrollY and the capture window size explicitly, html2canvas
+        // captures based on the page's *current* scroll position, which on a long
+        // Rate Comparison list would cut the table off partway through — the
+        // "only downloads half" symptom. Forcing these to the full element size
+        // guarantees the entire table (all rows/vendors) is captured every time.
+        scrollX: 0,
+        scrollY: 0,
+        windowWidth: el.scrollWidth,
+        windowHeight: el.scrollHeight
+      },
+      jsPDF: { unit: "mm", format: "a4", orientation },
+      // "avoid-all" forces the entire table to be treated as one unbreakable block,
+      // which — combined with a tall comparison table — caused everything past the
+      // first page to be dropped instead of flowing onto additional pages. Using
+      // just css/legacy lets long tables paginate correctly across as many pages as needed.
+      pagebreak: { mode: ["css", "legacy"] }
+    };
+    html2pdf().set(pdfOptions).from(el).save().then(() => setDownloading(false)).catch(() => setDownloading(false));
   };
+  const pdfTable = /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { position: "absolute", left: "-9999px", top: "-9999px" }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { ref: pdfRef, style: { width: vendorIds.length > 4 ? "1500px" : "1100px", background: "#ffffff", padding: "24px", fontFamily: "Arial, Helvetica, sans-serif", color: "#111827" }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { textAlign: "center", marginBottom: "18px", borderBottom: "2px solid #1e293b", paddingBottom: "12px" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: "20px", fontWeight: 700, marginBottom: "4px" }, children: quote?.title || "Quote" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { fontSize: "11px", color: "#555555" }, children: [
+        "Quote # ",
+        quote?.quote_number || "—",
+        "  •  Rate Comparison Sheet  •  Generated ",
+        (/* @__PURE__ */ new Date()).toLocaleDateString()
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: "12px", tableLayout: "fixed" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("thead", { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { rowSpan: 2, style: { ...pdfThStyle, textAlign: "left", width: "26%" }, children: "Item" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { rowSpan: 2, style: { ...pdfThStyle, textAlign: "center", width: "10%" }, children: "Qty" }),
+          vendorIds.map((vid) => /* @__PURE__ */ jsxRuntimeExports.jsx("th", { colSpan: 2, style: { ...pdfThStyle, textAlign: "center" }, children: uniqueVendorLabels[vid] }, vid))
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("tr", { children: vendorIds.map((vid) => [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { style: { ...pdfThStyle, textAlign: "center", fontSize: "10px", background: "#334155" }, children: "Rate" }, `${vid}-rate`),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("th", { style: { ...pdfThStyle, textAlign: "center", fontSize: "10px", background: "#334155" }, children: "Amount" }, `${vid}-amt`)
+        ]) })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("tbody", { children: items.map((it, idx) => {
+        const best = lowestVendorForItem(it.id);
+        return /* @__PURE__ */ jsxRuntimeExports.jsxs("tr", { style: { background: idx % 2 === 0 ? "#ffffff" : "#f8fafc", pageBreakInside: "avoid", breakInside: "avoid" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("td", { style: { ...pdfTdStyle, textAlign: "left", fontWeight: 600 }, children: it.item_name }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("td", { style: { ...pdfTdStyle, textAlign: "center" }, children: [
+            it.quantity,
+            " ",
+            it.uom
+          ] }),
+          vendorIds.map((vid) => {
+            const r = responses.find((x) => x.item_id === it.id && x.vendor_id === vid);
+            const isBest = best === vid && r?.rate != null;
+            const baseStyle = {
+              ...pdfTdStyle,
+              textAlign: "center",
+              fontWeight: isBest ? 700 : 400,
+              background: isBest ? "#bbf7d0" : "transparent",
+              color: isBest ? "#14532d" : "inherit"
+            };
+            return [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("td", { style: baseStyle, children: r?.rate != null ? `₹${r.rate}` : "—" }, `${vid}-rate`),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("td", { style: baseStyle, children: r?.amount != null ? `₹${r.amount}` : "—" }, `${vid}-amt`)
+            ];
+          })
+        ] }, it.id);
+      }) })
+    ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { marginTop: "14px", fontSize: "10px", color: "#6b7280" }, children: "Highlighted cell = lowest rate for that item. Values shown as Rate (Total Amount)." })
+  ] }) });
   return /* @__PURE__ */ jsxRuntimeExports.jsxs(Card, { className: "tg-card", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs(CardHeader, { className: "flex flex-row items-center justify-between", children: [
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
@@ -130905,29 +132086,56 @@ function QuoteComparisonView({ quoteId, onBack }) {
           )
         ] }, r.id))
       ] }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { id: "quote-comparison-content", className: "bg-white", children: vendorIds.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-muted-foreground py-8 text-center", children: "No vendor has responded yet." }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "overflow-x-auto", children: /* @__PURE__ */ jsxRuntimeExports.jsxs(Table$1, { children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsx(TableHeader, { children: /* @__PURE__ */ jsxRuntimeExports.jsxs(TableRow, { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { children: "Item" }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { children: "Qty" }),
-          vendorIds.map((vid) => /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { children: vendorLabel(vid) }, vid))
-        ] }) }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(TableBody, { children: items.map((it) => /* @__PURE__ */ jsxRuntimeExports.jsxs(TableRow, { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(TableCell, { className: "font-medium", children: it.item_name }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs(TableCell, { children: [
-            it.quantity,
-            " ",
-            it.uom
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { id: "quote-comparison-content", className: "bg-white", children: vendorIds.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm text-muted-foreground py-8 text-center", children: "No vendor has responded yet." }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "overflow-x-auto border rounded-md", children: /* @__PURE__ */ jsxRuntimeExports.jsxs(Table$1, { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(TableHeader, { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs(TableRow, { className: "bg-slate-100 hover:bg-slate-100", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { rowSpan: 2, className: "border-r font-semibold text-slate-900 border-b", children: "Item" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { rowSpan: 2, className: "border-r font-semibold text-slate-900 text-center border-b", children: "Qty" }),
+            vendorIds.map((vid, i) => /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { colSpan: 2, className: `font-semibold text-slate-900 text-center border-b ${i < vendorIds.length - 1 ? "border-r" : ""}`, children: vendorLabel(vid) }, vid))
           ] }),
-          vendorIds.map((vid) => {
-            const r = responses.find((x) => x.item_id === it.id && x.vendor_id === vid);
-            return /* @__PURE__ */ jsxRuntimeExports.jsx(TableCell, { children: r?.rate != null ? `₹${r.rate} (₹${r.amount})` : "—" }, vid);
-          })
-        ] }, it.id)) })
-      ] }) }) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx(TableRow, { className: "bg-slate-50 hover:bg-slate-50", children: vendorIds.map((vid, i) => [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { className: "font-semibold text-slate-600 text-center text-xs border-r border-b", children: "Rate" }, `${vid}-rate`),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(TableHead, { className: `font-semibold text-slate-600 text-center text-xs border-b ${i < vendorIds.length - 1 ? "border-r" : ""}`, children: "Amount" }, `${vid}-amt`)
+          ]) })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(TableBody, { children: items.map((it) => {
+          const best = lowestVendorForItem(it.id);
+          return /* @__PURE__ */ jsxRuntimeExports.jsxs(TableRow, { children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx(TableCell, { className: "font-medium border-r", children: it.item_name }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(TableCell, { className: "border-r text-center", children: [
+              it.quantity,
+              " ",
+              it.uom
+            ] }),
+            vendorIds.map((vid, i) => {
+              const r = responses.find((x) => x.item_id === it.id && x.vendor_id === vid);
+              const isBest = best === vid && r?.rate != null;
+              const isLast = i === vendorIds.length - 1;
+              return [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(TableCell, { className: `text-center border-r ${isBest ? "bg-green-200 text-green-900 font-bold" : ""}`, children: r?.rate != null ? `₹${r.rate}` : "—" }, `${vid}-rate`),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(TableCell, { className: `text-center ${isLast ? "" : "border-r"} ${isBest ? "bg-green-200 text-green-900 font-bold" : ""}`, children: r?.amount != null ? `₹${r.amount}` : "—" }, `${vid}-amt`)
+              ];
+            })
+          ] }, it.id);
+        }) })
+      ] }) }) }),
+      vendorIds.length > 0 && reactDomExports.createPortal(pdfTable, document.body)
     ] })
   ] });
 }
+const pdfThStyle = {
+  border: "1px solid #334155",
+  padding: "8px 10px",
+  background: "#1e293b",
+  color: "#ffffff",
+  fontWeight: 700
+};
+const pdfTdStyle = {
+  border: "1px solid #cbd5e1",
+  padding: "7px 10px"
+};
 function QuotesTab() {
+  const { toast } = useToast();
   const [quotes, setQuotes] = reactExports.useState([]);
   const [loading, setLoading] = reactExports.useState(true);
   const [createOpen, setCreateOpen] = reactExports.useState(false);
@@ -130944,6 +132152,19 @@ function QuotesTab() {
     if (!confirm("Delete this quote?")) return;
     await apiFetch(`/api/fb/quotes/${id}`, { method: "DELETE" });
     load();
+  };
+  const copyLink = async (id) => {
+    try {
+      const res = await apiFetch(`/api/fb/quotes/${id}/open-link`, { method: "POST" });
+      if (!res.ok) throw new Error();
+      const { token } = await res.json();
+      const link = `${window.location.origin}/q/open/${token}`;
+      await navigator.clipboard.writeText(link);
+      toast({ title: "Link copied", description: "Share it with any vendor — they'll enter their shop name and submit rates." });
+      load();
+    } catch {
+      toast({ title: "Error", description: "Failed to create/copy link", variant: "destructive" });
+    }
   };
   if (comparisonId) {
     return /* @__PURE__ */ jsxRuntimeExports.jsx(QuoteComparisonView, { quoteId: comparisonId, onBack: () => setComparisonId(null) });
@@ -130987,6 +132208,10 @@ function QuotesTab() {
             /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { variant: "outline", size: "sm", onClick: () => setSendTarget(q), children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(Send, { className: "h-3.5 w-3.5 mr-1" }),
               " Send"
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { variant: "outline", size: "sm", onClick: () => copyLink(q.id), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(Link, { className: "h-3.5 w-3.5 mr-1" }),
+              " Copy Link"
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs(Button, { variant: "outline", size: "sm", onClick: () => setComparisonId(q.id), children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(ChartColumn, { className: "h-3.5 w-3.5 mr-1" }),
@@ -131310,6 +132535,16 @@ function QuoteFillView({ quoteId, onBack }) {
   const isSubmitted = recipient?.status === "Submitted";
   const setRate = (itemId, patch) => setRates((prev) => ({ ...prev, [itemId]: { ...prev[itemId], ...patch } }));
   const save = async (submit) => {
+    if (submit) {
+      const missing = items.some((it) => {
+        const rate = rates[it.id]?.rate;
+        return rate === void 0 || rate === null || String(rate).trim() === "" || isNaN(Number(rate));
+      });
+      if (missing) {
+        toast({ title: "Missing rates", description: "Please enter a rate for every item before submitting.", variant: "destructive" });
+        return;
+      }
+    }
     setSaving(true);
     try {
       const responses = items.map((it) => ({ itemId: it.id, rate: rates[it.id]?.rate || null, remarks: rates[it.id]?.remarks || "" }));
@@ -132312,545 +133547,6 @@ function ProductAnalysisDialog({
     ) })
   ] }) });
 }
-
-var U=1,Y$1=.9,H=.8,J=.17,p=.1,u=.999,$$1=.9999;var k$2=.99,m=/[\\\/_+.#"@\[\(\{&]/,B$1=/[\\\/_+.#"@\[\(\{&]/g,K$1=/[\s-]/,X=/[\s-]/g;function G(_,C,h,P,A,f,O){if(f===C.length)return A===_.length?U:k$2;var T=`${A},${f}`;if(O[T]!==void 0)return O[T];for(var L=P.charAt(f),c=h.indexOf(L,A),S=0,E,N,R,M;c>=0;)E=G(_,C,h,P,c+1,f+1,O),E>S&&(c===A?E*=U:m.test(_.charAt(c-1))?(E*=H,R=_.slice(A,c-1).match(B$1),R&&A>0&&(E*=Math.pow(u,R.length))):K$1.test(_.charAt(c-1))?(E*=Y$1,M=_.slice(A,c-1).match(X),M&&A>0&&(E*=Math.pow(u,M.length))):(E*=J,A>0&&(E*=Math.pow(u,c-A))),_.charAt(c)!==C.charAt(f)&&(E*=$$1)),(E<p&&h.charAt(c-1)===P.charAt(f+1)||P.charAt(f+1)===P.charAt(f)&&h.charAt(c-1)!==P.charAt(f))&&(N=G(_,C,h,P,c+1,f+2,O),N*p>E&&(E=N*p)),E>S&&(S=E),c=h.indexOf(L,c+1);return O[T]=S,S}function D(_){return _.toLowerCase().replace(X," ")}function W(_,C,h){return _=h&&h.length>0?`${_+" "+h.join(" ")}`:_,G(_,C,D(_),D(C),0,0,{})}
-
-var N='[cmdk-group=""]',Y='[cmdk-group-items=""]',be='[cmdk-group-heading=""]',le='[cmdk-item=""]',ce=`${le}:not([aria-disabled="true"])`,Z="cmdk-item-select",T="data-value",Re=(r,o,n)=>W(r,o,n),ue=reactExports.createContext(void 0),K=()=>reactExports.useContext(ue),de=reactExports.createContext(void 0),ee=()=>reactExports.useContext(de),fe=reactExports.createContext(void 0),me=reactExports.forwardRef((r,o)=>{let n=L(()=>{var e,a;return {search:"",value:(a=(e=r.value)!=null?e:r.defaultValue)!=null?a:"",selectedItemId:void 0,filtered:{count:0,items:new Map,groups:new Set}}}),u=L(()=>new Set),c=L(()=>new Map),d=L(()=>new Map),f=L(()=>new Set),p=pe(r),{label:b,children:m,value:R,onValueChange:x,filter:C,shouldFilter:S,loop:A,disablePointerSelection:ge=false,vimBindings:j=true,...O}=r,$=useId(),q=useId(),_=useId(),I=reactExports.useRef(null),v=ke();k$1(()=>{if(R!==void 0){let e=R.trim();n.current.value=e,E.emit();}},[R]),k$1(()=>{v(6,ne);},[]);let E=reactExports.useMemo(()=>({subscribe:e=>(f.current.add(e),()=>f.current.delete(e)),snapshot:()=>n.current,setState:(e,a,s)=>{var i,l,g,y;if(!Object.is(n.current[e],a)){if(n.current[e]=a,e==="search")J(),z(),v(1,W);else if(e==="value"){if(document.activeElement.hasAttribute("cmdk-input")||document.activeElement.hasAttribute("cmdk-root")){let h=document.getElementById(_);h?h.focus():(i=document.getElementById($))==null||i.focus();}if(v(7,()=>{var h;n.current.selectedItemId=(h=M())==null?void 0:h.id,E.emit();}),s||v(5,ne),((l=p.current)==null?void 0:l.value)!==void 0){let h=a!=null?a:"";(y=(g=p.current).onValueChange)==null||y.call(g,h);return}}E.emit();}},emit:()=>{f.current.forEach(e=>e());}}),[]),U=reactExports.useMemo(()=>({value:(e,a,s)=>{var i;a!==((i=d.current.get(e))==null?void 0:i.value)&&(d.current.set(e,{value:a,keywords:s}),n.current.filtered.items.set(e,te(a,s)),v(2,()=>{z(),E.emit();}));},item:(e,a)=>(u.current.add(e),a&&(c.current.has(a)?c.current.get(a).add(e):c.current.set(a,new Set([e]))),v(3,()=>{J(),z(),n.current.value||W(),E.emit();}),()=>{d.current.delete(e),u.current.delete(e),n.current.filtered.items.delete(e);let s=M();v(4,()=>{J(),(s==null?void 0:s.getAttribute("id"))===e&&W(),E.emit();});}),group:e=>(c.current.has(e)||c.current.set(e,new Set),()=>{d.current.delete(e),c.current.delete(e);}),filter:()=>p.current.shouldFilter,label:b||r["aria-label"],getDisablePointerSelection:()=>p.current.disablePointerSelection,listId:$,inputId:_,labelId:q,listInnerRef:I}),[]);function te(e,a){var i,l;let s=(l=(i=p.current)==null?void 0:i.filter)!=null?l:Re;return e?s(e,n.current.search,a):0}function z(){if(!n.current.search||p.current.shouldFilter===false)return;let e=n.current.filtered.items,a=[];n.current.filtered.groups.forEach(i=>{let l=c.current.get(i),g=0;l.forEach(y=>{let h=e.get(y);g=Math.max(h,g);}),a.push([i,g]);});let s=I.current;V().sort((i,l)=>{var h,F;let g=i.getAttribute("id"),y=l.getAttribute("id");return ((h=e.get(y))!=null?h:0)-((F=e.get(g))!=null?F:0)}).forEach(i=>{let l=i.closest(Y);l?l.appendChild(i.parentElement===l?i:i.closest(`${Y} > *`)):s.appendChild(i.parentElement===s?i:i.closest(`${Y} > *`));}),a.sort((i,l)=>l[1]-i[1]).forEach(i=>{var g;let l=(g=I.current)==null?void 0:g.querySelector(`${N}[${T}="${encodeURIComponent(i[0])}"]`);l==null||l.parentElement.appendChild(l);});}function W(){let e=V().find(s=>s.getAttribute("aria-disabled")!=="true"),a=e==null?void 0:e.getAttribute(T);E.setState("value",a||void 0);}function J(){var a,s,i,l;if(!n.current.search||p.current.shouldFilter===false){n.current.filtered.count=u.current.size;return}n.current.filtered.groups=new Set;let e=0;for(let g of u.current){let y=(s=(a=d.current.get(g))==null?void 0:a.value)!=null?s:"",h=(l=(i=d.current.get(g))==null?void 0:i.keywords)!=null?l:[],F=te(y,h);n.current.filtered.items.set(g,F),F>0&&e++;}for(let[g,y]of c.current)for(let h of y)if(n.current.filtered.items.get(h)>0){n.current.filtered.groups.add(g);break}n.current.filtered.count=e;}function ne(){var a,s,i;let e=M();e&&(((a=e.parentElement)==null?void 0:a.firstChild)===e&&((i=(s=e.closest(N))==null?void 0:s.querySelector(be))==null||i.scrollIntoView({block:"nearest"})),e.scrollIntoView({block:"nearest"}));}function M(){var e;return (e=I.current)==null?void 0:e.querySelector(`${le}[aria-selected="true"]`)}function V(){var e;return Array.from(((e=I.current)==null?void 0:e.querySelectorAll(ce))||[])}function X(e){let s=V()[e];s&&E.setState("value",s.getAttribute(T));}function Q(e){var g;let a=M(),s=V(),i=s.findIndex(y=>y===a),l=s[i+e];(g=p.current)!=null&&g.loop&&(l=i+e<0?s[s.length-1]:i+e===s.length?s[0]:s[i+e]),l&&E.setState("value",l.getAttribute(T));}function re(e){let a=M(),s=a==null?void 0:a.closest(N),i;for(;s&&!i;)s=e>0?we(s,N):De(s,N),i=s==null?void 0:s.querySelector(ce);i?E.setState("value",i.getAttribute(T)):Q(e);}let oe=()=>X(V().length-1),ie=e=>{e.preventDefault(),e.metaKey?oe():e.altKey?re(1):Q(1);},se=e=>{e.preventDefault(),e.metaKey?X(0):e.altKey?re(-1):Q(-1);};return reactExports.createElement(Primitive$3.div,{ref:o,tabIndex:-1,...O,"cmdk-root":"",onKeyDown:e=>{var s;(s=O.onKeyDown)==null||s.call(O,e);let a=e.nativeEvent.isComposing||e.keyCode===229;if(!(e.defaultPrevented||a))switch(e.key){case "n":case "j":{j&&e.ctrlKey&&ie(e);break}case "ArrowDown":{ie(e);break}case "p":case "k":{j&&e.ctrlKey&&se(e);break}case "ArrowUp":{se(e);break}case "Home":{e.preventDefault(),X(0);break}case "End":{e.preventDefault(),oe();break}case "Enter":{e.preventDefault();let i=M();if(i){let l=new Event(Z);i.dispatchEvent(l);}}}}},reactExports.createElement("label",{"cmdk-label":"",htmlFor:U.inputId,id:U.labelId,style:Te},b),B(r,e=>reactExports.createElement(de.Provider,{value:E},reactExports.createElement(ue.Provider,{value:U},e))))}),he=reactExports.forwardRef((r,o)=>{var _,I;let n=useId(),u=reactExports.useRef(null),c=reactExports.useContext(fe),d=K(),f=pe(r),p=(I=(_=f.current)==null?void 0:_.forceMount)!=null?I:c==null?void 0:c.forceMount;k$1(()=>{if(!p)return d.item(n,c==null?void 0:c.id)},[p]);let b=ve(n,u,[r.value,r.children,u],r.keywords),m=ee(),R=P$1(v=>v.value&&v.value===b.current),x=P$1(v=>p||d.filter()===false?true:v.search?v.filtered.items.get(n)>0:true);reactExports.useEffect(()=>{let v=u.current;if(!(!v||r.disabled))return v.addEventListener(Z,C),()=>v.removeEventListener(Z,C)},[x,r.onSelect,r.disabled]);function C(){var v,E;S(),(E=(v=f.current).onSelect)==null||E.call(v,b.current);}function S(){m.setState("value",b.current,true);}if(!x)return null;let{disabled:A,value:ge,onSelect:j,forceMount:O,keywords:$,...q}=r;return reactExports.createElement(Primitive$3.div,{ref:composeRefs$1(u,o),...q,id:n,"cmdk-item":"",role:"option","aria-disabled":!!A,"aria-selected":!!R,"data-disabled":!!A,"data-selected":!!R,onPointerMove:A||d.getDisablePointerSelection()?void 0:S,onClick:A?void 0:C},r.children)}),Ee=reactExports.forwardRef((r,o)=>{let{heading:n,children:u,forceMount:c,...d}=r,f=useId(),p=reactExports.useRef(null),b=reactExports.useRef(null),m=useId(),R=K(),x=P$1(S=>c||R.filter()===false?true:S.search?S.filtered.groups.has(f):true);k$1(()=>R.group(f),[]),ve(f,p,[r.value,r.heading,b]);let C=reactExports.useMemo(()=>({id:f,forceMount:c}),[c]);return reactExports.createElement(Primitive$3.div,{ref:composeRefs$1(p,o),...d,"cmdk-group":"",role:"presentation",hidden:x?void 0:true},n&&reactExports.createElement("div",{ref:b,"cmdk-group-heading":"","aria-hidden":true,id:m},n),B(r,S=>reactExports.createElement("div",{"cmdk-group-items":"",role:"group","aria-labelledby":n?m:void 0},reactExports.createElement(fe.Provider,{value:C},S))))}),ye=reactExports.forwardRef((r,o)=>{let{alwaysRender:n,...u}=r,c=reactExports.useRef(null),d=P$1(f=>!f.search);return !n&&!d?null:reactExports.createElement(Primitive$3.div,{ref:composeRefs$1(c,o),...u,"cmdk-separator":"",role:"separator"})}),Se=reactExports.forwardRef((r,o)=>{let{onValueChange:n,...u}=r,c=r.value!=null,d=ee(),f=P$1(m=>m.search),p=P$1(m=>m.selectedItemId),b=K();return reactExports.useEffect(()=>{r.value!=null&&d.setState("search",r.value);},[r.value]),reactExports.createElement(Primitive$3.input,{ref:o,...u,"cmdk-input":"",autoComplete:"off",autoCorrect:"off",spellCheck:false,"aria-autocomplete":"list",role:"combobox","aria-expanded":true,"aria-controls":b.listId,"aria-labelledby":b.labelId,"aria-activedescendant":p,id:b.inputId,type:"text",value:c?r.value:f,onChange:m=>{c||d.setState("search",m.target.value),n==null||n(m.target.value);}})}),Ce=reactExports.forwardRef((r,o)=>{let{children:n,label:u="Suggestions",...c}=r,d=reactExports.useRef(null),f=reactExports.useRef(null),p=P$1(m=>m.selectedItemId),b=K();return reactExports.useEffect(()=>{if(f.current&&d.current){let m=f.current,R=d.current,x,C=new ResizeObserver(()=>{x=requestAnimationFrame(()=>{let S=m.offsetHeight;R.style.setProperty("--cmdk-list-height",S.toFixed(1)+"px");});});return C.observe(m),()=>{cancelAnimationFrame(x),C.unobserve(m);}}},[]),reactExports.createElement(Primitive$3.div,{ref:composeRefs$1(d,o),...c,"cmdk-list":"",role:"listbox",tabIndex:-1,"aria-activedescendant":p,"aria-label":u,id:b.listId},B(r,m=>reactExports.createElement("div",{ref:composeRefs$1(f,b.listInnerRef),"cmdk-list-sizer":""},m)))}),xe=reactExports.forwardRef((r,o)=>{let{open:n,onOpenChange:u,overlayClassName:c,contentClassName:d,container:f,...p}=r;return reactExports.createElement(Root$4,{open:n,onOpenChange:u},reactExports.createElement(Portal$2,{container:f},reactExports.createElement(Overlay,{"cmdk-overlay":"",className:c}),reactExports.createElement(Content,{"aria-label":r.label,"cmdk-dialog":"",className:d},reactExports.createElement(me,{ref:o,...p}))))}),Ie=reactExports.forwardRef((r,o)=>P$1(u=>u.filtered.count===0)?reactExports.createElement(Primitive$3.div,{ref:o,...r,"cmdk-empty":"",role:"presentation"}):null),Pe=reactExports.forwardRef((r,o)=>{let{progress:n,children:u,label:c="Loading...",...d}=r;return reactExports.createElement(Primitive$3.div,{ref:o,...d,"cmdk-loading":"",role:"progressbar","aria-valuenow":n,"aria-valuemin":0,"aria-valuemax":100,"aria-label":c},B(r,f=>reactExports.createElement("div",{"aria-hidden":true},f)))}),_e=Object.assign(me,{List:Ce,Item:he,Input:Se,Group:Ee,Separator:ye,Dialog:xe,Empty:Ie,Loading:Pe});function we(r,o){let n=r.nextElementSibling;for(;n;){if(n.matches(o))return n;n=n.nextElementSibling;}}function De(r,o){let n=r.previousElementSibling;for(;n;){if(n.matches(o))return n;n=n.previousElementSibling;}}function pe(r){let o=reactExports.useRef(r);return k$1(()=>{o.current=r;}),o}var k$1=typeof window=="undefined"?reactExports.useEffect:reactExports.useLayoutEffect;function L(r){let o=reactExports.useRef();return o.current===void 0&&(o.current=r()),o}function P$1(r){let o=ee(),n=()=>r(o.snapshot());return reactExports.useSyncExternalStore(o.subscribe,n,n)}function ve(r,o,n,u=[]){let c=reactExports.useRef(),d=K();return k$1(()=>{var b;let f=(()=>{var m;for(let R of n){if(typeof R=="string")return R.trim();if(typeof R=="object"&&"current"in R)return R.current?(m=R.current.textContent)==null?void 0:m.trim():c.current}})(),p=u.map(m=>m.trim());d.value(r,f,p),(b=o.current)==null||b.setAttribute(T,f),c.current=f;}),c}var ke=()=>{let[r,o]=reactExports.useState(),n=L(()=>new Map);return k$1(()=>{n.current.forEach(u=>u()),n.current=new Map;},[r]),(u,c)=>{n.current.set(u,c),o({});}};function Me(r){let o=r.type;return typeof o=="function"?o(r.props):"render"in o?o.render(r.props):r}function B({asChild:r,children:o},n){return r&&reactExports.isValidElement(o)?reactExports.cloneElement(Me(o),{ref:o.ref},n(o.props.children)):n(o)}var Te={position:"absolute",width:"1px",height:"1px",padding:"0",margin:"-1px",overflow:"hidden",clip:"rect(0, 0, 0, 0)",whiteSpace:"nowrap",borderWidth:"0"};
-
-const Command = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-  _e,
-  {
-    ref,
-    className: cn(
-      "flex h-full w-full flex-col overflow-hidden rounded-md bg-popover text-popover-foreground",
-      className
-    ),
-    ...props
-  }
-));
-Command.displayName = _e.displayName;
-const CommandInput = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center border-b px-3", "cmdk-input-wrapper": "", children: [
-  /* @__PURE__ */ jsxRuntimeExports.jsx(Search, { className: "mr-2 h-4 w-4 shrink-0 opacity-50" }),
-  /* @__PURE__ */ jsxRuntimeExports.jsx(
-    _e.Input,
-    {
-      ref,
-      className: cn(
-        "flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50",
-        className
-      ),
-      ...props
-    }
-  )
-] }));
-CommandInput.displayName = _e.Input.displayName;
-const CommandList = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-  _e.List,
-  {
-    ref,
-    className: cn("max-h-[300px] overflow-y-auto overflow-x-hidden", className),
-    ...props
-  }
-));
-CommandList.displayName = _e.List.displayName;
-const CommandEmpty = reactExports.forwardRef((props, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-  _e.Empty,
-  {
-    ref,
-    className: "py-6 text-center text-sm",
-    ...props
-  }
-));
-CommandEmpty.displayName = _e.Empty.displayName;
-const CommandGroup = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-  _e.Group,
-  {
-    ref,
-    className: cn(
-      "overflow-hidden p-1 text-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground",
-      className
-    ),
-    ...props
-  }
-));
-CommandGroup.displayName = _e.Group.displayName;
-const CommandSeparator = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-  _e.Separator,
-  {
-    ref,
-    className: cn("-mx-1 h-px bg-border", className),
-    ...props
-  }
-));
-CommandSeparator.displayName = _e.Separator.displayName;
-const CommandItem = reactExports.forwardRef(({ className, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(
-  _e.Item,
-  {
-    ref,
-    className: cn(
-      "relative flex cursor-default gap-2 select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none data-[disabled=true]:pointer-events-none data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground data-[disabled=true]:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
-      className
-    ),
-    ...props
-  }
-));
-CommandItem.displayName = _e.Item.displayName;
-
-// src/primitive.tsx
-function composeEventHandlers(originalEventHandler, ourEventHandler, { checkForDefaultPrevented = true } = {}) {
-  return function handleEvent(event) {
-    originalEventHandler?.(event);
-    if (checkForDefaultPrevented === false || !event.defaultPrevented) {
-      return ourEventHandler?.(event);
-    }
-  };
-}
-
-// src/slot.tsx
-// @__NO_SIDE_EFFECTS__
-function createSlot(ownerName) {
-  const SlotClone = /* @__PURE__ */ createSlotClone(ownerName);
-  const Slot2 = reactExports.forwardRef((props, forwardedRef) => {
-    const { children, ...slotProps } = props;
-    const childrenArray = reactExports.Children.toArray(children);
-    const slottable = childrenArray.find(isSlottable);
-    if (slottable) {
-      const newElement = slottable.props.children;
-      const newChildren = childrenArray.map((child) => {
-        if (child === slottable) {
-          if (reactExports.Children.count(newElement) > 1) return reactExports.Children.only(null);
-          return reactExports.isValidElement(newElement) ? newElement.props.children : null;
-        } else {
-          return child;
-        }
-      });
-      return /* @__PURE__ */ jsxRuntimeExports.jsx(SlotClone, { ...slotProps, ref: forwardedRef, children: reactExports.isValidElement(newElement) ? reactExports.cloneElement(newElement, void 0, newChildren) : null });
-    }
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(SlotClone, { ...slotProps, ref: forwardedRef, children });
-  });
-  Slot2.displayName = `${ownerName}.Slot`;
-  return Slot2;
-}
-// @__NO_SIDE_EFFECTS__
-function createSlotClone(ownerName) {
-  const SlotClone = reactExports.forwardRef((props, forwardedRef) => {
-    const { children, ...slotProps } = props;
-    if (reactExports.isValidElement(children)) {
-      const childrenRef = getElementRef(children);
-      const props2 = mergeProps(slotProps, children.props);
-      if (children.type !== reactExports.Fragment) {
-        props2.ref = forwardedRef ? composeRefs$1(forwardedRef, childrenRef) : childrenRef;
-      }
-      return reactExports.cloneElement(children, props2);
-    }
-    return reactExports.Children.count(children) > 1 ? reactExports.Children.only(null) : null;
-  });
-  SlotClone.displayName = `${ownerName}.SlotClone`;
-  return SlotClone;
-}
-var SLOTTABLE_IDENTIFIER = Symbol("radix.slottable");
-function isSlottable(child) {
-  return reactExports.isValidElement(child) && typeof child.type === "function" && "__radixId" in child.type && child.type.__radixId === SLOTTABLE_IDENTIFIER;
-}
-function mergeProps(slotProps, childProps) {
-  const overrideProps = { ...childProps };
-  for (const propName in childProps) {
-    const slotPropValue = slotProps[propName];
-    const childPropValue = childProps[propName];
-    const isHandler = /^on[A-Z]/.test(propName);
-    if (isHandler) {
-      if (slotPropValue && childPropValue) {
-        overrideProps[propName] = (...args) => {
-          const result = childPropValue(...args);
-          slotPropValue(...args);
-          return result;
-        };
-      } else if (slotPropValue) {
-        overrideProps[propName] = slotPropValue;
-      }
-    } else if (propName === "style") {
-      overrideProps[propName] = { ...slotPropValue, ...childPropValue };
-    } else if (propName === "className") {
-      overrideProps[propName] = [slotPropValue, childPropValue].filter(Boolean).join(" ");
-    }
-  }
-  return { ...slotProps, ...overrideProps };
-}
-function getElementRef(element) {
-  let getter = Object.getOwnPropertyDescriptor(element.props, "ref")?.get;
-  let mayWarn = getter && "isReactWarning" in getter && getter.isReactWarning;
-  if (mayWarn) {
-    return element.ref;
-  }
-  getter = Object.getOwnPropertyDescriptor(element, "ref")?.get;
-  mayWarn = getter && "isReactWarning" in getter && getter.isReactWarning;
-  if (mayWarn) {
-    return element.props.ref;
-  }
-  return element.props.ref || element.ref;
-}
-
-// src/use-controllable-state.tsx
-var useInsertionEffect = React$1[" useInsertionEffect ".trim().toString()] || useLayoutEffect2;
-function useControllableState({
-  prop,
-  defaultProp,
-  onChange = () => {
-  },
-  caller
-}) {
-  const [uncontrolledProp, setUncontrolledProp, onChangeRef] = useUncontrolledState({
-    defaultProp,
-    onChange
-  });
-  const isControlled = prop !== void 0;
-  const value = isControlled ? prop : uncontrolledProp;
-  {
-    const isControlledRef = reactExports.useRef(prop !== void 0);
-    reactExports.useEffect(() => {
-      const wasControlled = isControlledRef.current;
-      if (wasControlled !== isControlled) {
-        const from = wasControlled ? "controlled" : "uncontrolled";
-        const to = isControlled ? "controlled" : "uncontrolled";
-        console.warn(
-          `${caller} is changing from ${from} to ${to}. Components should not switch from controlled to uncontrolled (or vice versa). Decide between using a controlled or uncontrolled value for the lifetime of the component.`
-        );
-      }
-      isControlledRef.current = isControlled;
-    }, [isControlled, caller]);
-  }
-  const setValue = reactExports.useCallback(
-    (nextValue) => {
-      if (isControlled) {
-        const value2 = isFunction$1(nextValue) ? nextValue(prop) : nextValue;
-        if (value2 !== prop) {
-          onChangeRef.current?.(value2);
-        }
-      } else {
-        setUncontrolledProp(nextValue);
-      }
-    },
-    [isControlled, prop, setUncontrolledProp, onChangeRef]
-  );
-  return [value, setValue];
-}
-function useUncontrolledState({
-  defaultProp,
-  onChange
-}) {
-  const [value, setValue] = reactExports.useState(defaultProp);
-  const prevValueRef = reactExports.useRef(value);
-  const onChangeRef = reactExports.useRef(onChange);
-  useInsertionEffect(() => {
-    onChangeRef.current = onChange;
-  }, [onChange]);
-  reactExports.useEffect(() => {
-    if (prevValueRef.current !== value) {
-      onChangeRef.current?.(value);
-      prevValueRef.current = value;
-    }
-  }, [value, prevValueRef]);
-  return [value, setValue, onChangeRef];
-}
-function isFunction$1(value) {
-  return typeof value === "function";
-}
-
-var POPOVER_NAME = "Popover";
-var [createPopoverContext] = createContextScope$1(POPOVER_NAME, [
-  createPopperScope
-]);
-var usePopperScope = createPopperScope();
-var [PopoverProvider, usePopoverContext] = createPopoverContext(POPOVER_NAME);
-var Popover$1 = (props) => {
-  const {
-    __scopePopover,
-    children,
-    open: openProp,
-    defaultOpen,
-    onOpenChange,
-    modal = false
-  } = props;
-  const popperScope = usePopperScope(__scopePopover);
-  const triggerRef = reactExports.useRef(null);
-  const [hasCustomAnchor, setHasCustomAnchor] = reactExports.useState(false);
-  const [open, setOpen] = useControllableState({
-    prop: openProp,
-    defaultProp: defaultOpen ?? false,
-    onChange: onOpenChange,
-    caller: POPOVER_NAME
-  });
-  return /* @__PURE__ */ jsxRuntimeExports.jsx(Root2$5, { ...popperScope, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-    PopoverProvider,
-    {
-      scope: __scopePopover,
-      contentId: useId(),
-      triggerRef,
-      open,
-      onOpenChange: setOpen,
-      onOpenToggle: reactExports.useCallback(() => setOpen((prevOpen) => !prevOpen), [setOpen]),
-      hasCustomAnchor,
-      onCustomAnchorAdd: reactExports.useCallback(() => setHasCustomAnchor(true), []),
-      onCustomAnchorRemove: reactExports.useCallback(() => setHasCustomAnchor(false), []),
-      modal,
-      children
-    }
-  ) });
-};
-Popover$1.displayName = POPOVER_NAME;
-var ANCHOR_NAME = "PopoverAnchor";
-var PopoverAnchor = reactExports.forwardRef(
-  (props, forwardedRef) => {
-    const { __scopePopover, ...anchorProps } = props;
-    const context = usePopoverContext(ANCHOR_NAME, __scopePopover);
-    const popperScope = usePopperScope(__scopePopover);
-    const { onCustomAnchorAdd, onCustomAnchorRemove } = context;
-    reactExports.useEffect(() => {
-      onCustomAnchorAdd();
-      return () => onCustomAnchorRemove();
-    }, [onCustomAnchorAdd, onCustomAnchorRemove]);
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(Anchor, { ...popperScope, ...anchorProps, ref: forwardedRef });
-  }
-);
-PopoverAnchor.displayName = ANCHOR_NAME;
-var TRIGGER_NAME = "PopoverTrigger";
-var PopoverTrigger$1 = reactExports.forwardRef(
-  (props, forwardedRef) => {
-    const { __scopePopover, ...triggerProps } = props;
-    const context = usePopoverContext(TRIGGER_NAME, __scopePopover);
-    const popperScope = usePopperScope(__scopePopover);
-    const composedTriggerRef = useComposedRefs$1(forwardedRef, context.triggerRef);
-    const trigger = /* @__PURE__ */ jsxRuntimeExports.jsx(
-      Primitive$3.button,
-      {
-        type: "button",
-        "aria-haspopup": "dialog",
-        "aria-expanded": context.open,
-        "aria-controls": context.contentId,
-        "data-state": getState(context.open),
-        ...triggerProps,
-        ref: composedTriggerRef,
-        onClick: composeEventHandlers(props.onClick, context.onOpenToggle)
-      }
-    );
-    return context.hasCustomAnchor ? trigger : /* @__PURE__ */ jsxRuntimeExports.jsx(Anchor, { asChild: true, ...popperScope, children: trigger });
-  }
-);
-PopoverTrigger$1.displayName = TRIGGER_NAME;
-var PORTAL_NAME = "PopoverPortal";
-var [PortalProvider, usePortalContext] = createPopoverContext(PORTAL_NAME, {
-  forceMount: void 0
-});
-var PopoverPortal = (props) => {
-  const { __scopePopover, forceMount, children, container } = props;
-  const context = usePopoverContext(PORTAL_NAME, __scopePopover);
-  return /* @__PURE__ */ jsxRuntimeExports.jsx(PortalProvider, { scope: __scopePopover, forceMount, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Presence, { present: forceMount || context.open, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Portal$5, { asChild: true, container, children }) }) });
-};
-PopoverPortal.displayName = PORTAL_NAME;
-var CONTENT_NAME = "PopoverContent";
-var PopoverContent$1 = reactExports.forwardRef(
-  (props, forwardedRef) => {
-    const portalContext = usePortalContext(CONTENT_NAME, props.__scopePopover);
-    const { forceMount = portalContext.forceMount, ...contentProps } = props;
-    const context = usePopoverContext(CONTENT_NAME, props.__scopePopover);
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(Presence, { present: forceMount || context.open, children: context.modal ? /* @__PURE__ */ jsxRuntimeExports.jsx(PopoverContentModal, { ...contentProps, ref: forwardedRef }) : /* @__PURE__ */ jsxRuntimeExports.jsx(PopoverContentNonModal, { ...contentProps, ref: forwardedRef }) });
-  }
-);
-PopoverContent$1.displayName = CONTENT_NAME;
-var Slot = createSlot("PopoverContent.RemoveScroll");
-var PopoverContentModal = reactExports.forwardRef(
-  (props, forwardedRef) => {
-    const context = usePopoverContext(CONTENT_NAME, props.__scopePopover);
-    const contentRef = reactExports.useRef(null);
-    const composedRefs = useComposedRefs$1(forwardedRef, contentRef);
-    const isRightClickOutsideRef = reactExports.useRef(false);
-    reactExports.useEffect(() => {
-      const content = contentRef.current;
-      if (content) return hideOthers(content);
-    }, []);
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(ReactRemoveScroll, { as: Slot, allowPinchZoom: true, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-      PopoverContentImpl,
-      {
-        ...props,
-        ref: composedRefs,
-        trapFocus: context.open,
-        disableOutsidePointerEvents: true,
-        onCloseAutoFocus: composeEventHandlers(props.onCloseAutoFocus, (event) => {
-          event.preventDefault();
-          if (!isRightClickOutsideRef.current) context.triggerRef.current?.focus();
-        }),
-        onPointerDownOutside: composeEventHandlers(
-          props.onPointerDownOutside,
-          (event) => {
-            const originalEvent = event.detail.originalEvent;
-            const ctrlLeftClick = originalEvent.button === 0 && originalEvent.ctrlKey === true;
-            const isRightClick = originalEvent.button === 2 || ctrlLeftClick;
-            isRightClickOutsideRef.current = isRightClick;
-          },
-          { checkForDefaultPrevented: false }
-        ),
-        onFocusOutside: composeEventHandlers(
-          props.onFocusOutside,
-          (event) => event.preventDefault(),
-          { checkForDefaultPrevented: false }
-        )
-      }
-    ) });
-  }
-);
-var PopoverContentNonModal = reactExports.forwardRef(
-  (props, forwardedRef) => {
-    const context = usePopoverContext(CONTENT_NAME, props.__scopePopover);
-    const hasInteractedOutsideRef = reactExports.useRef(false);
-    const hasPointerDownOutsideRef = reactExports.useRef(false);
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(
-      PopoverContentImpl,
-      {
-        ...props,
-        ref: forwardedRef,
-        trapFocus: false,
-        disableOutsidePointerEvents: false,
-        onCloseAutoFocus: (event) => {
-          props.onCloseAutoFocus?.(event);
-          if (!event.defaultPrevented) {
-            if (!hasInteractedOutsideRef.current) context.triggerRef.current?.focus();
-            event.preventDefault();
-          }
-          hasInteractedOutsideRef.current = false;
-          hasPointerDownOutsideRef.current = false;
-        },
-        onInteractOutside: (event) => {
-          props.onInteractOutside?.(event);
-          if (!event.defaultPrevented) {
-            hasInteractedOutsideRef.current = true;
-            if (event.detail.originalEvent.type === "pointerdown") {
-              hasPointerDownOutsideRef.current = true;
-            }
-          }
-          const target = event.target;
-          const targetIsTrigger = context.triggerRef.current?.contains(target);
-          if (targetIsTrigger) event.preventDefault();
-          if (event.detail.originalEvent.type === "focusin" && hasPointerDownOutsideRef.current) {
-            event.preventDefault();
-          }
-        }
-      }
-    );
-  }
-);
-var PopoverContentImpl = reactExports.forwardRef(
-  (props, forwardedRef) => {
-    const {
-      __scopePopover,
-      trapFocus,
-      onOpenAutoFocus,
-      onCloseAutoFocus,
-      disableOutsidePointerEvents,
-      onEscapeKeyDown,
-      onPointerDownOutside,
-      onFocusOutside,
-      onInteractOutside,
-      ...contentProps
-    } = props;
-    const context = usePopoverContext(CONTENT_NAME, __scopePopover);
-    const popperScope = usePopperScope(__scopePopover);
-    useFocusGuards();
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(
-      FocusScope,
-      {
-        asChild: true,
-        loop: true,
-        trapped: trapFocus,
-        onMountAutoFocus: onOpenAutoFocus,
-        onUnmountAutoFocus: onCloseAutoFocus,
-        children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-          DismissableLayer,
-          {
-            asChild: true,
-            disableOutsidePointerEvents,
-            onInteractOutside,
-            onEscapeKeyDown,
-            onPointerDownOutside,
-            onFocusOutside,
-            onDismiss: () => context.onOpenChange(false),
-            children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-              Content$2,
-              {
-                "data-state": getState(context.open),
-                role: "dialog",
-                id: context.contentId,
-                ...popperScope,
-                ...contentProps,
-                ref: forwardedRef,
-                style: {
-                  ...contentProps.style,
-                  // re-namespace exposed content custom properties
-                  ...{
-                    "--radix-popover-content-transform-origin": "var(--radix-popper-transform-origin)",
-                    "--radix-popover-content-available-width": "var(--radix-popper-available-width)",
-                    "--radix-popover-content-available-height": "var(--radix-popper-available-height)",
-                    "--radix-popover-trigger-width": "var(--radix-popper-anchor-width)",
-                    "--radix-popover-trigger-height": "var(--radix-popper-anchor-height)"
-                  }
-                }
-              }
-            )
-          }
-        )
-      }
-    );
-  }
-);
-var CLOSE_NAME = "PopoverClose";
-var PopoverClose = reactExports.forwardRef(
-  (props, forwardedRef) => {
-    const { __scopePopover, ...closeProps } = props;
-    const context = usePopoverContext(CLOSE_NAME, __scopePopover);
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(
-      Primitive$3.button,
-      {
-        type: "button",
-        ...closeProps,
-        ref: forwardedRef,
-        onClick: composeEventHandlers(props.onClick, () => context.onOpenChange(false))
-      }
-    );
-  }
-);
-PopoverClose.displayName = CLOSE_NAME;
-var ARROW_NAME = "PopoverArrow";
-var PopoverArrow = reactExports.forwardRef(
-  (props, forwardedRef) => {
-    const { __scopePopover, ...arrowProps } = props;
-    const popperScope = usePopperScope(__scopePopover);
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(Arrow, { ...popperScope, ...arrowProps, ref: forwardedRef });
-  }
-);
-PopoverArrow.displayName = ARROW_NAME;
-function getState(open) {
-  return open ? "open" : "closed";
-}
-var Root2 = Popover$1;
-var Trigger = PopoverTrigger$1;
-var Portal = PopoverPortal;
-var Content2 = PopoverContent$1;
-
-const Popover = Root2;
-const PopoverTrigger = Trigger;
-const PopoverContent = reactExports.forwardRef(({ className, align = "center", sideOffset = 4, ...props }, ref) => /* @__PURE__ */ jsxRuntimeExports.jsx(Portal, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-  Content2,
-  {
-    ref,
-    align,
-    sideOffset,
-    className: cn(
-      "z-50 w-72 rounded-md border bg-popover p-4 text-popover-foreground shadow-md outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 origin-[--radix-popover-content-transform-origin]",
-      className
-    ),
-    ...props
-  }
-) }));
-PopoverContent.displayName = Content2.displayName;
 
 const PROJECT_STATUSES$2 = [
   { value: "started", label: "Started", color: "bg-slate-100 text-slate-700" },
@@ -137782,70 +138478,57 @@ function CreateBom() {
                     /* @__PURE__ */ jsxRuntimeExports.jsxs(Select, { value: selectedVersionId || "", onValueChange: setSelectedVersionId, children: [
                       /* @__PURE__ */ jsxRuntimeExports.jsx(SelectTrigger, { className: "flex-1 min-w-[140px] bg-slate-50 border-slate-200 h-9 px-3", children: /* @__PURE__ */ jsxRuntimeExports.jsx(SelectValue, { placeholder: "Select version" }) }),
                       /* @__PURE__ */ jsxRuntimeExports.jsx(SelectContent, { className: "max-h-[300px] overflow-y-auto", children: versions.map((v) => {
-                        const isManualFinal = v.is_last_final;
-                        const isLatestApproved = !versions.some((x) => x.is_last_final) && v.status === "approved" && v.version_number === Math.max(...versions.filter((x) => x.status === "approved").map((x) => x.version_number), 0);
-                        const isFinal = isManualFinal || isLatestApproved;
-                        return /* @__PURE__ */ jsxRuntimeExports.jsx(SelectItem, { value: v.id, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between w-full gap-2", children: [
-                          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
-                            "V",
-                            v.version_number,
-                            " (",
-                            VERSION_LABEL[v.status] ?? v.status,
-                            ")"
-                          ] }),
-                          isFinal && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold shrink-0 flex items-center", children: "Last Final" })
-                        ] }) }, v.id);
+                        const isFinal = !!v.is_last_final;
+                        return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          SelectItem,
+                          {
+                            value: v.id,
+                            className: isFinal ? "bg-green-50 focus:bg-green-100 data-[state=checked]:bg-green-100" : void 0,
+                            children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between w-full gap-2", children: [
+                              /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: isFinal ? "text-green-700 font-semibold" : void 0, children: [
+                                "V",
+                                v.version_number,
+                                " (",
+                                VERSION_LABEL[v.status] ?? v.status,
+                                ")"
+                              ] }),
+                              isFinal && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold shrink-0 flex items-center", children: "Final" })
+                            ] })
+                          },
+                          v.id
+                        );
                       }) })
                     ] }),
                     (() => {
-                      const latestApprovedVer = versions.reduce((prev, current) => {
-                        if (current.is_last_final) return current;
-                        if (prev && prev.is_last_final) return prev;
-                        return current.status === "approved" && (!prev || current.version_number > prev.version_number) ? current : prev;
-                      }, null);
-                      const showJump = latestApprovedVer && selectedVersionId !== latestApprovedVer.id;
                       const currentV = versions.find((v) => v.id === selectedVersionId);
                       const showMark = currentV && currentV.status === "approved" && !currentV.is_last_final;
-                      return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1", children: [
-                        showJump && /* @__PURE__ */ jsxRuntimeExports.jsx(
-                          Button,
-                          {
-                            variant: "outline",
-                            size: "icon",
-                            className: "h-9 w-9 border-green-200 text-green-600 hover:bg-green-50 shadow-sm shrink-0",
-                            title: "Jump to Last Final Version",
-                            onClick: () => setSelectedVersionId(latestApprovedVer.id),
-                            children: /* @__PURE__ */ jsxRuntimeExports.jsx(CircleCheck, { className: "h-4 w-4" })
-                          }
-                        ),
-                        showMark && /* @__PURE__ */ jsxRuntimeExports.jsx(
-                          Button,
-                          {
-                            variant: "outline",
-                            size: "icon",
-                            className: "h-9 w-9 border-slate-200 text-slate-400 hover:text-green-600 hover:border-green-200 shadow-sm shrink-0",
-                            title: "Mark this as Last Final",
-                            onClick: async () => {
-                              if (!confirm("Are you sure you want to mark this version as the Last Final version?")) return;
-                              try {
-                                const resp = await apiFetch(`/api/boq-versions/${selectedVersionId}/make-final`, { method: "POST" });
-                                if (resp.ok) {
-                                  toast({ title: "Success", description: "Version marked as Last Final" });
-                                  const boqResp = await apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=bom`);
-                                  if (boqResp.ok) {
-                                    const boqData = await boqResp.json();
-                                    setVersions(boqData.versions || []);
-                                  }
+                      return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "flex items-center gap-1", children: showMark && /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        Button,
+                        {
+                          variant: "outline",
+                          size: "icon",
+                          className: "h-9 w-9 border-slate-200 text-slate-400 hover:text-green-600 hover:border-green-200 shadow-sm shrink-0",
+                          title: "Mark this as Last Final — it will also become available in Finalize BOQ",
+                          onClick: async () => {
+                            if (!confirm("Mark this version as the Last Final version? It will also become available in Finalize BOQ.")) return;
+                            try {
+                              const resp = await apiFetch(`/api/boq-versions/${selectedVersionId}/make-final`, { method: "POST" });
+                              if (resp.ok) {
+                                toast({ title: "Success", description: "Version marked as Last Final" });
+                                const boqResp = await apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=bom`);
+                                if (boqResp.ok) {
+                                  const boqData = await boqResp.json();
+                                  setVersions(boqData.versions || []);
                                 }
-                              } catch (e) {
-                                console.error("Failed to mark final", e);
-                                toast({ title: "Error", description: "Failed to mark as final", variant: "destructive" });
                               }
-                            },
-                            children: /* @__PURE__ */ jsxRuntimeExports.jsx(Star, { className: "h-4 w-4" })
-                          }
-                        )
-                      ] });
+                            } catch (e) {
+                              console.error("Failed to mark final", e);
+                              toast({ title: "Error", description: "Failed to mark as final", variant: "destructive" });
+                            }
+                          },
+                          children: /* @__PURE__ */ jsxRuntimeExports.jsx(Star, { className: "h-4 w-4" })
+                        }
+                      ) });
                     })()
                   ] }),
                   /* @__PURE__ */ jsxRuntimeExports.jsxs(
@@ -143028,6 +143711,8 @@ function FinalizeBoq() {
     }
   };
   const filteredBomVersions = React.useMemo(() => {
+    const finalOnly = bomVersions.filter((v) => !v.is_disabled && v.is_last_final);
+    if (finalOnly.length > 0) return finalOnly;
     return bomVersions.filter(
       (v) => !v.is_disabled && (v.status === "approved" || v.status === "submitted" || v.status === "pending_approval" || v.status === "edit_requested")
     );
@@ -143558,7 +144243,8 @@ function FinalizeBoq() {
           let approved = null;
           if (selectedBomVersionId && bomList.some((v) => v.id === selectedBomVersionId)) {
           } else {
-            const selectable = bomList.filter((v) => v.status === "approved" && !v.is_disabled);
+            const finalBom = bomList.filter((v) => v.is_last_final && !v.is_disabled);
+            const selectable = finalBom.length > 0 ? finalBom : bomList.filter((v) => v.status === "approved" && !v.is_disabled);
             approved = selectable[0] || null;
             if (approved) {
               setSelectedBomVersionId(approved.id);
@@ -143814,8 +144500,8 @@ function FinalizeBoq() {
     toast({ title: "Refreshed", description: "BOM data reloaded from server." });
   }, [selectedProjectId, toast]);
   reactExports.useEffect(() => {
-    loadBoqItemsAndEdits(selectedBoqVersionId || selectedBomVersionId);
-  }, [selectedBomVersionId, selectedBoqVersionId, loadBoqItemsAndEdits, refreshKey]);
+    loadBoqItemsAndEdits(selectedBoqVersionId || null);
+  }, [selectedBoqVersionId, loadBoqItemsAndEdits, refreshKey]);
   reactExports.useEffect(() => {
     const activeVersionId2 = selectedBoqVersionId || selectedBomVersionId;
     if (activeVersionId2 && !selectedBoqVersionId) {
@@ -145687,16 +146373,51 @@ All other columns and data will remain unchanged.`)) return;
                     },
                     children: [
                       /* @__PURE__ */ jsxRuntimeExports.jsx(SelectTrigger, { className: "bg-slate-50 border-slate-200 h-9", children: /* @__PURE__ */ jsxRuntimeExports.jsx(SelectValue, { placeholder: "Select BOQ" }) }),
-                      /* @__PURE__ */ jsxRuntimeExports.jsx(SelectContent, { className: "max-h-[300px] overflow-y-auto", children: filteredBoqVersions.map((v) => /* @__PURE__ */ jsxRuntimeExports.jsxs(SelectItem, { value: v.id, children: [
-                        "BOQ V",
-                        v.version_number,
-                        " (",
-                        v.status,
-                        ")"
-                      ] }, v.id)) })
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(SelectContent, { className: "max-h-[300px] overflow-y-auto", children: filteredBoqVersions.map((v) => /* @__PURE__ */ jsxRuntimeExports.jsx(SelectItem, { value: v.id, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between w-full gap-2", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+                          "BOQ C",
+                          v.version_number,
+                          " (",
+                          v.status,
+                          ")"
+                        ] }),
+                        v.is_last_final && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold shrink-0 flex items-center", children: "Final" })
+                      ] }) }, v.id)) })
                     ]
                   }
                 ),
+                (() => {
+                  const currentBoqV = filteredBoqVersions.find((v) => v.id === selectedBoqVersionId);
+                  const showMarkBoqFinal = currentBoqV && currentBoqV.status === "approved" && !currentBoqV.is_last_final;
+                  return showMarkBoqFinal ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    Button,
+                    {
+                      variant: "ghost",
+                      size: "icon",
+                      className: "h-9 w-9 text-slate-400 hover:text-green-600 border border-slate-200 hover:bg-green-50 bg-white shadow-sm shrink-0",
+                      title: "Mark this BOQ Version as Final — only this version will be available in Generate PO",
+                      onClick: async () => {
+                        if (!selectedBoqVersionId) return;
+                        if (!confirm("Mark this BOQ version as Final? Only this version will then be available in Generate PO.")) return;
+                        try {
+                          const resp = await apiFetch(`/api/boq-versions/${encodeURIComponent(selectedBoqVersionId)}/make-final`, { method: "POST" });
+                          if (resp.ok) {
+                            toast({ title: "Success", description: "BOQ Version marked as Final" });
+                            const boqResp = await apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=boq`);
+                            if (boqResp.ok) {
+                              const boqData = await boqResp.json();
+                              setBoqVersions(boqData.versions || []);
+                            }
+                          }
+                        } catch (e) {
+                          console.error("Failed to mark BOQ version final", e);
+                          toast({ title: "Error", description: "Failed to mark as final", variant: "destructive" });
+                        }
+                      },
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsx(Star, { className: "h-4 w-4" })
+                    }
+                  ) : null;
+                })(),
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   Button,
                   {
@@ -146209,6 +146930,10 @@ All other columns and data will remain unchanged.`)) return;
               ]
             }
           )
+        ] }),
+        !selectedBoqVersionId && selectedBomVersionId && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-blue-50 border border-blue-200 rounded-xl p-6 text-center", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-sm font-semibold text-blue-800", children: "This is the incoming Final BOM Version." }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "text-xs text-blue-600 mt-1", children: 'Click "+ Create" next to BOQ Version above to bring its materials in and start working on the BOQ.' })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-4", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col md:flex-row justify-between items-center gap-4", children: [
@@ -148787,7 +149512,7 @@ function CreateProject() {
                     ] }),
                     p.boq_version_number && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5 flex-wrap justify-end bg-white p-1 rounded border border-slate-100 shadow-sm", children: [
                       /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "bg-blue-50 text-blue-700 text-[9px] px-1.5 py-0.5 rounded font-bold border border-blue-200 uppercase tracking-tight", children: [
-                        "BOQ V",
+                        "BOQ C",
                         p.boq_version_number
                       ] }),
                       p.boq_version_price && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "flex items-center gap-1 font-extrabold text-green-700 text-[11px] px-1", children: [
@@ -188925,6 +189650,66 @@ function PurchaseOrders() {
       setIsGeneratingPdf(false);
     }
   };
+  const [downloadingExcelId, setDownloadingExcelId] = reactExports.useState(null);
+  const handleDownloadExcel = async (po, e) => {
+    e.stopPropagation();
+    setDownloadingExcelId(po.id);
+    try {
+      const res = await apiFetch(`/api/purchase-orders/${po.id}`);
+      if (!res.ok) throw new Error("Failed to fetch PO details");
+      const data = await res.json();
+      const poDetail = data.purchaseOrder;
+      const poItems = data.items || [];
+      const headerRows = [
+        ["PURCHASE ORDER"],
+        [],
+        ["PO Number", poDetail.po_number],
+        ["Date", new Date(poDetail.created_at).toLocaleDateString()],
+        ["Project", poDetail.project_name || "N/A"],
+        ["Vendor", poDetail.vendor_name || "N/A"],
+        []
+      ];
+      const tableHeader = ["S.No", "Item", "Unit", "HSN/SAC", "Qty", "Rate", "Amount"];
+      const tableRows = poItems.map((item, idx) => [
+        idx + 1,
+        item.item || "N/A",
+        item.unit || "N/A",
+        item.hsn_code || item.sac_code || "N/A",
+        parseFloat(item.qty || 0),
+        parseFloat(item.rate || 0),
+        parseFloat(item.amount || 0)
+      ]);
+      const footerRow = [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "Total Amount",
+        parseFloat(poDetail.total_amount || 0)
+      ];
+      const sheetData = [...headerRows, tableHeader, ...tableRows, footerRow];
+      const worksheet = utils.aoa_to_sheet(sheetData);
+      worksheet["!cols"] = [
+        { wch: 6 },
+        { wch: 35 },
+        { wch: 10 },
+        { wch: 12 },
+        { wch: 10 },
+        { wch: 12 },
+        { wch: 14 }
+      ];
+      const workbook = utils.book_new();
+      utils.book_append_sheet(workbook, worksheet, "Purchase Order");
+      writeFileSync(workbook, `PO_${poDetail.po_number}.xlsx`);
+      toast({ title: "Success", description: "Excel file generated successfully" });
+    } catch (error) {
+      console.error("Excel Export Error:", error);
+      toast({ title: "Error", description: "Failed to generate Excel file", variant: "destructive" });
+    } finally {
+      setDownloadingExcelId(null);
+    }
+  };
   reactExports.useEffect(() => {
     fetchData();
   }, []);
@@ -188938,7 +189723,8 @@ function PurchaseOrders() {
       if (poRes.ok && projectRes.ok) {
         const poData = await poRes.json();
         const projectData = await projectRes.json();
-        setPurchaseOrders(poData.purchaseOrders || []);
+        const allPOs = poData.purchaseOrders || [];
+        setPurchaseOrders(allPOs.filter((po) => po.is_current_final_version !== false));
         setProjects(projectData.projects || []);
       }
     } catch (error) {
@@ -189430,6 +190216,18 @@ function PurchaseOrders() {
                       children: /* @__PURE__ */ jsxRuntimeExports.jsx(FileDown, { className: "h-4 w-4" })
                     }
                   ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    Button,
+                    {
+                      variant: "ghost",
+                      size: "sm",
+                      className: "h-8 w-8 p-0 text-green-600 hover:text-green-800 hover:bg-green-50",
+                      onClick: (e) => handleDownloadExcel(mainPo, e),
+                      disabled: user?.role === "purchase_team" && mainPo.status !== "approved" || downloadingExcelId === mainPo.id,
+                      title: "Download Excel",
+                      children: downloadingExcelId === mainPo.id ? /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "h-4 w-4 animate-spin" }) : /* @__PURE__ */ jsxRuntimeExports.jsx(FileSpreadsheet, { className: "h-4 w-4" })
+                    }
+                  ),
                   /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "ghost", size: "sm", className: "h-8 w-8 p-0", children: /* @__PURE__ */ jsxRuntimeExports.jsx(ChevronRight, { className: "h-4 w-4" }) })
                 ] }) })
               ] }),
@@ -189495,6 +190293,18 @@ function PurchaseOrders() {
                       onClick: (e) => handleDownloadPdfOpenDialog(subPo, e),
                       disabled: user?.role === "purchase_team" && subPo.status !== "approved",
                       children: /* @__PURE__ */ jsxRuntimeExports.jsx(FileDown, { className: "h-3.5 w-3.5" })
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    Button,
+                    {
+                      variant: "ghost",
+                      size: "sm",
+                      className: "h-7 w-7 p-0 text-green-500 hover:text-green-700",
+                      onClick: (e) => handleDownloadExcel(subPo, e),
+                      disabled: user?.role === "purchase_team" && subPo.status !== "approved" || downloadingExcelId === subPo.id,
+                      title: "Download Excel",
+                      children: downloadingExcelId === subPo.id ? /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "h-3.5 w-3.5 animate-spin" }) : /* @__PURE__ */ jsxRuntimeExports.jsx(FileSpreadsheet, { className: "h-3.5 w-3.5" })
                     }
                   )
                 ] })
@@ -189782,6 +190592,73 @@ function PurchaseOrderDetail() {
         variant: "destructive"
       });
     });
+  };
+  const [isGeneratingExcel, setIsGeneratingExcel] = reactExports.useState(false);
+  const handleDownloadExcel = () => {
+    if (!po) return;
+    setIsGeneratingExcel(true);
+    try {
+      const rows = displayItems.map((item, idx) => {
+        let originalQty = parseFloat(item.qty) || 0;
+        if (isReviseMode) {
+          const sourceItem = initialItems.find((o) => o.id === item.id);
+          if (sourceItem) originalQty = parseFloat(sourceItem.qty);
+        } else if (parentItems.length > 0) {
+          const originalItem = parentItems.find((o) => {
+            const oName = (o.item || o.item_name || "").trim();
+            const iName = (item.item || item.item_name || "").trim();
+            if (!oName || !iName) return false;
+            return oName === iName && (o.description || "") === (item.description || "");
+          });
+          if (originalItem) originalQty = parseFloat(originalItem.qty);
+        }
+        const currentQty = parseFloat(item.qty) || 0;
+        const balanceQty = originalQty - currentQty;
+        return {
+          "S.No": idx + 1,
+          "Item Details": item.item || item.item_name || "",
+          "Unit": item.unit || "",
+          "HSN": item.hsn_code || "",
+          "SAC": item.sac_code || "",
+          "Original Qty": originalQty.toFixed(2),
+          "Ordered Qty": currentQty.toFixed(2),
+          "Balance Qty": balanceQty.toFixed(2),
+          "Tax %": `${item.tax_rate ?? 18}%`,
+          "Rate": parseFloat(item.rate || "0").toFixed(2),
+          "Amount": parseFloat(item.amount || "0").toFixed(2)
+        };
+      });
+      const wsData = [
+        ["Concept Trunk Interiors"],
+        ["12/36A, Indira Nagar, Medavakkam, Chennai, Tamil Nadu 600100"],
+        ["GSTIN 33ASOPS5560M1Z1"],
+        [],
+        ["ANNEXURE"],
+        [`Annexure No.`, po.po_number],
+        [`Date`, po.created_at ? new Date(po.created_at).toLocaleDateString("en-IN") : ""],
+        [`BOM Version`, po.version_number ? `V${po.version_number}` : "N/A"],
+        [],
+        [`Bill From`, po.vendor_name || "Vendor"],
+        [`Bill From Address`, [po.vendor_location, po.vendor_city, po.vendor_state, po.vendor_pincode].filter(Boolean).join(", ")],
+        [`Bill From GSTIN`, po.vendor_gstin || ""],
+        [`Deliver To`, shippingAddress || "Standard office delivery"],
+        [`Project Name`, po.project_name || po.project_client || ""],
+        []
+      ];
+      const ws = utils.aoa_to_sheet(wsData);
+      utils.sheet_add_json(ws, rows, { origin: -1, skipHeader: false });
+      const totalRowIndex = wsData.length + rows.length + 1;
+      utils.sheet_add_aoa(ws, [["", "", "", "", "", "", "", "Total Amount", `INR ${parseFloat(po.total_amount).toLocaleString(void 0, { minimumFractionDigits: 2 })}`]], { origin: `A${totalRowIndex}` });
+      const wb = utils.book_new();
+      utils.book_append_sheet(wb, ws, "Annexure");
+      writeFileSync(wb, `PO_${po.po_number}.xlsx`);
+      toast({ title: "Success", description: "Excel generated successfully" });
+    } catch (error) {
+      console.error("Excel Export Error:", error);
+      toast({ title: "Error", description: "Failed to generate Excel", variant: "destructive" });
+    } finally {
+      setIsGeneratingExcel(false);
+    }
   };
   const [comment, setComment] = reactExports.useState("");
   const [isSubmitting, setIsSubmitting] = reactExports.useState(false);
@@ -190286,6 +191163,19 @@ function PurchaseOrderDetail() {
               ]
             }
           ),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            Button,
+            {
+              variant: "outline",
+              className: "bg-green-600 text-white hover:bg-green-700 border-green-600",
+              onClick: handleDownloadExcel,
+              disabled: user?.role !== "admin" && !["approved", "ordered", "delivered"].includes(po?.status?.toLowerCase() || "") || isGeneratingExcel,
+              children: [
+                isGeneratingExcel ? /* @__PURE__ */ jsxRuntimeExports.jsx(LoaderCircle, { className: "h-4 w-4 mr-2 animate-spin" }) : /* @__PURE__ */ jsxRuntimeExports.jsx(FileSpreadsheet, { className: "h-4 w-4 mr-2" }),
+                isGeneratingExcel ? "Generating..." : "Download Excel"
+              ]
+            }
+          ),
           po.status === "draft" && /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { onClick: () => handleStatusUpdate("pending_approval"), className: "bg-blue-600 hover:bg-blue-700 text-white", children: "Submit for Approval" }),
           po.status === "pending_approval" && mode === "approval" && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(Button, { variant: "outline", className: "border-red-600 text-red-600 hover:bg-red-50", onClick: () => {
@@ -190447,7 +191337,7 @@ function PurchaseOrderDetail() {
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "space-y-1", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-xs text-slate-600", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-semibold text-slate-500 uppercase text-[10px] tracking-wider mr-2", children: "Project Name:" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-bold text-slate-700 uppercase", children: po?.project_client || po?.project_name || "—" })
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "font-bold text-slate-700 uppercase", children: po?.project_name || po?.project_client || "—" })
               ] }) })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-1", children: [
@@ -194923,6 +195813,7 @@ function Router() {
     /* @__PURE__ */ jsxRuntimeExports.jsx(Route, { path: "/reset-password", component: ResetPassword }),
     /* @__PURE__ */ jsxRuntimeExports.jsx(Route, { path: "/register/vendor/:token", component: VendorRegistration }),
     /* @__PURE__ */ jsxRuntimeExports.jsx(Route, { path: "/register/client/:token", component: ClientRegistration }),
+    /* @__PURE__ */ jsxRuntimeExports.jsx(Route, { path: "/q/open/:token", component: PublicQuoteFillOpen }),
     /* @__PURE__ */ jsxRuntimeExports.jsx(Route, { path: "/q/:token", component: PublicQuoteFill }),
     /* @__PURE__ */ jsxRuntimeExports.jsx(Route, { path: "/admin/summary-print/:linkId", component: PrintSummarySheet }),
     /* @__PURE__ */ jsxRuntimeExports.jsx(Route, { path: "/supplier/summary-print/:linkId", component: PrintSummarySheet }),

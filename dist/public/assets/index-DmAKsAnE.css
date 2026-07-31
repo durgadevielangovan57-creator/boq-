@@ -1902,6 +1902,10 @@
     height: 280px;
   }
 
+  .h-\[380px\] {
+    height: 380px;
+  }
+
   .h-\[400px\] {
     height: 400px;
   }
@@ -2070,6 +2074,10 @@
     max-height: 98vh;
   }
 
+  .max-h-\[100px\] {
+    max-height: 100px;
+  }
+
   .max-h-\[100vh\] {
     max-height: 100vh;
   }
@@ -2152,6 +2160,10 @@
 
   .max-h-full {
     max-height: 100%;
+  }
+
+  .max-h-none {
+    max-height: none;
   }
 
   .max-h-screen {
@@ -2568,6 +2580,10 @@
 
   .w-\[1400px\] {
     width: 1400px;
+  }
+
+  .w-\[var\(--radix-popover-trigger-width\)\] {
+    width: var(--radix-popover-trigger-width);
   }
 
   .w-\[var\(--sidebar-width\)\] {
@@ -5397,6 +5413,10 @@
     }
   }
 
+  .bg-green-200 {
+    background-color: var(--color-green-200);
+  }
+
   .bg-green-400 {
     background-color: var(--color-green-400);
   }
@@ -5781,13 +5801,33 @@
     }
   }
 
-  .bg-secondary, .bg-secondary\/10 {
+  .bg-secondary, .bg-secondary\/5 {
+    background-color: hsl(var(--secondary));
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-secondary\/5 {
+      background-color: color-mix(in oklab, hsl(var(--secondary)) 5%, transparent);
+    }
+  }
+
+  .bg-secondary\/10 {
     background-color: hsl(var(--secondary));
   }
 
   @supports (color: color-mix(in lab, red, red)) {
     .bg-secondary\/10 {
       background-color: color-mix(in oklab, hsl(var(--secondary)) 10%, transparent);
+    }
+  }
+
+  .bg-secondary\/40 {
+    background-color: hsl(var(--secondary));
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-secondary\/40 {
+      background-color: color-mix(in oklab, hsl(var(--secondary)) 40%, transparent);
     }
   }
 
@@ -9671,6 +9711,16 @@
       }
     }
 
+    .hover\:bg-emerald-50\/20:hover {
+      background-color: #ecfdf533;
+    }
+
+    @supports (color: color-mix(in lab, red, red)) {
+      .hover\:bg-emerald-50\/20:hover {
+        background-color: color-mix(in oklab, var(--color-emerald-50) 20%, transparent);
+      }
+    }
+
     .hover\:bg-emerald-50\/60:hover {
       background-color: #ecfdf599;
     }
@@ -9979,7 +10029,17 @@
       }
     }
 
-    .hover\:bg-secondary:hover, .hover\:bg-secondary\/90:hover {
+    .hover\:bg-secondary:hover, .hover\:bg-secondary\/20:hover {
+      background-color: hsl(var(--secondary));
+    }
+
+    @supports (color: color-mix(in lab, red, red)) {
+      .hover\:bg-secondary\/20:hover {
+        background-color: color-mix(in oklab, hsl(var(--secondary)) 20%, transparent);
+      }
+    }
+
+    .hover\:bg-secondary\/90:hover {
       background-color: hsl(var(--secondary));
     }
 
@@ -10251,6 +10311,10 @@
 
     .hover\:text-green-600:hover {
       color: var(--color-green-600);
+    }
+
+    .hover\:text-green-700:hover {
+      color: var(--color-green-700);
     }
 
     .hover\:text-green-800:hover {
@@ -10527,6 +10591,10 @@
 
   .focus\:bg-blue-50:focus {
     background-color: var(--color-blue-50);
+  }
+
+  .focus\:bg-green-100:focus {
+    background-color: var(--color-green-100);
   }
 
   .focus\:bg-white:focus {
@@ -11303,6 +11371,10 @@
 
   .data-\[state\=checked\]\:bg-blue-600[data-state="checked"] {
     background-color: var(--color-blue-600);
+  }
+
+  .data-\[state\=checked\]\:bg-green-100[data-state="checked"] {
+    background-color: var(--color-green-100);
   }
 
   .data-\[state\=checked\]\:bg-primary[data-state="checked"] {

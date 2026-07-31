@@ -361,9 +361,12 @@ export default function ManageProduct() {
     }, [approvedConfigsData]);
 
     const filteredCloneConfigs = useMemo(() => {
-        return allApprovedConfigs.filter(c =>
-            fuzzySearch(cloneSearch, [c.product_name || "", c.config_name || ""])
-        );
+        if (!cloneSearch || cloneSearch.trim() === "") return allApprovedConfigs;
+        const query = cloneSearch.toLowerCase().trim();
+        return allApprovedConfigs.filter(c => {
+            const pName = (c.product_name || "").toLowerCase();
+            return pName.includes(query);
+        });
     }, [allApprovedConfigs, cloneSearch]);
 
     const needsWorkProducts = useMemo(() => {
@@ -1129,7 +1132,7 @@ export default function ManageProduct() {
                                     </div>
                                 </div>
 
-                                <Dialog open={isCloneDialogOpen} onOpenChange={(open) => { setIsCloneDialogOpen(open); if (!open) setTargetProductForClone(null); }}>
+                                <Dialog open={isCloneDialogOpen} onOpenChange={(open) => { setIsCloneDialogOpen(open); if (!open) { setTargetProductForClone(null); setCloneSearch(""); } }}>
                                     <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col p-0 overflow-hidden border-none shadow-2xl">
                                         <DialogHeader className="p-6 bg-primary/5 border-b">
                                             <DialogTitle className="text-xl font-bold flex items-center gap-2">
@@ -1148,13 +1151,18 @@ export default function ManageProduct() {
                                                     onChange={e => setCloneSearch(e.target.value)}
                                                 />
                                             </div>
+                                            <p className="text-[11px] font-semibold text-muted-foreground">
+                                                Showing {filteredCloneConfigs.length} of {allApprovedConfigs.length} approved configuration{allApprovedConfigs.length === 1 ? "" : "s"}
+                                                {cloneSearch ? ` for "${cloneSearch}"` : ""}
+                                            </p>
                                             <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar space-y-2 min-h-[300px]">
-                                                {filteredCloneConfigs.length === 0 ? (
+                                                {filteredCloneConfigs.length === 0 && (
                                                     <div className="flex flex-col items-center justify-center py-20 text-center space-y-3">
                                                         <Search className="h-10 w-10 text-muted-foreground opacity-20" />
-                                                        <p className="text-sm font-medium text-muted-foreground">No approved configurations found</p>
+                                                        <p className="text-sm font-medium text-muted-foreground">No approved configurations found for "{cloneSearch}"</p>
                                                     </div>
-                                                ) : (
+                                                )}
+                                                {filteredCloneConfigs.length > 0 && (
                                                     filteredCloneConfigs.map(config => (
                                                         <div
                                                             key={config.id}
