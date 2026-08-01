@@ -4,7 +4,7 @@ const resendApiKey = process.env.RESEND_API_KEY;
 const fromEmail = process.env.FROM_EMAIL || "onboarding@resend.dev";
 
 if (!resendApiKey) {
-    console.warn("⚠️ WARNING: RESEND_API_KEY is missing");
+  console.warn("⚠️ WARNING: RESEND_API_KEY is missing");
 }
 
 const resend = resendApiKey ? new Resend(resendApiKey) : null;
@@ -13,27 +13,27 @@ const resend = resendApiKey ? new Resend(resendApiKey) : null;
  * Send reset password email
  */
 export async function sendResetPasswordEmail(
-    to: string,
-    resetLink: string
+  to: string,
+  resetLink: string
 ) {
-    console.log("[EMAIL] sendResetPasswordEmail CALLED");
-    console.log("[EMAIL] TO:", to);
-    console.log("[EMAIL] FROM:", fromEmail);
-    console.log(
-        "[EMAIL] KEY:",
-        process.env.RESEND_API_KEY ? "LOADED" : "MISSING"
-    );
+  console.log("[EMAIL] sendResetPasswordEmail CALLED");
+  console.log("[EMAIL] TO:", to);
+  console.log("[EMAIL] FROM:", fromEmail);
+  console.log(
+    "[EMAIL] KEY:",
+    process.env.RESEND_API_KEY ? "LOADED" : "MISSING"
+  );
 
-    if (!resend) {
-        throw new Error("RESEND_API_KEY not configured");
-    }
+  if (!resend) {
+    throw new Error("RESEND_API_KEY not configured");
+  }
 
-    try {
-        const response = await resend.emails.send({
-            from: fromEmail, // must be a verified sender
-            to,
-            subject: "Reset your password",
-            html: `
+  try {
+    const response = await resend.emails.send({
+      from: fromEmail, // must be a verified sender
+      to,
+      subject: "Reset your password",
+      html: `
         <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
           <div style="text-align: center; margin-bottom: 20px;">
             <h1 style="color: #2563eb; margin: 0;">BOQ Management System</h1>
@@ -59,14 +59,14 @@ export async function sendResetPasswordEmail(
           </div>
         </div>
       `,
-        });
+    });
 
-        console.log("[RESEND SUCCESS]", response);
-        return response;
-    } catch (error) {
-        console.error("[RESEND ERROR]", error);
-        throw error;
-    }
+    console.log("[RESEND SUCCESS]", response);
+    return response;
+  } catch (error) {
+    console.error("[RESEND ERROR]", error);
+    throw error;
+  }
 }
 
 /**
@@ -251,10 +251,10 @@ export async function sendSiteReportEmail(
                     <th style="text-align: center; padding: 6px; border: 1px solid #e2e8f0;">Timing</th>
                   </tr>
                   ${task.labour.map((l: any) => {
-                    const lName = l.labour_name || l.labourName || 'N/A';
-                    const lIn = l.in_time || l.inTime || '-';
-                    const lOut = l.out_time || l.outTime || '-';
-                    return `
+        const lName = l.labour_name || l.labourName || 'N/A';
+        const lIn = l.in_time || l.inTime || '-';
+        const lOut = l.out_time || l.outTime || '-';
+        return `
                     <tr>
                       <td style="padding: 6px; border: 1px solid #e2e8f0;">${lName}</td>
                       <td style="text-align: center; padding: 6px; border: 1px solid #e2e8f0;">${l.count}</td>
@@ -374,10 +374,10 @@ export async function sendAuditSummaryEmail(
     `;
 
     logs.forEach((log) => {
-      const actionColor = 
-        log.action === 'DELETE' ? '#ef4444' : 
-        log.action === 'CREATE' ? '#10b981' : 
-        log.action === 'UPDATE' ? '#3b82f6' : '#64748b';
+      const actionColor =
+        log.action === 'DELETE' ? '#ef4444' :
+          log.action === 'CREATE' ? '#10b981' :
+            log.action === 'UPDATE' ? '#3b82f6' : '#64748b';
 
       emailHtml += `
         <tr>
@@ -610,7 +610,7 @@ export async function sendProposalStatusEmail(
     const isApproved = status === "approved";
     const statusColor = isApproved ? "#10b981" : "#ef4444";
     const statusText = isApproved ? "APPROVED" : "REJECTED";
-    
+
     let emailHtml = `
       <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
         <div style="text-align: center; margin-bottom: 20px; border-bottom: 2px solid ${statusColor}; padding-bottom: 15px;">
@@ -642,6 +642,79 @@ export async function sendProposalStatusEmail(
   } catch (error) {
     console.error("[EMAIL ERROR] sendProposalStatusEmail:", error);
     throw error;
+  }
+}
+
+/**
+ * Send Material Submission Rejected Notification to the submitter
+ */
+export async function sendMaterialSubmissionRejectedEmail(
+  to: string,
+  info: {
+    recipientName?: string;
+    materialName: string;
+    materialCode?: string;
+    shopName?: string;
+    rate?: number | string;
+    unit?: string;
+    reason: string;
+  }
+) {
+  if (!resend) {
+    console.warn("[EMAIL] Resend not configured — skipping material rejection notification");
+    return;
+  }
+  if (!to) {
+    console.warn("[EMAIL] No recipient email for material submission rejection");
+    return;
+  }
+
+  const { recipientName, materialName, materialCode, shopName, rate, unit, reason } = info;
+
+  const emailHtml = `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 0; background-color: #f8fafc;">
+      <div style="text-align: center; margin-bottom: 0; border-bottom: 2px solid #ef4444; padding: 24px 28px; background: linear-gradient(135deg, #7f1d1d 0%, #ef4444 100%); border-radius: 8px 8px 0 0;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 20px;">Material Submission Rejected</h1>
+        <p style="color: #fecaca; margin: 6px 0 0 0; font-size: 13px;">BOQ Management System</p>
+      </div>
+      <div style="background-color: #ffffff; padding: 28px; border: 1px solid #e2e8f0;">
+        <p style="font-size: 15px; color: #1e293b;">Hi ${recipientName || "there"},</p>
+        <p style="font-size: 14px; color: #475569; line-height: 1.6;">
+          Your material submission below has been <strong style="color: #ef4444;">rejected</strong> and will not be added to the price list.
+        </p>
+        <div style="background-color: #f8fafc; border-radius: 8px; padding: 16px 18px; margin: 20px 0; border: 1px solid #e2e8f0;">
+          <table style="width: 100%; font-size: 13px;">
+            <tr><td style="padding: 4px 0; color: #64748b; font-weight: 600; width: 40%;">Material</td><td style="color: #0f172a;">${materialName}${materialCode ? ` (${materialCode})` : ""}</td></tr>
+            ${shopName ? `<tr><td style="padding: 4px 0; color: #64748b; font-weight: 600;">Supplier Shop</td><td style="color: #0f172a;">${shopName}</td></tr>` : ""}
+            ${rate !== undefined ? `<tr><td style="padding: 4px 0; color: #64748b; font-weight: 600;">Rate</td><td style="color: #0f172a;">₹${Number(rate).toFixed(2)}${unit ? ` / ${unit}` : ""}</td></tr>` : ""}
+          </table>
+        </div>
+        <div style="background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 12px 16px;">
+          <p style="margin: 0 0 4px 0; font-size: 12px; color: #991b1b; font-weight: 700; text-transform: uppercase;">Reason for rejection</p>
+          <p style="margin: 0; font-size: 14px; color: #7f1d1d; line-height: 1.5;">${reason}</p>
+        </div>
+        <p style="font-size: 13px; color: #64748b; margin-top: 20px; line-height: 1.5;">
+          You can review and resubmit this material with updated details from the BOQ Management System.
+        </p>
+      </div>
+      <div style="background-color: #f1f5f9; padding: 14px 28px; text-align: center; border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 8px 8px;">
+        <p style="margin: 0; font-size: 12px; color: #94a3b8;">Automated notification from <strong>BOQ Management System</strong>. &copy; ${new Date().getFullYear()} Concept Trunk Interiors.</p>
+      </div>
+    </div>
+  `;
+
+  try {
+    const response = await resend.emails.send({
+      from: fromEmail,
+      to,
+      subject: `Material Submission Rejected: ${materialName}`,
+      html: emailHtml,
+    });
+    console.log("[EMAIL] Material rejection notification sent to:", to);
+    return response;
+  } catch (error) {
+    console.error("[EMAIL ERROR] sendMaterialSubmissionRejectedEmail:", error);
+    // Don't throw — email failure should not block the rejection flow
   }
 }
 

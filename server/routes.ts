@@ -4991,15 +4991,25 @@ export async function registerRoutes(
       try {
         const result = await query(
           `SELECT 
-            name, shop_id, rate, unit, category, subcategory, product, 
-            brandname, modelnumber, dimensions, finishtype, technicalspecification,
+            MIN(name) as name, shop_id, rate, MIN(unit) as unit, MIN(category) as category, MIN(subcategory) as subcategory,
+            MIN(product) as product, MIN(brandname) as brandname, MIN(modelnumber) as modelnumber,
+            MIN(dimensions) as dimensions, MIN(finishtype) as finishtype, MIN(technicalspecification) as technicalspecification,
             COUNT(*) as duplicate_count,
             ARRAY_AGG(id ORDER BY created_at ASC) as ids,
             ARRAY_AGG(created_at ORDER BY created_at ASC) as creation_dates
           FROM materials
           GROUP BY 
-            name, shop_id, rate, unit, category, subcategory, product, 
-            brandname, modelnumber, dimensions, finishtype, technicalspecification
+            shop_id, rate,
+            LOWER(TRIM(COALESCE(name, ''))),
+            LOWER(TRIM(COALESCE(unit, ''))),
+            LOWER(TRIM(COALESCE(category, ''))),
+            LOWER(TRIM(COALESCE(subcategory, ''))),
+            LOWER(TRIM(COALESCE(product, ''))),
+            LOWER(TRIM(COALESCE(brandname, ''))),
+            LOWER(TRIM(COALESCE(modelnumber, ''))),
+            LOWER(TRIM(COALESCE(dimensions, ''))),
+            LOWER(TRIM(COALESCE(finishtype, ''))),
+            LOWER(TRIM(COALESCE(technicalspecification, '')))
           HAVING COUNT(*) > 1
           ORDER BY duplicate_count DESC`
         );

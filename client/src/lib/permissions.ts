@@ -18,6 +18,7 @@ export const ALL_SIDEBAR_MODULES = [
   { key: "purchase_orders", label: "Purchase Orders" },
   { key: "delivery_tracker", label: "Delivery Tracker" },
   { key: "po_approvals", label: "PO Approvals" },
+  { key: "form_builder", label: "Form Builder / Quotes" },
   { key: "raise_po_request", label: "Raise PO Request" },
   { key: "my_po_requests", label: "My Requests" },
   { key: "pending_approvals", label: "Pending Approvals" },
@@ -101,7 +102,7 @@ export const PERMISSION_GROUPS = [
   },
   {
     section: "Procurement",
-    keys: ["purchase_orders", "delivery_tracker", "po_approvals"],
+    keys: ["purchase_orders", "delivery_tracker", "po_approvals", "form_builder"],
   },
   {
     section: "PO Requests",
@@ -164,6 +165,11 @@ export function getDefaultPermissions(role: string): string[] {
   // Project Creation
   if (role === 'admin' || role === 'software_team' || role === 'pre_sales') {
     modules.push('create_project', 'generate_po', 'sketch_plan');
+  }
+
+  // Form Builder / Quotes — pre_sales needs this to create & send quotes
+  if (role === 'admin' || role === 'software_team' || role === 'purchase_team' || role === 'pre_sales') {
+    modules.push('form_builder');
   }
 
   // BOQ / Projects

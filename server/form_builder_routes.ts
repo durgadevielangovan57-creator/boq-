@@ -16,7 +16,7 @@ import { authMiddleware, requireRole } from "./middleware";
  * =====================================================================
  */
 
-const ADMIN_ROLES = ["admin", "purchase_team", "super_admin"];
+const ADMIN_ROLES = ["admin", "purchase_team", "super_admin", "pre_sales"];
 const VENDOR_ROLES = ["vendor", "supplier"];
 
 async function ensureFormBuilderTables(): Promise<void> {

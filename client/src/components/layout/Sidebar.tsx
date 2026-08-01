@@ -1009,13 +1009,14 @@ export function Sidebar({ isOpen, setIsOpen }: SidebarProps) {
           {/* Procurement Section */}
           {(isVisible('purchase_orders', isAdminOrSoftware || isPurchaseTeam) ||
             isVisible('delivery_tracker', isAdminOrSoftware || isPurchaseTeam || user?.role === 'site_engineer') ||
-            isVisible('po_approvals', isAdminOrSoftware)) && (
+            isVisible('po_approvals', isAdminOrSoftware) ||
+            isVisible('form_builder', isAdminOrSoftware || isPurchaseTeam || isPreSales)) && (
               <div className="space-y-0.5">
                 <AccordionHeader sectionKey="procurement" icon={Truck} label="Procurement" />
                 <AccordionContent sectionKey="procurement">
                   <SidebarNavItem id="purchase_orders" href="/purchase-orders" icon={FileText} label="Purchase Orders" condition={isAdminOrSoftware || isPurchaseTeam} />
                   <SidebarNavItem id="tenders" href="/admin/tenders" icon={ShoppingCart} label="Tenders" condition={isAdminOrSoftware || isPurchaseTeam} />
-                  <SidebarNavItem id="form_builder" href="/admin/form-builder" icon={FileText} label="Form Builder" condition={isAdminOrSoftware || isPurchaseTeam} />
+                  <SidebarNavItem id="form_builder" href="/admin/form-builder" icon={FileText} label="Form Builder" condition={isAdminOrSoftware || isPurchaseTeam || isPreSales} />
                   <SidebarNavItem id="delivery_tracker" href="/delivery-tracker" icon={Truck} label="Delivery Tracker" condition={isAdminOrSoftware || isPurchaseTeam || user?.role === 'site_engineer'} />
                   <SidebarNavItem id="po_approvals" href="/po-approvals" icon={ClipboardCheck} label="PO Approvals" condition={isAdminOrSoftware} />
                 </AccordionContent>

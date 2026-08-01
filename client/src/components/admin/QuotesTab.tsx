@@ -181,12 +181,16 @@ function CreateQuoteDialog({ open, onOpenChange, onCreated }: { open: boolean; o
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ title, description, validUntil: validUntil || null, items }),
             });
-            if (!res.ok) throw new Error();
+            if (!res.ok) {
+                const bodyPreview = await res.text().catch(() => "");
+                throw new Error(`HTTP ${res.status}: ${bodyPreview.slice(0, 200)}`);
+            }
             toast({ title: "Quote created" });
             onOpenChange(false);
             onCreated();
-        } catch {
-            toast({ title: "Error", description: "Failed to create quote", variant: "destructive" });
+        } catch (err: any) {
+            console.error("[CreateQuoteDialog] create failed:", err);
+            toast({ title: "Error", description: err?.message ? `Failed to create quote: ${err.message}` : "Failed to create quote", variant: "destructive" });
         } finally {
             setSaving(false);
         }
@@ -1241,12 +1245,39 @@ export function QuotesTab() {
     const [sendTarget, setSendTarget] = useState<any>(null);
     const [comparisonId, setComparisonId] = useState<string | null>(null);
 
-    const load = () => {
+    // Bumped on every load() call so a slow/late-arriving response from an
+    // earlier call can never clobber the result of a newer one (race guard).
+    const loadSeq = useRef(0);
+
+    const load = async (retry = true) => {
+        const seq = ++loadSeq.current;
         setLoading(true);
-        apiFetch("/api/fb/quotes").then((r) => r.json()).then((d) => setQuotes(d.quotes || [])).catch(() => { }).finally(() => setLoading(false));
+        try {
+            const res = await apiFetch("/api/fb/quotes");
+            const contentType = res.headers.get("content-type") || "";
+            if (!res.ok || !contentType.toLowerCase().includes("application/json")) {
+                const bodyPreview = (await res.text()).slice(0, 200);
+                throw new Error(`Failed to load quotes (HTTP ${res.status}): ${bodyPreview}`);
+            }
+            const d = await res.json();
+            if (seq !== loadSeq.current) return; // a newer load() has already superseded this one
+            setQuotes(d.quotes || []);
+        } catch (err) {
+            console.error("[QuotesTab] load failed:", err);
+            if (seq !== loadSeq.current) return;
+            if (retry) {
+                // One quiet retry covers transient hiccups (e.g. a deploy/restart
+                // landing right between the create and the refresh).
+                setTimeout(() => load(false), 800);
+                return;
+            }
+            toast({ title: "Couldn't load quotes", description: "Please refresh the page.", variant: "destructive" });
+        } finally {
+            if (seq === loadSeq.current) setLoading(false);
+        }
     };
 
-    useEffect(load, []);
+    useEffect(() => { load(); }, []);
 
     const remove = async (id: string) => {
         if (!confirm("Delete this quote?")) return;

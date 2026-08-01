@@ -15,6 +15,7 @@ import { Building2 } from "lucide-react";
 import { useData } from "@/lib/store";
 import { useAuth } from "@/lib/auth-context";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 
 export default function Login() {
@@ -26,6 +27,7 @@ export default function Login() {
   const [isLoading, setIsLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(true);
 
   /* =========================
      SUBMIT HANDLER
@@ -38,7 +40,7 @@ export default function Login() {
       /**
        * 🔐 BACKEND LOGIN
        */
-      const { user, token } = await login(email, password);
+      const { user, token } = await login(email, password, rememberMe);
 
       /**
        * ✅ SET LOCAL USER STATE
@@ -173,6 +175,25 @@ export default function Login() {
                 />
               </div>
 
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="remember-me"
+                    checked={rememberMe}
+                    onCheckedChange={(checked) => setRememberMe(checked === true)}
+                  />
+                  <Label htmlFor="remember-me" className="text-sm font-normal text-gray-700 cursor-pointer">
+                    Remember me
+                  </Label>
+                </div>
+                <Link
+                  href="/forgot-password"
+                  className="text-sm text-blue-600 hover:underline font-medium"
+                >
+                  Forgot Password?
+                </Link>
+              </div>
+
               <Button
                 type="submit"
                 className="w-full h-11 text-base font-semibold bg-blue-600 hover:bg-blue-700"
@@ -184,14 +205,6 @@ export default function Login() {
           </CardContent>
 
           <CardFooter className="flex flex-col gap-4 border-t border-gray-100 pt-6 bg-gray-50/50">
-            <div className="text-center text-sm text-gray-600">
-              <Link
-                href="/forgot-password"
-                className="text-blue-600 hover:underline font-medium"
-              >
-                Forgot Password?
-              </Link>
-            </div>
             <div className="text-center text-sm text-gray-600">
               Don&apos;t have an account?{" "}
               <Link

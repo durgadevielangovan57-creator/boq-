@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, ReactNode, useEffect } from
 import { getJSON, postJSON, apiFetch } from "./api";
 import { useAuth } from "./auth-context";
 
-export type Role = "admin" | "supplier" | "user" | "purchase_team" | "software_team" | "pre_sales" | "contractor" | "product_manager" | "site_engineer" | "finance_team";
+export type Role = "admin" | "supplier" | "user" | "purchase_team" | "software_team" | "pre_sales" | "contractor" | "product_manager" | "site_engineer" | "finance_team" | "client" | "vendor" | null;
 
 export interface User {
   id: string;

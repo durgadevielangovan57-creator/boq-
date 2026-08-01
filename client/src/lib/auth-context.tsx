@@ -43,7 +43,7 @@ interface User {
 interface AuthContextType {
   user: User | null;
   token: string | null;
-  login: (username: string, password: string) => Promise<{
+  login: (username: string, password: string, rememberMe?: boolean) => Promise<{
     user: User;
     token: string;
   }>;
@@ -79,7 +79,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   ========================= */
   useEffect(() => {
     const stored = localStorage.getItem("authToken");
+    const remembered = localStorage.getItem("rememberMe") !== "false"; // default true for old sessions
+
+    if (stored && !remembered) {
+      // "Remember me" was off — only keep the session alive for as long as this
+      // browser session lasts. sessionStorage is cleared when the tab/browser is
+      // actually closed (but survives a plain page refresh), so its absence here
+      // means the browser was closed and reopened since the user last logged in.
+      const stillInSameSession = sessionStorage.getItem("authSession") === "1";
+      if (!stillInSameSession) {
+        localStorage.removeItem("authToken");
+        localStorage.removeItem("rememberMe");
+        return;
+      }
+    }
+
     if (stored) {
+      sessionStorage.setItem("authSession", "1");
       setToken(stored);
       setAuthToken(stored);
     }
@@ -127,7 +143,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
      - NO ROLE FROM FRONTEND
      - RETURNS { user, token }
   ========================= */
-  const login = async (username: string, password: string) => {
+  const login = async (username: string, password: string, rememberMe: boolean = true) => {
     setIsLoading(true);
     setError(null);
 
@@ -156,6 +172,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setUser(userObj);
       setToken(authToken);
+      try {
+        localStorage.setItem("rememberMe", rememberMe ? "true" : "false");
+        sessionStorage.setItem("authSession", "1");
+      } catch {
+        /* ignore */
+      }
 
       return { user: userObj, token: authToken };
     } catch (err: any) {
@@ -236,6 +258,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null);
     try {
       localStorage.removeItem("authToken");
+      localStorage.removeItem("rememberMe");
+      sessionStorage.removeItem("authSession");
     } catch {
       /* ignore */
     }
