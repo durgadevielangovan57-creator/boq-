@@ -188,6 +188,10 @@ export default function AdminDashboard() {
 
   const [rejectReason, setRejectReason] = useState("");
   const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [selectedMaterialRequestIds, setSelectedMaterialRequestIds] = useState<string[]>([]);
+  const [bulkMaterialAction, setBulkMaterialAction] = useState<"approve" | "reject" | null>(null);
+  const [bulkMaterialRejectReason, setBulkMaterialRejectReason] = useState("");
+  const [isBulkProcessingMaterials, setIsBulkProcessingMaterials] = useState(false);
   const [selectedPreviewImage, setSelectedPreviewImage] = useState<string | null>(null);
   const [selectedConversationEmail, setSelectedConversationEmail] = useState<string | null>(null);
   const [replyTexts, setReplyTexts] = useState<Record<string, string>>({});
@@ -1548,6 +1552,10 @@ export default function AdminDashboard() {
   const [proposalMaterialSubmissions, setProposalMaterialSubmissions] = useState<any[]>([]);
   const [loadingProposalMaterials, setLoadingProposalMaterials] = useState(false);
   const [rejectingProposalMaterialId, setRejectingProposalMaterialId] = useState<string | null>(null);
+  const [selectedProposalMaterialIds, setSelectedProposalMaterialIds] = useState<string[]>([]);
+  const [bulkProposalMaterialAction, setBulkProposalMaterialAction] = useState<"approve" | "reject" | null>(null);
+  const [bulkProposalMaterialRejectReason, setBulkProposalMaterialRejectReason] = useState("");
+  const [isBulkProcessingProposalMaterials, setIsBulkProcessingProposalMaterials] = useState(false);
 
   const handleAddShop = () => {
     if (
@@ -1763,6 +1771,7 @@ export default function AdminDashboard() {
       try {
         const req = materialRequests.find((r: any) => r.id === requestId);
         await approveMaterial?.(requestId, req?.source);
+        setSelectedMaterialRequestIds((prev) => prev.filter((id) => id !== requestId));
         toast({ title: "Approved", description: "Material approved successfully" });
       } catch (e) {
         toast({ title: "Error", description: "Failed to approve material", variant: "destructive" });
@@ -1777,11 +1786,85 @@ export default function AdminDashboard() {
         await rejectMaterial?.(requestId, rejectReason, req?.source);
         setRejectingId(null);
         setRejectReason("");
-        toast({ title: "Rejected", description: "Material rejected successfully" });
+        setSelectedMaterialRequestIds((prev) => prev.filter((id) => id !== requestId));
+        toast({ title: "Rejected", description: "Material rejected successfully. The submitter has been notified by email." });
       } catch (e) {
         toast({ title: "Error", description: "Failed to reject material", variant: "destructive" });
       }
     })();
+  };
+
+  const toggleMaterialRequestSelected = (requestId: string) => {
+    setSelectedMaterialRequestIds((prev) =>
+      prev.includes(requestId)
+        ? prev.filter((id) => id !== requestId)
+        : [...prev, requestId]
+    );
+  };
+
+  const toggleSelectAllMaterialRequests = (pendingIds: string[]) => {
+    setSelectedMaterialRequestIds((prev) =>
+      prev.length === pendingIds.length ? [] : pendingIds
+    );
+  };
+
+  const handleBulkApproveMaterials = async () => {
+    if (selectedMaterialRequestIds.length === 0) return;
+    setIsBulkProcessingMaterials(true);
+    const ids = [...selectedMaterialRequestIds];
+    let successCount = 0;
+    let failCount = 0;
+    for (const id of ids) {
+      try {
+        const req = materialRequests.find((r: any) => r.id === id);
+        await approveMaterial?.(id, req?.source);
+        successCount++;
+      } catch (e) {
+        failCount++;
+      }
+    }
+    setIsBulkProcessingMaterials(false);
+    setSelectedMaterialRequestIds([]);
+    setBulkMaterialAction(null);
+    toast({
+      title: failCount === 0 ? "Approved" : "Partially Approved",
+      description: `${successCount} material${successCount === 1 ? "" : "s"} approved${failCount > 0 ? `, ${failCount} failed` : ""}.`,
+      variant: failCount > 0 ? "destructive" : undefined,
+    });
+  };
+
+  const handleBulkRejectMaterials = async () => {
+    if (selectedMaterialRequestIds.length === 0) return;
+    if (!bulkMaterialRejectReason.trim()) {
+      toast({
+        title: "Error",
+        description: "Please provide a rejection reason",
+        variant: "destructive",
+      });
+      return;
+    }
+    setIsBulkProcessingMaterials(true);
+    const ids = [...selectedMaterialRequestIds];
+    let successCount = 0;
+    let failCount = 0;
+    for (const id of ids) {
+      try {
+        const req = materialRequests.find((r: any) => r.id === id);
+        await rejectMaterial?.(id, bulkMaterialRejectReason, req?.source);
+        successCount++;
+      } catch (e) {
+        failCount++;
+      }
+    }
+    setIsBulkProcessingMaterials(false);
+    setSelectedMaterialRequestIds([]);
+    setBulkMaterialAction(null);
+    setBulkMaterialRejectReason("");
+    toast({
+      title: failCount === 0 ? "Rejected" : "Partially Rejected",
+      description: `${successCount} material${successCount === 1 ? "" : "s"} rejected${failCount > 0 ? `, ${failCount} failed` : ""}. Submitters have been notified by email.`,
+      variant: failCount > 0 ? "destructive" : undefined,
+    });
   };
 
   const handleApproveProposalMaterial = async (submissionId: string) => {
@@ -1810,6 +1893,7 @@ export default function AdminDashboard() {
       setProposalMaterialSubmissions((prev) =>
         prev.filter((s) => s.id !== submissionId)
       );
+      setSelectedProposalMaterialIds((prev) => prev.filter((id) => id !== submissionId));
     } catch (err) {
       console.error("Error approving proposal material:", err);
       toast({
@@ -1849,7 +1933,7 @@ export default function AdminDashboard() {
 
       toast({
         title: "Success",
-        description: "Supplier material rejected",
+        description: "Supplier material rejected. The submitter has been notified by email.",
       });
 
       setRejectReason("");
@@ -1859,6 +1943,7 @@ export default function AdminDashboard() {
       setProposalMaterialSubmissions((prev) =>
         prev.filter((s) => s.id !== submissionId)
       );
+      setSelectedProposalMaterialIds((prev) => prev.filter((id) => id !== submissionId));
     } catch (err) {
       console.error("Error rejecting proposal material:", err);
       toast({
@@ -1867,6 +1952,112 @@ export default function AdminDashboard() {
         variant: "destructive",
       });
     }
+  };
+
+  const approveProposalMaterialRequest = async (submissionId: string): Promise<boolean> => {
+    try {
+      const token = localStorage.getItem("authToken");
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const response = await fetch(`/api/proposal-material-submissions/${submissionId}/approve`, {
+        method: "POST",
+        headers,
+      });
+      return response.ok;
+    } catch (err) {
+      console.error("Error approving proposal material:", err);
+      return false;
+    }
+  };
+
+  const rejectProposalMaterialRequest = async (submissionId: string, reason: string): Promise<boolean> => {
+    try {
+      const token = localStorage.getItem("authToken");
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const response = await fetch(`/api/proposal-material-submissions/${submissionId}/reject`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ reason }),
+      });
+      return response.ok;
+    } catch (err) {
+      console.error("Error rejecting proposal material:", err);
+      return false;
+    }
+  };
+
+  const toggleProposalMaterialSelected = (submissionId: string) => {
+    setSelectedProposalMaterialIds((prev) =>
+      prev.includes(submissionId)
+        ? prev.filter((id) => id !== submissionId)
+        : [...prev, submissionId]
+    );
+  };
+
+  const toggleSelectAllProposalMaterials = (pendingIds: string[]) => {
+    setSelectedProposalMaterialIds((prev) =>
+      prev.length === pendingIds.length ? [] : pendingIds
+    );
+  };
+
+  const handleBulkApproveProposalMaterials = async () => {
+    if (selectedProposalMaterialIds.length === 0) return;
+    setIsBulkProcessingProposalMaterials(true);
+    const ids = [...selectedProposalMaterialIds];
+    let successCount = 0;
+    let failCount = 0;
+    for (const id of ids) {
+      const ok = await approveProposalMaterialRequest(id);
+      if (ok) {
+        successCount++;
+        setProposalMaterialSubmissions((prev) => prev.filter((s) => s.id !== id));
+      } else {
+        failCount++;
+      }
+    }
+    setIsBulkProcessingProposalMaterials(false);
+    setSelectedProposalMaterialIds([]);
+    setBulkProposalMaterialAction(null);
+    toast({
+      title: failCount === 0 ? "Approved" : "Partially Approved",
+      description: `${successCount} material${successCount === 1 ? "" : "s"} approved${failCount > 0 ? `, ${failCount} failed` : ""}.`,
+      variant: failCount > 0 ? "destructive" : undefined,
+    });
+  };
+
+  const handleBulkRejectProposalMaterials = async () => {
+    if (selectedProposalMaterialIds.length === 0) return;
+    if (!bulkProposalMaterialRejectReason.trim()) {
+      toast({
+        title: "Error",
+        description: "Please provide a rejection reason",
+        variant: "destructive",
+      });
+      return;
+    }
+    setIsBulkProcessingProposalMaterials(true);
+    const ids = [...selectedProposalMaterialIds];
+    let successCount = 0;
+    let failCount = 0;
+    for (const id of ids) {
+      const ok = await rejectProposalMaterialRequest(id, bulkProposalMaterialRejectReason);
+      if (ok) {
+        successCount++;
+        setProposalMaterialSubmissions((prev) => prev.filter((s) => s.id !== id));
+      } else {
+        failCount++;
+      }
+    }
+    setIsBulkProcessingProposalMaterials(false);
+    setSelectedProposalMaterialIds([]);
+    setBulkProposalMaterialAction(null);
+    setBulkProposalMaterialRejectReason("");
+    toast({
+      title: failCount === 0 ? "Rejected" : "Partially Rejected",
+      description: `${successCount} material${successCount === 1 ? "" : "s"} rejected${failCount > 0 ? `, ${failCount} failed` : ""}. Submitters have been notified by email.`,
+      variant: failCount > 0 ? "destructive" : undefined,
+    });
   };
 
   const handleSupportSubmit = async () => {
@@ -4444,10 +4635,106 @@ export default function AdminDashboard() {
                 <TabsContent value="material-requests">
                   <Card>
                     <CardHeader>
-                      <CardTitle>Material Approval Requests</CardTitle>
-                      <CardDescription>
-                        Review and approve/reject new material submissions
-                      </CardDescription>
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div>
+                          <CardTitle>Material Approval Requests</CardTitle>
+                          <CardDescription>
+                            Review and approve/reject new material submissions
+                          </CardDescription>
+                        </div>
+                        {canApproveReject &&
+                          materialRequests.filter((r: any) => r.status === "pending").length > 0 && (
+                            <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                              <Checkbox
+                                checked={
+                                  selectedMaterialRequestIds.length > 0 &&
+                                  selectedMaterialRequestIds.length ===
+                                  materialRequests.filter((r: any) => r.status === "pending").length
+                                }
+                                onCheckedChange={() =>
+                                  toggleSelectAllMaterialRequests(
+                                    materialRequests
+                                      .filter((r: any) => r.status === "pending")
+                                      .map((r: any) => r.id)
+                                  )
+                                }
+                              />
+                              <span className="text-muted-foreground">Select all</span>
+                            </label>
+                          )}
+                      </div>
+                      {selectedMaterialRequestIds.length > 0 && (
+                        <div className="mt-3 p-3 rounded-lg border bg-blue-50 border-blue-200 flex flex-wrap items-center gap-3">
+                          <span className="text-sm font-medium text-blue-900">
+                            {selectedMaterialRequestIds.length} selected
+                          </span>
+                          {bulkMaterialAction === "reject" ? (
+                            <div className="flex items-center gap-2 flex-1 min-w-[260px]">
+                              <Input
+                                placeholder="Reason for rejecting all selected..."
+                                value={bulkMaterialRejectReason}
+                                onChange={(e) => setBulkMaterialRejectReason(e.target.value)}
+                                className="text-sm bg-white"
+                              />
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={handleBulkRejectMaterials}
+                                disabled={isBulkProcessingMaterials}
+                              >
+                                {isBulkProcessingMaterials ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  "Confirm Reject"
+                                )}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  setBulkMaterialAction(null);
+                                  setBulkMaterialRejectReason("");
+                                }}
+                              >
+                                Cancel
+                              </Button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                onClick={handleBulkApproveMaterials}
+                                disabled={isBulkProcessingMaterials}
+                                className="gap-2"
+                              >
+                                {isBulkProcessingMaterials ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <CheckCircle2 className="h-4 w-4" />
+                                )}
+                                Approve Selected
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setBulkMaterialAction("reject")}
+                                disabled={isBulkProcessingMaterials}
+                                className="gap-2"
+                              >
+                                <XCircle className="h-4 w-4" /> Reject Selected
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setSelectedMaterialRequestIds([])}
+                                disabled={isBulkProcessingMaterials}
+                              >
+                                Clear
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </CardHeader>
                     <CardContent className="space-y-4">
                       {materialRequests.filter((r: any) => r.status === "pending")
@@ -4462,6 +4749,13 @@ export default function AdminDashboard() {
                             <Card key={request.id} className="border-border/50">
                               <CardContent className="pt-6 space-y-4">
                                 <div className="flex items-center gap-3 mb-4">
+                                  {canApproveReject && (
+                                    <Checkbox
+                                      checked={selectedMaterialRequestIds.includes(request.id)}
+                                      onCheckedChange={() => toggleMaterialRequestSelected(request.id)}
+                                      className="shrink-0"
+                                    />
+                                  )}
                                   <div className="h-12 w-12 border rounded bg-gray-50 overflow-hidden flex items-center justify-center shrink-0">
                                     {request.material.image ? (
                                       <img
@@ -4631,10 +4925,102 @@ export default function AdminDashboard() {
                 <TabsContent value="supplier-proposal-materials">
                   <Card>
                     <CardHeader>
-                      <CardTitle>Supplier Proposal Materials</CardTitle>
-                      <CardDescription>
-                        Materials submitted by suppliers through proposal submissions
-                      </CardDescription>
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div>
+                          <CardTitle>Supplier Proposal Materials</CardTitle>
+                          <CardDescription>
+                            Materials submitted by suppliers through proposal submissions
+                          </CardDescription>
+                        </div>
+                        {proposalMaterialSubmissions.length > 0 && (
+                          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                            <Checkbox
+                              checked={
+                                selectedProposalMaterialIds.length > 0 &&
+                                selectedProposalMaterialIds.length === proposalMaterialSubmissions.length
+                              }
+                              onCheckedChange={() =>
+                                toggleSelectAllProposalMaterials(
+                                  proposalMaterialSubmissions.map((s: any) => s.id)
+                                )
+                              }
+                            />
+                            <span className="text-muted-foreground">Select all</span>
+                          </label>
+                        )}
+                      </div>
+                      {selectedProposalMaterialIds.length > 0 && (
+                        <div className="mt-3 p-3 rounded-lg border bg-blue-50 border-blue-200 flex flex-wrap items-center gap-3">
+                          <span className="text-sm font-medium text-blue-900">
+                            {selectedProposalMaterialIds.length} selected
+                          </span>
+                          {bulkProposalMaterialAction === "reject" ? (
+                            <div className="flex items-center gap-2 flex-1 min-w-[260px]">
+                              <Input
+                                placeholder="Reason for rejecting all selected..."
+                                value={bulkProposalMaterialRejectReason}
+                                onChange={(e) => setBulkProposalMaterialRejectReason(e.target.value)}
+                                className="text-sm bg-white"
+                              />
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={handleBulkRejectProposalMaterials}
+                                disabled={isBulkProcessingProposalMaterials}
+                              >
+                                {isBulkProcessingProposalMaterials ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  "Confirm Reject"
+                                )}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  setBulkProposalMaterialAction(null);
+                                  setBulkProposalMaterialRejectReason("");
+                                }}
+                              >
+                                Cancel
+                              </Button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                onClick={handleBulkApproveProposalMaterials}
+                                disabled={isBulkProcessingProposalMaterials}
+                                className="gap-2"
+                              >
+                                {isBulkProcessingProposalMaterials ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <CheckCircle2 className="h-4 w-4" />
+                                )}
+                                Approve Selected
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setBulkProposalMaterialAction("reject")}
+                                disabled={isBulkProcessingProposalMaterials}
+                                className="gap-2"
+                              >
+                                <XCircle className="h-4 w-4" /> Reject Selected
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setSelectedProposalMaterialIds([])}
+                                disabled={isBulkProcessingProposalMaterials}
+                              >
+                                Clear
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </CardHeader>
                     <CardContent className="space-y-4">
                       {loadingProposalMaterials ? (
@@ -4651,10 +5037,17 @@ export default function AdminDashboard() {
                             <CardContent className="pt-6 space-y-4">
                               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                                 {/* Material Info */}
-                                <div>
-                                  <p className="text-sm text-muted-foreground font-semibold">Material</p>
-                                  <p className="font-bold">{submission.template_name}</p>
-                                  <p className="text-xs text-muted-foreground">{submission.template_code}</p>
+                                <div className="flex items-start gap-2">
+                                  <Checkbox
+                                    checked={selectedProposalMaterialIds.includes(submission.id)}
+                                    onCheckedChange={() => toggleProposalMaterialSelected(submission.id)}
+                                    className="mt-1 shrink-0"
+                                  />
+                                  <div>
+                                    <p className="text-sm text-muted-foreground font-semibold">Material</p>
+                                    <p className="font-bold">{submission.template_name}</p>
+                                    <p className="text-xs text-muted-foreground">{submission.template_code}</p>
+                                  </div>
                                 </div>
 
                                 {/* Project Info */}

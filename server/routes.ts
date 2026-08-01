@@ -20,7 +20,7 @@ import { comparePasswords, generateToken, hashPassword } from "./auth";
 import { authMiddleware, requireRole, requireRoleOrPermission } from "./middleware";
 import { randomUUID } from "crypto";
 import { query } from "./db/client";
-import { sendSketchPlanEmail, sendSiteReportEmail, sendProposalStatusEmail, sendMaterialRateChangeEmail, sendCommentMentionEmail, sendPasswordUpdatedEmail } from "./email";
+import { sendSketchPlanEmail, sendSiteReportEmail, sendProposalStatusEmail, sendMaterialRateChangeEmail, sendCommentMentionEmail, sendPasswordUpdatedEmail, sendMaterialSubmissionRejectedEmail } from "./email";
 import { logActivity } from "./audit";
 import { registerSketchRoutes } from "./sketch_routes";
 import { convertSketchToBoqItems } from "./lib/sketch_converter";
@@ -5069,7 +5069,45 @@ export async function registerRoutes(
           [id, reason],
         );
 
-        res.json({ submission: result.rows[0] });
+        const submission = result.rows[0];
+
+        // Notify the submitter by email that their material was rejected.
+        if (submission) {
+          try {
+            const infoResult = await query(
+              `SELECT mt.name as template_name, mt.code as template_code,
+                      s.name as shop_name,
+                      u.email as submitter_email,
+                      u.display_name as submitter_name,
+                      u.username as submitter_username
+               FROM material_submissions ms
+               LEFT JOIN material_templates mt ON ms.template_id = mt.id
+               LEFT JOIN shops s ON ms.shop_id = s.id
+               LEFT JOIN users u ON ms.submitted_by = u.id
+               WHERE ms.id = $1`,
+              [id],
+            );
+            const info = infoResult.rows[0];
+            if (info?.submitter_email) {
+              await sendMaterialSubmissionRejectedEmail(info.submitter_email, {
+                recipientName: info.submitter_name || info.submitter_username,
+                materialName: info.template_name || "Material",
+                materialCode: info.template_code,
+                shopName: info.shop_name,
+                rate: submission.rate,
+                unit: submission.unit,
+                reason: reason || "No reason provided",
+              });
+            } else {
+              console.warn(`[EMAIL] No submitter email found for material_submission ${id}; skipping rejection notification.`);
+            }
+          } catch (emailErr) {
+            console.error("Failed to send material rejection email", emailErr);
+            // Don't fail the request if the email fails to send
+          }
+        }
+
+        res.json({ submission });
       } catch (err: any) {
         console.error("/api/material-submissions/:id/reject error", err);
         res
@@ -13288,19 +13326,55 @@ ${list.rows.map((row: any) => `- ${row.name}`).join('\n')}`;
       try {
         const { id } = req.params;
         const { reason } = req.body;
+        const rejectionReason = reason || "No reason specified";
 
         const result = await query(
           "UPDATE proposal_material_submissions SET status = 'rejected', rejection_reason = $1, updated_at = NOW() WHERE id = $2 RETURNING *",
-          [reason || "No reason specified", id]
+          [rejectionReason, id]
         );
 
         if (result.rows.length === 0) {
           return res.status(404).json({ message: "Submission not found" });
         }
 
+        const submission = result.rows[0];
+
+        // Notify the submitter (shop owner) by email that their material was rejected.
+        try {
+          const infoResult = await query(
+            `SELECT mt.name as template_name, mt.code as template_code,
+                    s.name as shop_name,
+                    u.email as submitted_by_email,
+                    u.full_name as submitted_by_name
+             FROM proposal_material_submissions pms
+             LEFT JOIN material_templates mt ON pms.template_id = mt.id
+             LEFT JOIN shops s ON pms.shop_id = s.id
+             LEFT JOIN public.users u ON s.owner_id::text = u.id
+             WHERE pms.id = $1`,
+            [id],
+          );
+          const info = infoResult.rows[0];
+          if (info?.submitted_by_email) {
+            await sendMaterialSubmissionRejectedEmail(info.submitted_by_email, {
+              recipientName: info.submitted_by_name,
+              materialName: info.template_name || "Material",
+              materialCode: info.template_code,
+              shopName: info.shop_name,
+              rate: submission.rate,
+              unit: submission.unit,
+              reason: rejectionReason,
+            });
+          } else {
+            console.warn(`[EMAIL] No submitter email found for proposal_material_submission ${id}; skipping rejection notification.`);
+          }
+        } catch (emailErr) {
+          console.error("Failed to send proposal material rejection email", emailErr);
+          // Don't fail the request if the email fails to send
+        }
+
         res.json({
           message: "Material submission rejected",
-          submission: result.rows[0],
+          submission,
         });
       } catch (err: any) {
         console.error("POST /api/proposal-material-submissions/:id/reject error:", err);
