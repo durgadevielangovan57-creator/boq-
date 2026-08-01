@@ -2110,6 +2110,35 @@ export default function AdminDashboard() {
     XLSX.writeFile(workbook, `Shops_Full_Export_${format(new Date(), "yyyy-MM-dd")}.xlsx`);
   };
 
+  // Exports the materials belonging to a single shop — same column layout as the
+  // full "Materials" export, minus the redundant Shop Name column since every
+  // row here is already that one shop.
+  const handleExportShopMaterials = (shop: any) => {
+    const shopMaterials = localMaterials.filter((m: any) => String(m.shopId ?? m.shop_id) === String(shop.id));
+
+    const exportData = shopMaterials.map((mat: any) => [
+      mat.name || "",
+      mat.code || "",
+      mat.rate || 0,
+      mat.unit || "",
+      mat.category || "",
+      mat.subcategory || mat.subCategory || mat.sub_category || "",
+      mat.product || "",
+      mat.brandName || mat.brand_name || mat.brandname || "",
+      mat.modelNumber || mat.model_number || mat.modelnumber || "",
+      mat.technicalSpecification || mat.technicalspecification || mat.technical_specification || ""
+    ]);
+
+    const worksheet = XLSX.utils.aoa_to_sheet([
+      ["Material Name", "Code", "Rate", "Unit", "Category", "Subcategory", "Product", "Brand", "Model", "Technical Specification"],
+      ...exportData
+    ]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Materials");
+    const safeShopName = (shop.name || "Shop").replace(/[\\/:*?"<>|]/g, "_");
+    XLSX.writeFile(workbook, `${safeShopName}_Materials_${format(new Date(), "yyyy-MM-dd")}.xlsx`);
+  };
+
   return (
     <Layout>
       <div className="space-y-6">
@@ -2330,6 +2359,15 @@ export default function AdminDashboard() {
                                         </div>
                                       </div>
                                       <div className="flex items-center gap-2">
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          className="text-green-700 hover:text-green-800 hover:bg-green-50"
+                                          title={`Download ${shop.name || "shop"}'s materials as Excel`}
+                                          onClick={(e) => { e.stopPropagation(); handleExportShopMaterials(shop); }}
+                                        >
+                                          <FileDown className="h-4 w-4" />
+                                        </Button>
                                         {(canEditDelete || user?.role === "pre_sales") && (
                                           <>
                                             <Button size="sm" variant="outline" onClick={() => handleEditShop(shop)}>Edit</Button>
@@ -2464,7 +2502,7 @@ export default function AdminDashboard() {
                       </div>
                     )}
                   </Card>
-                  
+
                   <Card className="px-4 py-3 cursor-pointer select-none" onClick={() => setShowProductsList(!showProductsList)}>
                     <div className="flex items-center gap-3">
                       <div className="p-2.5 rounded-xl bg-blue-50">
@@ -2483,7 +2521,7 @@ export default function AdminDashboard() {
                     </div>
                     {showProductsList && (
                       <div onClick={(e) => e.stopPropagation()} className="mt-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                        <AllProductsSplitView 
+                        <AllProductsSplitView
                           products={products.filter((p: any) => p.is_approved)}
                           onClose={() => setShowProductsList(false)}
                         />
