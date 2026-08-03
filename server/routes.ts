@@ -8105,6 +8105,21 @@ export async function registerRoutes(
         const itemData = itemRes.rows[0];
         const projectId = itemData.project_id;
 
+        // Split View live sync: if this BOQ item was generated from a sketch plan item,
+        // remove that source sketch item too so the Sketch pane stays in sync.
+        try {
+          let td = itemData.table_data;
+          if (typeof td === "string") {
+            try { td = JSON.parse(td); } catch { td = {}; }
+          }
+          const sketchItemId = td?.sketch_item_id;
+          if (sketchItemId) {
+            await query("DELETE FROM sketch_plan_items WHERE id = $1", [sketchItemId]);
+          }
+        } catch (cascadeErr) {
+          console.error("[DELETE /api/boq-items/:itemId] Failed to cascade-delete linked sketch item", cascadeErr);
+        }
+
         // Archive instead of hard delete
         const archived = await archiveService.archiveItem('boq_items', itemId, itemData);
         if (req.query.action === 'trash' && archived) {
@@ -9447,7 +9462,18 @@ export async function registerRoutes(
         let queryStr = "";
 
         if (status === "approved") {
+          // De-dupe to the latest approved row per (product_id, config_name).
+          // Without this, a product that was approved, edited, and
+          // re-approved (or otherwise has more than one 'approved' row in
+          // product_approvals for the same config) shows up as multiple
+          // identical-looking cards in the Clone dialog.
           queryStr = `
+           WITH latest_approved AS (
+             SELECT DISTINCT ON (pa.product_id, pa.config_name) pa.*
+             FROM product_approvals pa
+             WHERE pa.status = 'approved'
+             ORDER BY pa.product_id, pa.config_name, pa.created_at DESC
+           )
            SELECT p.*, pr.name as live_product_name,
              COALESCE(pr.name, p.product_name) as product_name,
              COALESCE(vc.name, f_vc.name, p.category_id) as category_name,
@@ -9455,13 +9481,12 @@ export async function registerRoutes(
              (SELECT COUNT(*) FROM product_approvals p2 
               WHERE p2.product_id = p.product_id 
               AND p2.config_name = p.config_name) as submission_count
-           FROM product_approvals p
+           FROM latest_approved p
            LEFT JOIN products pr ON p.product_id = pr.id
            LEFT JOIN vendor_categories vc ON p.category_id = vc.name
            LEFT JOIN material_subcategories vsc ON p.subcategory_id = vsc.name AND (p.category_id = vsc.category OR p.category_id IS NULL)
            LEFT JOIN material_subcategories f_vsc ON pr.subcategory = f_vsc.name
            LEFT JOIN material_categories f_vc ON f_vsc.category = f_vc.name
-           WHERE p.status = 'approved'
            ORDER BY p.created_at DESC`;
         } else {
           queryStr = `WITH latest_submissions AS (
