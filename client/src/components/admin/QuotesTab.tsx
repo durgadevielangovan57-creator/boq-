@@ -1358,11 +1358,13 @@ export function QuotesTab() {
                                         </TableCell>
                                         <TableCell><Badge variant={q.status === "Draft" ? "secondary" : "default"}>{q.status}</Badge></TableCell>
                                         <TableCell>{q.recipient_count || 0} / {q.submitted_count || 0}</TableCell>
-                                        <TableCell className="text-right space-x-1">
-                                            <Button variant="outline" size="sm" onClick={() => setSendTarget(q)}><Send className="h-3.5 w-3.5 mr-1" /> Send</Button>
-                                            <Button variant="outline" size="sm" onClick={() => copyLink(q.id)}><LinkIcon className="h-3.5 w-3.5 mr-1" /> Copy Link</Button>
-                                            <Button variant="outline" size="sm" onClick={() => setComparisonId(q.id)}><BarChart3 className="h-3.5 w-3.5 mr-1" /> Compare</Button>
-                                            <Button variant="ghost" size="icon" onClick={() => remove(q.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                                        <TableCell className="text-right">
+                                            <div className="flex flex-wrap items-center justify-end gap-2">
+                                                <Button variant="outline" size="sm" onClick={() => setSendTarget(q)}><Send className="h-3.5 w-3.5 mr-1" /> Send</Button>
+                                                <Button variant="outline" size="sm" onClick={() => copyLink(q.id)}><LinkIcon className="h-3.5 w-3.5 mr-1" /> Copy Link</Button>
+                                                <Button variant="outline" size="sm" onClick={() => setComparisonId(q.id)}><BarChart3 className="h-3.5 w-3.5 mr-1" /> Compare</Button>
+                                                <Button variant="ghost" size="icon" onClick={() => remove(q.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                                            </div>
                                         </TableCell>
                                     </TableRow>
                                 ))
