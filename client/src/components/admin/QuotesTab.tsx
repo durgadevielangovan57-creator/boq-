@@ -1291,7 +1291,19 @@ export function QuotesTab() {
             if (!res.ok) throw new Error();
             const { token } = await res.json();
             const link = `${window.location.origin}/q/open/${token}`;
-            await navigator.clipboard.writeText(link);
+            // navigator.clipboard requires HTTPS; fall back to execCommand for HTTP
+            try {
+                await navigator.clipboard.writeText(link);
+            } catch {
+                const ta = document.createElement("textarea");
+                ta.value = link;
+                ta.style.position = "fixed";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand("copy");
+                document.body.removeChild(ta);
+            }
             toast({ title: "Link copied", description: "Share it with any vendor — they'll enter their shop name and submit rates." });
             load();
         } catch {
