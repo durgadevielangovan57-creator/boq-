@@ -75,7 +75,7 @@ function CreateQuoteDialog({ open, onOpenChange, onCreated }: { open: boolean; o
 
     const onMaterialPicked = (m: PickedMaterial) => {
         if (pickerForRow === null) return;
-        setItem(pickerForRow, { itemName: m.name, uom: m.unit || "", spec: m.description || m.category || "" });
+        setItem(pickerForRow, { itemName: m.name, uom: m.unit || "", spec: m.description || "" });
     };
 
     const performQuoteSmartMapping = (headers: string[]): Record<string, number> => {

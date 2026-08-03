@@ -2353,14 +2353,14 @@ export async function registerRoutes(
         // Query materials table
         const materialsRes = hasQuery
           ? await query(`
-              SELECT m.id::text, m.name, COALESCE(m.code,'') as code, m.rate, m.unit, m.category, COALESCE(m.image, t.image) as image, m.is_project_pricing, 'Material' as type, null as description
+              SELECT m.id::text, m.name, COALESCE(m.code,'') as code, m.rate, m.unit, m.category, COALESCE(m.image, t.image) as image, m.is_project_pricing, 'Material' as type, m.technicalspecification as description
               FROM materials m 
               LEFT JOIN material_templates t ON m.template_id = t.id 
               WHERE (m.name ILIKE $1 OR REPLACE(m.name, ' ', '') ILIKE $2
                  OR COALESCE(m.code,'') ILIKE $1 OR COALESCE(m.category,'') ILIKE $1)
                  AND m.approved IS TRUE
               ORDER BY m.name ASC LIMIT 100`, [searchPattern, compactPattern])
-          : await query(`SELECT m.id::text, m.name, COALESCE(m.code,'') as code, m.rate, m.unit, m.category, COALESCE(m.image, t.image) as image, m.is_project_pricing, 'Material' as type, null as description FROM materials m LEFT JOIN material_templates t ON m.template_id = t.id WHERE m.approved IS TRUE ORDER BY m.name ASC LIMIT 100`);
+          : await query(`SELECT m.id::text, m.name, COALESCE(m.code,'') as code, m.rate, m.unit, m.category, COALESCE(m.image, t.image) as image, m.is_project_pricing, 'Material' as type, m.technicalspecification as description FROM materials m LEFT JOIN material_templates t ON m.template_id = t.id WHERE m.approved IS TRUE ORDER BY m.name ASC LIMIT 100`);
         materialsRows = materialsRes.rows || [];
 
         // Query templates table
