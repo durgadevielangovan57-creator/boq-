@@ -9463,51 +9463,52 @@ export async function registerRoutes(
 
         if (status === "approved") {
           // De-dupe to the latest approved row per (product_id, config_name).
-          // Without this, a product that was approved, edited, and
-          // re-approved (or otherwise has more than one 'approved' row in
-          // product_approvals for the same config) shows up as multiple
-          // identical-looking cards in the Clone dialog.
+          // The CTE collapses multiple approval rows; the outer DISTINCT ON
+          // prevents fan-out from the LEFT JOINs on subcategory/category tables
+          // (which can match multiple rows when names collide across categories).
           queryStr = `
-           WITH latest_approved AS (
-             SELECT DISTINCT ON (pa.product_id, pa.config_name) pa.*
-             FROM product_approvals pa
-             WHERE pa.status = 'approved'
-             ORDER BY pa.product_id, pa.config_name, pa.created_at DESC
-           )
-           SELECT p.*, pr.name as live_product_name,
-             COALESCE(pr.name, p.product_name) as product_name,
-             COALESCE(vc.name, f_vc.name, p.category_id) as category_name,
-             COALESCE(vsc.name, pr.subcategory, p.subcategory_id) as subcategory_name,
-             (SELECT COUNT(*) FROM product_approvals p2 
-              WHERE p2.product_id = p.product_id 
-              AND p2.config_name = p.config_name) as submission_count
+            WITH latest_approved AS (
+              SELECT DISTINCT ON (pa.product_id, pa.config_name) pa.*
+              FROM product_approvals pa
+              WHERE pa.status = 'approved'
+              ORDER BY pa.product_id, pa.config_name, pa.created_at DESC
+            )
+           SELECT DISTINCT ON (p.product_id, p.config_name)
+              p.*, pr.name as live_product_name,
+              COALESCE(pr.name, p.product_name) as product_name,
+              COALESCE(vc.name, f_vc.name, p.category_id) as category_name,
+              COALESCE(vsc.name, pr.subcategory, p.subcategory_id) as subcategory_name,
+              (SELECT COUNT(*) FROM product_approvals p2 
+               WHERE p2.product_id = p.product_id 
+               AND p2.config_name = p.config_name) as submission_count
            FROM latest_approved p
            LEFT JOIN products pr ON p.product_id = pr.id
            LEFT JOIN vendor_categories vc ON p.category_id = vc.name
            LEFT JOIN material_subcategories vsc ON p.subcategory_id = vsc.name AND (p.category_id = vsc.category OR p.category_id IS NULL)
            LEFT JOIN material_subcategories f_vsc ON pr.subcategory = f_vsc.name
            LEFT JOIN material_categories f_vc ON f_vsc.category = f_vc.name
-           ORDER BY p.created_at DESC`;
+           ORDER BY p.product_id, p.config_name, p.created_at DESC`;
         } else {
           queryStr = `WITH latest_submissions AS (
-             SELECT DISTINCT ON (pa.product_id, pa.config_name) pa.*
-             FROM product_approvals pa
-             ORDER BY pa.product_id, pa.config_name, pa.created_at DESC
-           )
-           SELECT p.*, pr.name as live_product_name,
-             COALESCE(pr.name, p.product_name) as product_name,
-             COALESCE(vc.name, f_vc.name, p.category_id) as category_name,
-             COALESCE(vsc.name, pr.subcategory, p.subcategory_id) as subcategory_name,
-             (SELECT COUNT(*) FROM product_approvals p2 
-              WHERE p2.product_id = p.product_id 
-              AND p2.config_name = p.config_name) as submission_count
+              SELECT DISTINCT ON (pa.product_id, pa.config_name) pa.*
+              FROM product_approvals pa
+              ORDER BY pa.product_id, pa.config_name, pa.created_at DESC
+            )
+           SELECT DISTINCT ON (p.product_id, p.config_name)
+              p.*, pr.name as live_product_name,
+              COALESCE(pr.name, p.product_name) as product_name,
+              COALESCE(vc.name, f_vc.name, p.category_id) as category_name,
+              COALESCE(vsc.name, pr.subcategory, p.subcategory_id) as subcategory_name,
+              (SELECT COUNT(*) FROM product_approvals p2 
+               WHERE p2.product_id = p.product_id 
+               AND p2.config_name = p.config_name) as submission_count
            FROM latest_submissions p
            LEFT JOIN products pr ON p.product_id = pr.id
            LEFT JOIN vendor_categories vc ON p.category_id = vc.name
            LEFT JOIN material_subcategories vsc ON p.subcategory_id = vsc.name AND (p.category_id = vsc.category OR p.category_id IS NULL)
            LEFT JOIN material_subcategories f_vsc ON pr.subcategory = f_vsc.name
            LEFT JOIN material_categories f_vc ON f_vsc.category = f_vc.name
-           ORDER BY p.created_at DESC`;
+           ORDER BY p.product_id, p.config_name, p.created_at DESC`;
         }
 
         const result = await query(queryStr);
