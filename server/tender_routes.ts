@@ -350,6 +350,8 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
     console.error("[enterprise-tender-module] Failed to ensure tables:", err?.message || err);
   });
 
+  await registerFormBuilderRoutes(app);
+
   /* ============================ MASTER DATA ============================ */
 
   app.get("/api/et/master-data", authMiddleware, async (req: Request, res: Response) => {

@@ -572,6 +572,19 @@ const measureText = (text: string, font: string) => {
   return width;
 };
 
+// Default category ordering: "Demolishing"-type categories go first, "Cleaning"-type
+// categories go last, everything else stays alphabetical in between. This ONLY applies
+// when there's no saved/user-defined order yet (or for brand-new categories that haven't
+// been placed by the user) — once a user drags/reorders, that saved order always wins.
+const sortCategoriesDefault = (cats: string[]): string[] => {
+  const isDemolition = (c: string) => /demoli(sh|tion)/i.test(c);
+  const isCleaning = (c: string) => /clean/i.test(c);
+  const demolition = cats.filter(isDemolition).sort();
+  const cleaning = cats.filter(isCleaning).sort();
+  const rest = cats.filter(c => !isDemolition(c) && !isCleaning(c)).sort();
+  return [...demolition, ...rest, ...cleaning];
+};
+
 const CategoryReorderItem = ({
   cat,
   isVersionSubmitted,
@@ -855,14 +868,19 @@ export default function FinalizeBoq() {
 
     const allCatsArr = Array.from(cats);
 
-    // If we have a saved order, show ONLY those categories (in that order)
+    // If we have a saved order, show ONLY those categories (in that order).
+    // Any brand-new categories not yet in the saved order get slotted in using the
+    // same default rule (Demolishing first, Cleaning last) rather than plain A-Z.
     if (savedOrder.length > 0) {
       const ordered = savedOrder.filter(c => allCatsArr.includes(c));
-      const remaining = allCatsArr.filter(c => !savedOrder.includes(c)).sort();
+      const remaining = sortCategoriesDefault(allCatsArr.filter(c => !savedOrder.includes(c)));
       return [...ordered, ...remaining];
     }
 
-    return allCatsArr.sort();
+    // No saved order yet — apply the default rule: Demolishing first, Cleaning last,
+    // everything else alphabetical in between. Users can still drag/reorder from here,
+    // and once they do, that order is saved and always takes priority over this default.
+    return sortCategoriesDefault(allCatsArr);
   }, [boqItems, bomVersions, boqVersions, selectedBomVersionId, activeVersionId]);
 
 
@@ -1076,6 +1094,9 @@ export default function FinalizeBoq() {
   });
   const [hiddenPredefinedCols, setHiddenPredefinedCols] = useState<Record<string, boolean>>({});
   const [includeGrandTotal, setIncludeGrandTotal] = useState<boolean>(true);
+  const [includePdfCompanyAddress, setIncludePdfCompanyAddress] = useState<boolean>(() => {
+    try { const saved = localStorage.getItem('finalize_pdf_include_address'); return saved !== null ? saved === 'true' : true; } catch { return true; }
+  });
 
 
 
@@ -3781,7 +3802,16 @@ export default function FinalizeBoq() {
       // Centered title inside box
       doc.setFontSize(15);
       doc.setFont("helvetica", "bold");
-      doc.text("CONCEPT TRUNK INTERIORS", pageWidth / 2, headerBoxY + 13, { align: "center" });
+      doc.text("CONCEPT TRUNK INTERIORS", pageWidth / 2, headerBoxY + (includePdfCompanyAddress ? 11 : 13), { align: "center" });
+
+      // Company address, GSTN & PAN — centered below the title (optional, per export dialog checkbox)
+      if (includePdfCompanyAddress) {
+        doc.setFontSize(8);
+        doc.setFont("helvetica", "normal");
+        doc.text("No. 12/36, Indira Gandhi Street, Medavakkam, Chennai \u2013 600100", pageWidth / 2, headerBoxY + 17, { align: "center" });
+        doc.setFont("helvetica", "bold");
+        doc.text("GSTN: 33ASOPS5560M1Z1   |   PAN: ASOPS5560M", pageWidth / 2, headerBoxY + 22, { align: "center" });
+      }
 
       // Project info on right inside box
       const metaX = pageWidth - marginX - 2;
@@ -3820,7 +3850,7 @@ export default function FinalizeBoq() {
 
       // Per-column suggested widths (mm)
       const colBaseWidths: Record<string, number> = {
-        "S.No": 8,
+        "S.No": 12,
         "Product / Material": 55,
         "Description": 45,
         "HSN": 15,
@@ -3856,9 +3886,9 @@ export default function FinalizeBoq() {
           halign
         };
 
-        // Always keep S.No narrow if it exists
+        // Always keep S.No narrow (but wide enough for "S.No" on one line) if it exists
         if (col === "S.No") {
-          dynColStyles[i].cellWidth = 8;
+          dynColStyles[i].cellWidth = 12;
         }
       });
 
@@ -3904,6 +3934,10 @@ export default function FinalizeBoq() {
         tableLineColor: [0, 0, 0],
         tableLineWidth: 0.5,
         didParseCell: (data: any) => {
+          if (data.section === 'head') {
+            data.cell.styles.halign = 'center';
+            data.cell.styles.valign = 'middle';
+          }
           if (data.section === 'body' && data.column.index === productColIndex && rowImages[data.row.index]) {
             data.cell.styles.minCellHeight = 27; // At least 25mm + 2mm margin
             data.cell.styles.cellPadding = { top: 1.5, right: 1.5, bottom: 1.5, left: 30 }; // 25mm + 5mm gap
@@ -4671,6 +4705,23 @@ export default function FinalizeBoq() {
                 className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
               >
                 Include Grand Total
+              </label>
+            </div>
+            <div className="flex items-center space-x-2 py-2">
+              <Checkbox
+                id="pdf-include-company-address"
+                checked={includePdfCompanyAddress}
+                onCheckedChange={(checked) => {
+                  const next = !!checked;
+                  setIncludePdfCompanyAddress(next);
+                  try { localStorage.setItem('finalize_pdf_include_address', String(next)); } catch { }
+                }}
+              />
+              <label
+                htmlFor="pdf-include-company-address"
+                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+              >
+                Include Company Address / GSTN / PAN
               </label>
             </div>
             <DialogFooter>
