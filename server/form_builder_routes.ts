@@ -502,9 +502,11 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
     });
 
     app.put("/api/fb/quotes/:id", authMiddleware, requireRole(...ADMIN_ROLES), async (req: Request, res: Response) => {
+        const client = await pool.connect();
         try {
-            const { title, description, validUntil, status } = req.body;
-            const result = await query(
+            await client.query("BEGIN");
+            const { title, description, validUntil, status, items } = req.body;
+            const result = await client.query(
                 `UPDATE et_fb_quotes SET
            title = COALESCE($2, title),
            description = COALESCE($3, description),
@@ -514,10 +516,49 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
          WHERE id = $1 RETURNING *`,
                 [req.params.id, title || null, description ?? null, validUntil || null, status || null]
             );
-            if (!result.rows[0]) return res.status(404).json({ message: "Not found" });
+            if (!result.rows[0]) {
+                await client.query("ROLLBACK");
+                return res.status(404).json({ message: "Not found" });
+            }
+
+            if (Array.isArray(items)) {
+                // Get existing items to know what to delete
+                const existingRes = await client.query(`SELECT id FROM et_fb_quote_items WHERE quote_id = $1`, [req.params.id]);
+                const existingIds = new Set(existingRes.rows.map((r: any) => r.id));
+                const incomingIds = new Set(items.filter((i: any) => i.id).map((i: any) => i.id));
+
+                // Delete items that are no longer in the payload
+                for (const oldId of Array.from(existingIds)) {
+                    if (!incomingIds.has(oldId)) {
+                        await client.query(`DELETE FROM et_fb_quote_items WHERE id = $1`, [oldId]);
+                    }
+                }
+
+                // Upsert incoming items
+                for (let i = 0; i < items.length; i++) {
+                    const it = items[i];
+                    if (it.id && existingIds.has(it.id)) {
+                        await client.query(
+                            `UPDATE et_fb_quote_items SET item_name = $1, description = $2, uom = $3, quantity = $4, spec = $5, sort_order = $6 WHERE id = $7`,
+                            [it.itemName, it.description || null, it.uom || null, it.quantity || 0, it.spec || null, i, it.id]
+                        );
+                    } else {
+                        await client.query(
+                            `INSERT INTO et_fb_quote_items (quote_id, item_name, description, uom, quantity, spec, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+                            [req.params.id, it.itemName, it.description || null, it.uom || null, it.quantity || 0, it.spec || null, i]
+                        );
+                    }
+                }
+            }
+
+            await client.query("COMMIT");
             res.json({ quote: result.rows[0] });
         } catch (err: any) {
+            await client.query("ROLLBACK");
+            console.error("[fb quotes:update]", err);
             res.status(500).json({ message: "Failed to update quote" });
+        } finally {
+            client.release();
         }
     });
 

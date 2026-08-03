@@ -106,6 +106,7 @@ function QuoteFillView({ quoteId, onBack }: { quoteId: string; onBack: () => voi
                                             type="number"
                                             value={rates[it.id]?.rate ?? ""}
                                             onChange={(e) => setRate(it.id, { rate: e.target.value })}
+                                            onWheel={(e) => (e.target as HTMLInputElement).blur()}
                                             disabled={isSubmitted}
                                             placeholder="Rate"
                                         />

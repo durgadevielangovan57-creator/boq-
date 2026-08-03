@@ -130,7 +130,7 @@ export default function PublicQuoteFill() {
                             <div className="grid grid-cols-2 gap-3">
                                 <div className="space-y-1">
                                     <label className="text-xs font-medium">Your Rate *</label>
-                                    <Input type="number" inputMode="decimal" value={rates[it.id]?.rate ?? ""} onChange={(e) => setRate(it.id, { rate: e.target.value })} placeholder="0.00" />
+                                    <Input type="number" inputMode="decimal" value={rates[it.id]?.rate ?? ""} onChange={(e) => setRate(it.id, { rate: e.target.value })} onWheel={(e) => (e.target as HTMLInputElement).blur()} placeholder="0.00" />
                                 </div>
                                 <div className="space-y-1">
                                     <label className="text-xs font-medium">Remarks</label>

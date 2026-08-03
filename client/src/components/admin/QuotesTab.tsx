@@ -14,7 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
     Plus, Trash2, Send, BarChart3, ArrowLeft, Search as SearchIcon, Upload, FileSpreadsheet,
-    Download, Link as LinkIcon, Copy, Loader2, FolderKanban, Users, Package, Save, Check, ChevronsUpDown, X
+    Download, Link as LinkIcon, Copy, Loader2, FolderKanban, Users, Package, Save, Check, ChevronsUpDown, X, Pencil
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -250,7 +250,20 @@ function CreateQuoteDialog({ open, onOpenChange, onCreated }: { open: boolean; o
                                                 </TableCell>
                                                 <TableCell className="min-w-[160px]"><Input value={it.spec} onChange={(e) => setItem(idx, { spec: e.target.value })} placeholder="Specification" /></TableCell>
                                                 <TableCell className="min-w-[100px]"><Input value={it.uom} onChange={(e) => setItem(idx, { uom: e.target.value })} placeholder="e.g. Kg" /></TableCell>
-                                                <TableCell className="min-w-[100px]"><Input type="number" value={it.quantity} onChange={(e) => setItem(idx, { quantity: e.target.value })} /></TableCell>
+                                                <TableCell className="min-w-[100px]">
+                                                    <Input 
+                                                        type="number" 
+                                                        min="0"
+                                                        onKeyDown={(e) => ["-", "e", "E", "+"].includes(e.key) && e.preventDefault()}
+                                                        onWheel={(e) => (e.target as HTMLInputElement).blur()}
+                                                        value={it.quantity} 
+                                                        onChange={(e) => {
+                                                            const val = parseFloat(e.target.value);
+                                                            if (val < 0) return;
+                                                            setItem(idx, { quantity: e.target.value })
+                                                        }} 
+                                                    />
+                                                </TableCell>
                                                 <TableCell>
                                                     {items.length > 1 && (
                                                         <Button variant="ghost" size="icon" onClick={() => removeItem(idx)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
@@ -429,6 +442,148 @@ function CreateQuoteDialog({ open, onOpenChange, onCreated }: { open: boolean; o
                 </DialogContent>
             </Dialog>
         </>
+    );
+}
+
+// ------------------------------------------------------------------
+// Edit Quote Dialog
+// ------------------------------------------------------------------
+function EditQuoteDialog({ quoteId, onOpenChange, onSaved }: { quoteId: string; onOpenChange: (o: boolean) => void; onSaved: () => void }) {
+    const { toast } = useToast();
+    const [title, setTitle] = useState("");
+    const [description, setDescription] = useState("");
+    const [validUntil, setValidUntil] = useState("");
+    const [items, setItems] = useState<any[]>([]);
+    const [saving, setSaving] = useState(false);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        if (!quoteId) return;
+        setLoading(true);
+        apiFetch(`/api/fb/quotes/${quoteId}`)
+            .then(res => res.json())
+            .then(data => {
+                setTitle(data.quote.title || "");
+                setDescription(data.quote.description || "");
+                setValidUntil(data.quote.valid_until ? data.quote.valid_until.split("T")[0] : "");
+                setItems(data.items.map((i: any) => ({
+                    id: i.id,
+                    itemName: i.item_name,
+                    description: i.description || "",
+                    uom: i.uom || "",
+                    quantity: i.quantity || 1,
+                    spec: i.spec || ""
+                })));
+            })
+            .catch(() => toast({ title: "Error", description: "Failed to load quote details", variant: "destructive" }))
+            .finally(() => setLoading(false));
+    }, [quoteId]);
+
+    const setItem = (idx: number, patch: any) => setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+    const addItem = () => setItems((prev) => [...prev, emptyItem()]);
+    const removeItem = (idx: number) => setItems((prev) => prev.filter((_, i) => i !== idx));
+
+    const save = async () => {
+        if (!title.trim() || items.some((i) => !i.itemName.trim())) {
+            toast({ title: "Missing info", description: "Title and every item name are required.", variant: "destructive" });
+            return;
+        }
+        setSaving(true);
+        try {
+            const res = await apiFetch(`/api/fb/quotes/${quoteId}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ title, description, validUntil: validUntil || null, items }),
+            });
+            if (!res.ok) throw new Error("Failed to save");
+            toast({ title: "Quote saved successfully" });
+            onOpenChange(false);
+            onSaved();
+        } catch (err: any) {
+            toast({ title: "Error", description: err.message, variant: "destructive" });
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <Dialog open={!!quoteId} onOpenChange={onOpenChange}>
+            <DialogContent className="sm:max-w-[900px] max-h-[85vh] overflow-y-auto">
+                <DialogHeader><DialogTitle>Edit Quote</DialogTitle></DialogHeader>
+                {loading ? (
+                    <div className="py-12 flex flex-col items-center justify-center">
+                        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground mb-4" />
+                        <p className="text-sm text-muted-foreground">Loading quote...</p>
+                    </div>
+                ) : (
+                    <div className="space-y-4 py-2">
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-1.5">
+                                <Label>Title</Label>
+                                <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Cement & Steel Rate Quote" />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label>Valid Until</Label>
+                                <Input type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} />
+                            </div>
+                        </div>
+                        <div className="space-y-1.5">
+                            <Label>Description</Label>
+                            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional notes for the vendor" />
+                        </div>
+                        <div className="space-y-2">
+                            <Label className="text-sm font-semibold">Items</Label>
+                            <div className="overflow-x-auto border rounded-md">
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow>
+                                            <TableHead>Item</TableHead>
+                                            <TableHead>Spec</TableHead>
+                                            <TableHead>UOM</TableHead>
+                                            <TableHead>Quantity</TableHead>
+                                            <TableHead className="w-10" />
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {items.map((it, idx) => (
+                                            <TableRow key={idx}>
+                                                <TableCell className="min-w-[200px]"><Input value={it.itemName} onChange={(e) => setItem(idx, { itemName: e.target.value })} placeholder="Item name" /></TableCell>
+                                                <TableCell className="min-w-[160px]"><Input value={it.spec} onChange={(e) => setItem(idx, { spec: e.target.value })} placeholder="Specification" /></TableCell>
+                                                <TableCell className="min-w-[100px]"><Input value={it.uom} onChange={(e) => setItem(idx, { uom: e.target.value })} placeholder="e.g. Kg" /></TableCell>
+                                                <TableCell className="min-w-[100px]">
+                                                    <Input 
+                                                        type="number" 
+                                                        min="0"
+                                                        onKeyDown={(e) => ["-", "e", "E", "+"].includes(e.key) && e.preventDefault()}
+                                                        onWheel={(e) => (e.target as HTMLInputElement).blur()}
+                                                        value={it.quantity} 
+                                                        onChange={(e) => {
+                                                            const val = parseFloat(e.target.value);
+                                                            if (val < 0) return;
+                                                            setItem(idx, { quantity: e.target.value });
+                                                        }} 
+                                                    />
+                                                </TableCell>
+                                                <TableCell>
+                                                    {items.length > 1 && (
+                                                        <Button variant="ghost" size="icon" onClick={() => removeItem(idx)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                                                    )}
+                                                </TableCell>
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            </div>
+                            <Button variant="outline" size="sm" onClick={addItem}><Plus className="h-4 w-4 mr-1" /> Add Item</Button>
+                        </div>
+                    </div>
+                )}
+                <DialogFooter>
+                    <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+                    <Button onClick={save} disabled={saving || loading}>Save Changes</Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     );
 }
 
@@ -806,6 +961,7 @@ function ProjectComparisonQuoteDialog({ open, onOpenChange, onCreated }: { open:
                                                                                 value={qtyOverrides[qtyKey] ?? m.quantity}
                                                                                 onChange={(e) => setQtyOverrides((prev) => ({ ...prev, [qtyKey]: Number(e.target.value) }))}
                                                                                 onClick={(e) => e.stopPropagation()}
+                                                                                onWheel={(e) => (e.target as HTMLInputElement).blur()}
                                                                             />
                                                                         )}
                                                                     </label>
@@ -1039,27 +1195,17 @@ function QuoteComparisonView({ quoteId, onBack }: { quoteId: string; onBack: () 
         const pdfOptions: any = {
             margin: [10, 8, 10, 8],
             filename: `${quote?.title || "Quote"}-Comparison.pdf`,
-            image: { type: "jpeg", quality: 0.98 },
+            image: { type: "jpeg", quality: 1.0 },
             html2canvas: {
-                scale: 2,
+                scale: 3, // Increased scale for sharper (less dim) text
                 useCORS: true,
                 backgroundColor: "#ffffff",
-                // The source table is rendered off-screen (left: -9999px). Without pinning
-                // scrollX/scrollY and the capture window size explicitly, html2canvas
-                // captures based on the page's *current* scroll position, which on a long
-                // Rate Comparison list would cut the table off partway through — the
-                // "only downloads half" symptom. Forcing these to the full element size
-                // guarantees the entire table (all rows/vendors) is captured every time.
                 scrollX: 0,
                 scrollY: 0,
                 windowWidth: el.scrollWidth,
                 windowHeight: el.scrollHeight,
             },
             jsPDF: { unit: "mm", format: "a4", orientation },
-            // "avoid-all" forces the entire table to be treated as one unbreakable block,
-            // which — combined with a tall comparison table — caused everything past the
-            // first page to be dropped instead of flowing onto additional pages. Using
-            // just css/legacy lets long tables paginate correctly across as many pages as needed.
             pagebreak: { mode: ["css", "legacy"] },
         };
         html2pdf()
@@ -1070,23 +1216,22 @@ function QuoteComparisonView({ quoteId, onBack }: { quoteId: string; onBack: () 
             .catch(() => setDownloading(false));
     };
 
-    // Plain inline-styled table used ONLY for PDF export. html2canvas can't reliably render
-    // Tailwind's shadcn table classes (modern oklch colors, border utilities), which is what
-    // was causing the missing borders / misaligned columns in the exported PDF. Keeping this
-    // fully inline-styled with explicit borders guarantees a clean, print-correct output.
+    // Dynamic width based on vendor count to prevent extreme stretching if only 1 vendor
+    const pdfContainerWidth = vendorIds.length > 4 ? "1500px" : vendorIds.length <= 1 ? "800px" : "1100px";
+
     const pdfTable = (
         <div style={{ position: "absolute", left: "-9999px", top: "-9999px" }}>
-            <div ref={pdfRef} style={{ width: vendorIds.length > 4 ? "1500px" : "1100px", background: "#ffffff", padding: "24px", fontFamily: "Arial, Helvetica, sans-serif", color: "#111827" }}>
-                <div style={{ textAlign: "center", marginBottom: "18px", borderBottom: "2px solid #1e293b", paddingBottom: "12px" }}>
+            <div ref={pdfRef} style={{ width: pdfContainerWidth, background: "#ffffff", padding: "24px", fontFamily: "Arial, Helvetica, sans-serif", color: "#000000" }}>
+                <div style={{ textAlign: "center", marginBottom: "18px", borderBottom: "2px solid #000000", paddingBottom: "12px" }}>
                     <div style={{ fontSize: "20px", fontWeight: 700, marginBottom: "4px" }}>{quote?.title || "Quote"}</div>
-                    <div style={{ fontSize: "11px", color: "#555555" }}>
+                    <div style={{ fontSize: "11px", color: "#333333" }}>
                         Quote # {quote?.quote_number || "—"} &nbsp;•&nbsp; Rate Comparison Sheet &nbsp;•&nbsp; Generated {new Date().toLocaleDateString()}
                     </div>
                 </div>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", tableLayout: "fixed" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
                     <thead>
                         <tr>
-                            <th rowSpan={2} style={{ ...pdfThStyle, textAlign: "left", width: "26%" }}>Item</th>
+                            <th rowSpan={2} style={{ ...pdfThStyle, textAlign: "left", width: vendorIds.length <= 1 ? "40%" : "26%" }}>Item</th>
                             <th rowSpan={2} style={{ ...pdfThStyle, textAlign: "center", width: "10%" }}>Qty</th>
                             {vendorIds.map((vid) => (
                                 <th key={vid} colSpan={2} style={{ ...pdfThStyle, textAlign: "center" }}>{uniqueVendorLabels[vid]}</th>
@@ -1126,7 +1271,7 @@ function QuoteComparisonView({ quoteId, onBack }: { quoteId: string; onBack: () 
                         })}
                     </tbody>
                 </table>
-                <div style={{ marginTop: "14px", fontSize: "10px", color: "#6b7280" }}>
+                <div style={{ marginTop: "14px", fontSize: "10px", color: "#555555" }}>
                     Highlighted cell = lowest rate for that item. Values shown as Rate (Total Amount).
                 </div>
             </div>
@@ -1244,6 +1389,7 @@ export function QuotesTab() {
     const [projectQuoteOpen, setProjectQuoteOpen] = useState(false);
     const [sendTarget, setSendTarget] = useState<any>(null);
     const [comparisonId, setComparisonId] = useState<string | null>(null);
+    const [editQuoteId, setEditQuoteId] = useState<string | null>(null);
 
     // Bumped on every load() call so a slow/late-arriving response from an
     // earlier call can never clobber the result of a newer one (race guard).
@@ -1363,6 +1509,7 @@ export function QuotesTab() {
                                                 <Button variant="outline" size="sm" onClick={() => setSendTarget(q)}><Send className="h-3.5 w-3.5 mr-1" /> Send</Button>
                                                 <Button variant="outline" size="sm" onClick={() => copyLink(q.id)}><LinkIcon className="h-3.5 w-3.5 mr-1" /> Copy Link</Button>
                                                 <Button variant="outline" size="sm" onClick={() => setComparisonId(q.id)}><BarChart3 className="h-3.5 w-3.5 mr-1" /> Compare</Button>
+                                                <Button variant="outline" size="sm" onClick={() => setEditQuoteId(q.id)}><Pencil className="h-3.5 w-3.5 mr-1" /> Edit</Button>
                                                 <Button variant="ghost" size="icon" onClick={() => remove(q.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
                                             </div>
                                         </TableCell>
@@ -1376,6 +1523,7 @@ export function QuotesTab() {
 
             <CreateQuoteDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={load} />
             <ProjectComparisonQuoteDialog open={projectQuoteOpen} onOpenChange={setProjectQuoteOpen} onCreated={load} />
+            <EditQuoteDialog quoteId={editQuoteId || ""} onOpenChange={() => setEditQuoteId(null)} onSaved={load} />
             {sendTarget && <SendQuoteDialog quote={sendTarget} open={!!sendTarget} onOpenChange={(o) => !o && setSendTarget(null)} onSent={load} />}
         </div>
     );
