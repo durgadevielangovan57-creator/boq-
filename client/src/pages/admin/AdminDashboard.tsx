@@ -1208,7 +1208,7 @@ export default function AdminDashboard() {
   // ===== SUPPLIER: Detailed Material (Select from Master + Fill Details) =====
   const [selectedMasterId, setSelectedMasterId] = useState<string>("");
 
-  const [newMaterial, setNewMaterial] = useState<Partial<Material & { vendorCategory?: string }>>({
+  const [newMaterial, setNewMaterial] = useState<Partial<Material & { vendorCategory?: string; templateId?: string }>>({
     name: "",
     code: "",
     rate: 0,
@@ -1228,6 +1228,7 @@ export default function AdminDashboard() {
     hsnCode: "",
     sacCode: "",
     shopId: "",
+    templateId: "",
   });
 
   const handleSelectMasterMaterial = (masterId: string) => {
@@ -1238,6 +1239,7 @@ export default function AdminDashboard() {
         ...newMaterial,
         name: selected.name,
         code: selected.code,
+        templateId: selected.id,
       });
     }
   };
@@ -1335,6 +1337,7 @@ export default function AdminDashboard() {
       dimensions: "",
       finish: "",
       metalType: "",
+      templateId: "",
     });
     setSelectedMasterId("");
   };
@@ -1369,6 +1372,7 @@ export default function AdminDashboard() {
       finish: mat.finishtype || mat.finish || "",
       metalType: mat.metaltype || mat.metal_type || mat.metalType || "",
       shopId: mat.shop_id ? mat.shop_id.toString() : (mat.shopId ? mat.shopId.toString() : ""),
+      templateId: mat.template_id || mat.templateId || "",
     });
   };
 
