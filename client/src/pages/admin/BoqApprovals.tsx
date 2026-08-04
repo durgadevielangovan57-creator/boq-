@@ -18,6 +18,9 @@ import { useToast } from "@/hooks/use-toast";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { computeBoq, linesFromTableData, basisFromTableData } from "@/lib/boqCalc";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 // ─── Shared helpers (mirrored from FinalizeBoq.tsx) ────────────────────────
 const applyOperator = (base: number, mult: number, op: string) => {
@@ -260,6 +263,10 @@ type BOQApproval = {
 
 export default function BoqApprovals() {
     const [approvals, setApprovals] = useState<BOQApproval[]>([]);
+    const [searchQuery, setSearchQuery] = useState("");
+    const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
+    const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "approved" | "rejected">("all");
+    const [dateFilter, setDateFilter] = useState("");
     const [loading, setLoading] = useState(true);
     const [actionLoading, setActionLoading] = useState<string | null>(null);
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -452,9 +459,51 @@ export default function BoqApprovals() {
         }
     };
 
-    const pendingApprovals = approvals.filter(a => a.status === 'submitted' || a.status === 'pending_approval');
-    const editRequests = approvals.filter(a => a.status === 'edit_requested');
-    const approvedHistory = approvals.filter(a => a.status === 'approved');
+    // ─── Search / status / date filtering (applied before splitting into tabs) ───
+    const searchLower = searchQuery.toLowerCase().trim();
+    const searchFilteredApprovals = approvals.filter(a => {
+        if (!searchLower) return true;
+        const statusText = (a.status || "").replace(/_/g, " ").toLowerCase();
+        return (
+            (a.project_name || "").toLowerCase().includes(searchLower) ||
+            (a.project_client || "").toLowerCase().includes(searchLower) ||
+            (a.type || "boq").toLowerCase().includes(searchLower) ||
+            statusText.includes(searchLower) ||
+            (`v${a.version_number}`).toLowerCase().includes(searchLower) ||
+            (a.version_number?.toString() || "").includes(searchLower)
+        );
+    });
+
+    // Date filter: when a specific submission date is picked, match against that
+    // calendar date (local time) so "submitted on this date" behaves intuitively.
+    const dateFilteredApprovals = dateFilter
+        ? searchFilteredApprovals.filter(a => {
+            const raw = a.created_at;
+            if (!raw) return false;
+            const d = new Date(raw);
+            const localIso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+            return localIso === dateFilter;
+        })
+        : searchFilteredApprovals;
+
+    // Status filter: All / Pending / Approved / Rejected.
+    const statusFilteredApprovals = statusFilter === "all"
+        ? dateFilteredApprovals
+        : dateFilteredApprovals.filter(a => {
+            if (statusFilter === "pending") return a.status === 'submitted' || a.status === 'pending_approval' || a.status === 'edit_requested';
+            return a.status === statusFilter;
+        });
+
+    const sortByDate = (list: BOQApproval[]) => {
+        return [...list].sort((a, b) => {
+            const diff = new Date(b.updated_at || b.created_at).getTime() - new Date(a.updated_at || a.created_at).getTime();
+            return sortOrder === "newest" ? diff : -diff;
+        });
+    };
+
+    const pendingApprovals = sortByDate(statusFilteredApprovals.filter(a => a.status === 'submitted' || a.status === 'pending_approval'));
+    const editRequests = sortByDate(statusFilteredApprovals.filter(a => a.status === 'edit_requested'));
+    const approvedHistory = sortByDate(statusFilteredApprovals.filter(a => a.status === 'approved'));
 
     const renderTable = (list: BOQApproval[], title: string) => {
         if (list.length === 0) return null;
@@ -462,98 +511,118 @@ export default function BoqApprovals() {
         return (
             <div className="mb-8">
                 <h3 className="text-lg font-bold mb-4 text-slate-800">{title}</h3>
-                <Table>
-                    <TableHeader>
-                        <TableRow>
-                            <TableHead className="w-[40px]"></TableHead>
-                            <TableHead>Project</TableHead>
-                            <TableHead>Client</TableHead>
-                            <TableHead>Version</TableHead>
-                            <TableHead className="text-right">Grand Total</TableHead>
-                            <TableHead>Status</TableHead>
-                            <TableHead>Date</TableHead>
-                            <TableHead className="text-center">Actions</TableHead>
-                        </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                        {list.map((approval) => (
-                            <TableRow key={approval.id}>
-                                <TableCell>
-                                    <input
-                                        type="checkbox"
-                                        className="h-4 w-4 rounded border-gray-300"
-                                        checked={selectedIds.includes(approval.id)}
-                                        onChange={(e) => toggleSelect(approval.id, e.target.checked)}
-                                    />
-                                </TableCell>
-                                <TableCell className="font-bold">{approval.project_name}</TableCell>
-                                <TableCell>{approval.project_client}</TableCell>
-                                <TableCell>V{approval.version_number}</TableCell>
-                                <TableCell className="text-right font-bold whitespace-nowrap">
-                                    {computedTotals[approval.id] !== undefined
-                                        ? `₹${computedTotals[approval.id].toLocaleString(undefined, { minimumFractionDigits: 2 })}`
-                                        : approval.project_value
-                                            ? <span className="text-slate-400">₹{Number(approval.project_value).toLocaleString(undefined, { minimumFractionDigits: 2 })} <Loader2 className="inline h-3 w-3 animate-spin ml-1" /></span>
-                                            : '—'}
-                                </TableCell>
-                                <TableCell>
-                                    <Badge className={
-                                        approval.status === 'approved' ? "bg-green-100 text-green-700" :
-                                            approval.status === 'rejected' ? "bg-red-100 text-red-700" :
-                                                approval.status === 'edit_requested' ? "bg-indigo-100 text-indigo-700" :
-                                                    "bg-amber-100 text-amber-700"
-                                    }>
-                                        {approval.status.replace('_', ' ').toUpperCase()}
-                                    </Badge>
-                                </TableCell>
-                                <TableCell>{new Date(approval.updated_at || approval.created_at).toLocaleDateString()}</TableCell>
-                                <TableCell>
-                                    <div className="flex items-center justify-center gap-2">
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() => handleOpenPreview(approval)}
-                                            title="View entire BOQ table"
-                                        >
-                                            <Eye className="h-4 w-4 mr-1" /> View
-                                        </Button>
-                                        {(approval.status === 'submitted' || approval.status === 'pending_approval' || approval.status === 'edit_requested') && (
-                                            <>
-                                                <Button
-                                                    size="sm"
-                                                    className="bg-green-600 hover:bg-green-700 h-8"
-                                                    onClick={() => handleApprove(approval.id, approval.status === 'edit_requested')}
-                                                    disabled={!!actionLoading}
-                                                >
-                                                    <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Approve
-                                                </Button>
-                                                <Button
-                                                    size="sm"
-                                                    variant="destructive"
-                                                    className="h-8"
-                                                    onClick={() => handleReject(approval.id, approval.status === 'edit_requested')}
-                                                    disabled={!!actionLoading}
-                                                >
-                                                    <XCircle className="h-3.5 w-3.5 mr-1" /> Reject
-                                                </Button>
-                                            </>
-                                        )}
-                                        {approval.status === 'approved' && (
+                <TooltipProvider delayDuration={300}>
+                    <Table>
+                        <TableHeader>
+                            <TableRow>
+                                <TableHead className="w-[40px]"></TableHead>
+                                <TableHead>Project</TableHead>
+                                <TableHead>Client</TableHead>
+                                <TableHead>Version</TableHead>
+                                <TableHead className="text-right">Grand Total</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead>Date</TableHead>
+                                <TableHead className="text-center">Actions</TableHead>
+                            </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                            {list.map((approval) => (
+                                <TableRow key={approval.id}>
+                                    <TableCell>
+                                        <input
+                                            type="checkbox"
+                                            className="h-4 w-4 rounded border-gray-300"
+                                            checked={selectedIds.includes(approval.id)}
+                                            onChange={(e) => toggleSelect(approval.id, e.target.checked)}
+                                        />
+                                    </TableCell>
+                                    <TableCell className="font-bold max-w-[180px]">
+                                        <Tooltip>
+                                            <TooltipTrigger asChild>
+                                                <span className="truncate block cursor-default">{approval.project_name}</span>
+                                            </TooltipTrigger>
+                                            <TooltipContent className="bg-slate-900 text-slate-50 border-slate-900 font-normal">
+                                                <p>{approval.project_name}</p>
+                                            </TooltipContent>
+                                        </Tooltip>
+                                    </TableCell>
+                                    <TableCell className="max-w-[140px] truncate">
+                                        <Tooltip>
+                                            <TooltipTrigger asChild>
+                                                <span className="truncate block cursor-default">{approval.project_client}</span>
+                                            </TooltipTrigger>
+                                            <TooltipContent className="bg-slate-900 text-slate-50 border-slate-900 font-normal">
+                                                <p>{approval.project_client}</p>
+                                            </TooltipContent>
+                                        </Tooltip>
+                                    </TableCell>
+                                    <TableCell>V{approval.version_number}</TableCell>
+                                    <TableCell className="text-right font-bold whitespace-nowrap">
+                                        {computedTotals[approval.id] !== undefined
+                                            ? `₹${computedTotals[approval.id].toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+                                            : approval.project_value
+                                                ? <span className="text-slate-400">₹{Number(approval.project_value).toLocaleString(undefined, { minimumFractionDigits: 2 })} <Loader2 className="inline h-3 w-3 animate-spin ml-1" /></span>
+                                                : '—'}
+                                    </TableCell>
+                                    <TableCell>
+                                        <Badge className={
+                                            approval.status === 'approved' ? "bg-green-100 text-green-700" :
+                                                approval.status === 'rejected' ? "bg-red-100 text-red-700" :
+                                                    approval.status === 'edit_requested' ? "bg-indigo-100 text-indigo-700" :
+                                                        "bg-amber-100 text-amber-700"
+                                        }>
+                                            {approval.status.replace('_', ' ').toUpperCase()}
+                                        </Badge>
+                                    </TableCell>
+                                    <TableCell>{new Date(approval.updated_at || approval.created_at).toLocaleDateString()}</TableCell>
+                                    <TableCell>
+                                        <div className="flex items-center justify-center gap-2">
                                             <Button
                                                 size="sm"
-                                                variant="ghost"
-                                                onClick={() => handleClear(approval.id)}
-                                                disabled={!!actionLoading}
+                                                variant="outline"
+                                                onClick={() => handleOpenPreview(approval)}
+                                                title="View entire BOQ table"
                                             >
-                                                Clear
+                                                <Eye className="h-4 w-4 mr-1" /> View
                                             </Button>
-                                        )}
-                                    </div>
-                                </TableCell>
-                            </TableRow>
-                        ))}
-                    </TableBody>
-                </Table>
+                                            {(approval.status === 'submitted' || approval.status === 'pending_approval' || approval.status === 'edit_requested') && (
+                                                <>
+                                                    <Button
+                                                        size="sm"
+                                                        className="bg-green-600 hover:bg-green-700 h-8"
+                                                        onClick={() => handleApprove(approval.id, approval.status === 'edit_requested')}
+                                                        disabled={!!actionLoading}
+                                                    >
+                                                        <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Approve
+                                                    </Button>
+                                                    <Button
+                                                        size="sm"
+                                                        variant="destructive"
+                                                        className="h-8"
+                                                        onClick={() => handleReject(approval.id, approval.status === 'edit_requested')}
+                                                        disabled={!!actionLoading}
+                                                    >
+                                                        <XCircle className="h-3.5 w-3.5 mr-1" /> Reject
+                                                    </Button>
+                                                </>
+                                            )}
+                                            {approval.status === 'approved' && (
+                                                <Button
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    onClick={() => handleClear(approval.id)}
+                                                    disabled={!!actionLoading}
+                                                >
+                                                    Clear
+                                                </Button>
+                                            )}
+                                        </div>
+                                    </TableCell>
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </TooltipProvider>
             </div>
         );
     };
@@ -581,33 +650,78 @@ export default function BoqApprovals() {
                                 <p className="mt-4 text-muted-foreground">Loading approval requests...</p>
                             </div>
                         ) : (
-                            <Tabs defaultValue="pending" className="w-full">
-                                <TabsList className="mb-6">
-                                    <TabsTrigger value="pending">Pending ({pendingApprovals.length + editRequests.length})</TabsTrigger>
-                                    <TabsTrigger value="history">Recently Approved ({approvedHistory.length})</TabsTrigger>
-                                </TabsList>
-                                <TabsContent value="pending">
-                                    {renderTable(editRequests, "Edit Requests")}
-                                    {renderTable(pendingApprovals, "Pending BOQ Approvals")}
-                                    {pendingApprovals.length === 0 && editRequests.length === 0 && (
-                                        <div className="text-center py-12 border-2 border-dashed rounded-lg bg-slate-50">
-                                            <FileText className="h-12 w-12 mx-auto text-slate-300 mb-4" />
-                                            <h3 className="text-lg font-medium text-slate-600">No pending approvals</h3>
-                                            <p className="text-muted-foreground">Everything is up to date.</p>
+                            <>
+                                <div className="mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 w-full">
+                                    <div className="flex items-center gap-3 w-full">
+                                        <Input
+                                            placeholder="Search by project, client, type, or status..."
+                                            value={searchQuery}
+                                            onChange={(e) => setSearchQuery(e.target.value)}
+                                            className="flex-1 bg-white border-slate-200 min-w-[200px]"
+                                        />
+                                        <Select value={sortOrder} onValueChange={(v) => setSortOrder(v as "newest" | "oldest")}>
+                                            <SelectTrigger className="w-[150px] bg-white border-slate-200">
+                                                <SelectValue placeholder="Sort by" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="newest">Newest First</SelectItem>
+                                                <SelectItem value="oldest">Oldest First</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as "all" | "pending" | "approved" | "rejected")}>
+                                            <SelectTrigger className="w-[150px] bg-white border-slate-200">
+                                                <SelectValue placeholder="Status" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="all">All Status</SelectItem>
+                                                <SelectItem value="pending">Pending</SelectItem>
+                                                <SelectItem value="approved">Approved</SelectItem>
+                                                <SelectItem value="rejected">Rejected</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                        <div className="flex items-center gap-2">
+                                            <Input
+                                                type="date"
+                                                value={dateFilter}
+                                                onChange={(e) => setDateFilter(e.target.value)}
+                                                className="w-[160px] bg-white border-slate-200"
+                                            />
+                                            {dateFilter && (
+                                                <Button variant="ghost" size="sm" onClick={() => setDateFilter("")} className="h-9 px-2 text-muted-foreground">
+                                                    Clear
+                                                </Button>
+                                            )}
                                         </div>
-                                    )}
-                                </TabsContent>
-                                <TabsContent value="history">
-                                    {renderTable(approvedHistory, "Completed Approvals")}
-                                    {approvedHistory.length === 0 && (
-                                        <div className="text-center py-12 border-2 border-dashed rounded-lg bg-slate-50">
-                                            <CheckCircle2 className="h-12 w-12 mx-auto text-slate-300 mb-4" />
-                                            <h3 className="text-lg font-medium text-slate-600">No approved records</h3>
-                                            <p className="text-muted-foreground">Once you approve a BOQ, it will show up here.</p>
-                                        </div>
-                                    )}
-                                </TabsContent>
-                            </Tabs>
+                                    </div>
+                                </div>
+                                <Tabs defaultValue="pending" className="w-full">
+                                    <TabsList className="mb-6">
+                                        <TabsTrigger value="pending">Pending ({pendingApprovals.length + editRequests.length})</TabsTrigger>
+                                        <TabsTrigger value="history">Recently Approved ({approvedHistory.length})</TabsTrigger>
+                                    </TabsList>
+                                    <TabsContent value="pending">
+                                        {renderTable(editRequests, "Edit Requests")}
+                                        {renderTable(pendingApprovals, "Pending BOQ Approvals")}
+                                        {pendingApprovals.length === 0 && editRequests.length === 0 && (
+                                            <div className="text-center py-12 border-2 border-dashed rounded-lg bg-slate-50">
+                                                <FileText className="h-12 w-12 mx-auto text-slate-300 mb-4" />
+                                                <h3 className="text-lg font-medium text-slate-600">No pending approvals</h3>
+                                                <p className="text-muted-foreground">Everything is up to date.</p>
+                                            </div>
+                                        )}
+                                    </TabsContent>
+                                    <TabsContent value="history">
+                                        {renderTable(approvedHistory, "Completed Approvals")}
+                                        {approvedHistory.length === 0 && (
+                                            <div className="text-center py-12 border-2 border-dashed rounded-lg bg-slate-50">
+                                                <CheckCircle2 className="h-12 w-12 mx-auto text-slate-300 mb-4" />
+                                                <h3 className="text-lg font-medium text-slate-600">No approved records</h3>
+                                                <p className="text-muted-foreground">Once you approve a BOQ, it will show up here.</p>
+                                            </div>
+                                        )}
+                                    </TabsContent>
+                                </Tabs>
+                            </>
                         )}
                     </CardContent>
 

@@ -21,6 +21,7 @@ import {
   XCircle,
   Loader2,
   Package,
+  RefreshCw,
 } from "lucide-react";
 
 interface MaterialSubmission {
@@ -153,7 +154,12 @@ export default function MaterialSubmissionApproval() {
     }
   };
 
-  const { data: submissions = [], isLoading: loading } = useQuery({
+  const {
+    data: submissions = [],
+    isLoading: loading,
+    isFetching: refreshing,
+    refetch: refetchSubmissions,
+  } = useQuery({
     queryKey: ["pending-material-submissions"],
     queryFn: async () => {
       const token = localStorage.getItem("authToken");
@@ -168,7 +174,15 @@ export default function MaterialSubmissionApproval() {
       const data = await response.json();
       return data.submissions.map((s: any) => s.submission) || [];
     },
-    staleTime: 1000 * 60 * 5, // 5 minutes
+    // Always treat this list as stale so newly submitted materials show up
+    // as soon as the page is opened/revisited, instead of waiting out a
+    // 5 minute cache window before a refetch is triggered.
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    // Also poll in the background every 30s while this page stays open,
+    // so pending submissions appear without the admin needing to refresh.
+    refetchInterval: 30000,
   });
 
   const handleApprove = async (submissionId: string) => {
@@ -258,11 +272,27 @@ export default function MaterialSubmissionApproval() {
 
   return (
     <div className="w-full p-6">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold mb-2">Material Submission Approvals</h1>
-        <p className="text-gray-600">
-          Review and approve supplier material submissions
-        </p>
+      <div className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold mb-2">Material Submission Approvals</h1>
+          <p className="text-gray-600">
+            Review and approve supplier material submissions
+          </p>
+        </div>
+        <Button
+          onClick={() => refetchSubmissions()}
+          disabled={refreshing}
+          variant="outline"
+          size="sm"
+          className="gap-2 shrink-0"
+        >
+          {refreshing ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <RefreshCw className="w-4 h-4" />
+          )}
+          Refresh
+        </Button>
       </div>
 
       {loading ? (

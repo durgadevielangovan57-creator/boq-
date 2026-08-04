@@ -72,6 +72,7 @@ import {
   Diamond,
   ChevronRight,
   FileDown,
+  RefreshCw,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { postJSON, apiFetch } from "@/lib/api";
@@ -2222,6 +2223,21 @@ export default function AdminDashboard() {
     setActiveTab(computeTab());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loc]);
+
+  // The material approval requests list (materialApprovalRequests / materialRequests)
+  // is only loaded once when the app/data provider first mounts (see store.tsx),
+  // so newly submitted materials from suppliers never show up here until a full
+  // page reload. Re-fetch it whenever the admin opens the Material Approvals tab,
+  // and keep polling while they stay on it, so it stays up to date on its own.
+  useEffect(() => {
+    if (activeTab !== "material-approvals") return;
+    refreshPendingApprovals();
+    const intervalId = setInterval(() => {
+      refreshPendingApprovals();
+    }, 15000);
+    return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   // Also listen to history changes (pushState/replaceState/popstate) so query updates update the tab
   useEffect(() => {
@@ -4646,6 +4662,15 @@ export default function AdminDashboard() {
                             Review and approve/reject new material submissions
                           </CardDescription>
                         </div>
+                        <Button
+                          onClick={() => refreshPendingApprovals()}
+                          variant="outline"
+                          size="sm"
+                          className="gap-2 shrink-0"
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          Refresh
+                        </Button>
                         {canApproveReject &&
                           materialRequests.filter((r: any) => r.status === "pending").length > 0 && (
                             <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
