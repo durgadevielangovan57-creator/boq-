@@ -9,10 +9,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, Gavel, Database, FileText, Settings, Users, Link, Trash2, LayoutTemplate } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import apiFetch from "@/lib/api";
 import { TenderFormsDialog } from "@/components/admin/TenderFormsDialog";
+import { FormRenderer } from "@/components/formbuilder/FormRenderer";
+import { filterSchemaForAdmin, FormSchema } from "@/lib/formSchema";
 import "../tenders-glass.css";
 
 function InvitationsPanel() {
@@ -382,10 +385,47 @@ function TendersListPanel({ onCreate, onEdit, refreshKey }: { onCreate: () => vo
     }
   };
 
+  const copyLink = async (tender: any) => {
+    try {
+      const res = await apiFetch(`/api/fb/tenders/${tender.id}/open-link`, { method: "POST" });
+      if (!res.ok) throw new Error();
+      const { token } = await res.json();
+      const link = `${window.location.origin}/t/open/${token}`;
+      // navigator.clipboard requires HTTPS; fall back to execCommand for HTTP
+      try {
+        await navigator.clipboard.writeText(link);
+      } catch {
+        const ta = document.createElement("textarea");
+        ta.value = link;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      toast({ title: "Link copied", description: "Share it with any vendor — they'll fill the attached form and submit, no login needed." });
+    } catch {
+      toast({ title: "Error", description: "Failed to create/copy link", variant: "destructive" });
+    }
+  };
+
   const openExtend = (tender: any) => {
     setSelectedTender(tender);
     setNewEndDate(tender.end_date ? new Date(tender.end_date).toISOString().slice(0, 16) : "");
     setExtendOpen(true);
+  };
+
+  const handleDelete = async (tender: any) => {
+    if (!confirm(`Are you sure you want to delete "${tender.title}" (${tender.tender_number})? This cannot be undone.`)) return;
+    try {
+      const res = await apiFetch(`/api/et/admin/tenders/${tender.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete tender");
+      toast({ title: "Success", description: "Tender deleted." });
+      setLocalRefresh(prev => prev + 1);
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message || "Failed to delete tender", variant: "destructive" });
+    }
   };
 
   const handleExtend = async () => {
@@ -452,12 +492,24 @@ function TendersListPanel({ onCreate, onEdit, refreshKey }: { onCreate: () => vo
                     <Button variant="outline" size="sm" onClick={() => { setFormsTender(tender); setFormsOpen(true); }}>
                       <LayoutTemplate className="h-3.5 w-3.5 mr-1" /> Forms
                     </Button>
+                    <Button variant="outline" size="sm" onClick={() => copyLink(tender)}>
+                      <Link className="h-3.5 w-3.5 mr-1" /> Copy Link
+                    </Button>
                     {!tender.is_published && tender.status !== 'Closed' && (
                       <Button variant="default" size="sm" onClick={() => openPublish(tender)}>Publish</Button>
                     )}
                     {tender.is_published && (
                       <Button variant="secondary" size="sm" onClick={() => openExtend(tender)}>Extend</Button>
                     )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleDelete(tender)}
+                      className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                      title="Delete tender"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))
@@ -582,6 +634,44 @@ export default function AdminTenders() {
   const [clientInfoDetails, setClientInfoDetails] = useState("");
   const [documents, setDocuments] = useState<{ name: string, fileType: string, url: string }[]>([]);
 
+  // Vendor Form selection (choose a saved Form template to attach, or "Default" for none)
+  const [formTemplates, setFormTemplates] = useState<any[]>([]);
+  const [formTemplateId, setFormTemplateId] = useState<string>("__default__");
+  const [templateSchema, setTemplateSchema] = useState<FormSchema | null>(null);
+  const [adminFormData, setAdminFormData] = useState<Record<string, any>>({});
+  const [loadingTemplate, setLoadingTemplate] = useState(false);
+
+  useEffect(() => {
+    if (createOpen) {
+      apiFetch("/api/fb/templates?category=FORM")
+        .then(res => res.json())
+        .then(d => setFormTemplates(d.templates || []))
+        .catch(err => console.error(err));
+    }
+  }, [createOpen]);
+
+  // When a saved form is picked, pull its full schema so we can show the admin's
+  // own fields (the ones NOT marked "Visible to Vendor") right here to fill in.
+  useEffect(() => {
+    if (formTemplateId === "__default__") {
+      setTemplateSchema(null);
+      setAdminFormData({});
+      return;
+    }
+    setLoadingTemplate(true);
+    apiFetch(`/api/fb/templates/${formTemplateId}`)
+      .then(res => res.json())
+      .then(d => {
+        setTemplateSchema(d.template?.schema || { sections: [] });
+        setAdminFormData({});
+      })
+      .catch(err => console.error(err))
+      .finally(() => setLoadingTemplate(false));
+  }, [formTemplateId]);
+
+  const adminSchema = templateSchema ? filterSchemaForAdmin(templateSchema) : null;
+  const isDefaultForm = editingTenderId ? true : formTemplateId === "__default__";
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
     const newDocs = Array.from(e.target.files).map(f => {
@@ -628,6 +718,9 @@ export default function AdminTenders() {
     setClientName(tender.client_name || "");
     setClientInfoDetails(tender.client_info?.details || "");
     setDocuments([]); // we won't load existing docs into this simple array for now
+    setFormTemplateId("__default__"); // manage attached forms for existing tenders via the "Forms" button
+    setTemplateSchema(null);
+    setAdminFormData({});
     setCreateOpen(true);
   };
 
@@ -649,6 +742,9 @@ export default function AdminTenders() {
     setClientName("");
     setClientInfoDetails("");
     setDocuments([]);
+    setFormTemplateId("__default__");
+    setTemplateSchema(null);
+    setAdminFormData({});
     setCreateOpen(true);
   };
 
@@ -687,6 +783,23 @@ export default function AdminTenders() {
       });
 
       if (response.ok) {
+        const savedTender = await response.json().catch(() => null);
+
+        // If a saved Form template was chosen (anything other than "Default"), attach it
+        // to the newly created tender so it's ready to fill immediately.
+        if (!isEdit && formTemplateId !== "__default__" && savedTender?.id) {
+          try {
+            await apiFetch(`/api/fb/tenders/${savedTender.id}/forms`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ templateId: formTemplateId, visibleToVendor: true, adminData: adminFormData }),
+            });
+          } catch (err) {
+            console.error("Failed to attach form template", err);
+            toast({ title: "Tender created, but the form couldn't be attached", description: "Attach it from the Forms button.", variant: "destructive" });
+          }
+        }
+
         toast({ title: "Success", description: `Tender ${isEdit ? 'updated' : 'created'} successfully.` });
         setCreateOpen(false);
         setEditingTenderId(null);
@@ -707,6 +820,9 @@ export default function AdminTenders() {
         setClientName("");
         setClientInfoDetails("");
         setDocuments([]);
+        setFormTemplateId("__default__");
+        setTemplateSchema(null);
+        setAdminFormData({});
         setRefreshKey(prev => prev + 1); // trigger list refresh
       } else {
         toast({ title: "Error", description: "Failed to create tender.", variant: "destructive" });
@@ -754,119 +870,162 @@ export default function AdminTenders() {
               <Label>Tender Title / Project Name *</Label>
               <Input placeholder="e.g. Phase 2 Civil Works" value={title} onChange={e => setTitle(e.target.value)} />
             </div>
-            <div className="col-span-2 space-y-1">
-              <Label>Detailed Description</Label>
-              <Textarea placeholder="Scope of work..." value={description} onChange={e => setDescription(e.target.value)} />
-            </div>
-            <div className="space-y-1">
-              <Label>Category</Label>
-              <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background" value={category} onChange={e => setCategory(e.target.value)}>
-                {projectCategories.length === 0 ? (
-                  <option value="">No categories defined</option>
-                ) : (
-                  projectCategories.map((c) => (
-                    <option key={c.id} value={c.value}>{c.value}</option>
-                  ))
-                )}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <Label>Estimated Budget</Label>
-              <Input type="number" placeholder="0.00" value={estimatedBudget} onChange={e => setEstimatedBudget(e.target.value)} />
-            </div>
-            <div className="col-span-2 border rounded-md p-4 space-y-4 mt-2">
-              <h4 className="font-semibold text-sm">Quotation Submission Window</h4>
-              <p className="text-xs text-muted-foreground">Vendors can only submit quotes during this time window. Outside this window, they can only save drafts.</p>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <Label>Submission Start Date & Time</Label>
-                  <Input type="datetime-local" value={submissionStart} onChange={e => setSubmissionStart(e.target.value)} />
-                </div>
-                <div className="space-y-1">
-                  <Label>Submission End Date & Time (Deadline) *</Label>
-                  <Input type="datetime-local" value={submissionDeadline} onChange={e => setSubmissionDeadline(e.target.value)} />
-                </div>
-              </div>
-            </div>
-            <div className="space-y-1">
-              <Label>Visibility</Label>
-              <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background" value={visibility} onChange={e => setVisibility(e.target.value)}>
-                <option value="Public">Public</option>
-                <option value="Private">Private (Invited Only)</option>
-              </select>
-            </div>
 
-            {/* Location Details */}
-            <div className="col-span-2 border rounded-md p-4 space-y-4 mt-2">
-              <h4 className="font-semibold text-sm">Location Details</h4>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <Label>Project Location</Label>
-                  <Input placeholder="City / Area" value={location} onChange={e => setLocation(e.target.value)} />
-                </div>
-                <div className="space-y-1">
-                  <Label>Address</Label>
-                  <Input placeholder="Detailed Address" value={address} onChange={e => setAddress(e.target.value)} />
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-1">
-              <Label>Tender Start Date & Time</Label>
-              <Input type="datetime-local" value={startDate} onChange={e => setStartDate(e.target.value)} />
-            </div>
-            <div className="space-y-1">
-              <Label>Tender End Date & Time</Label>
-              <Input type="datetime-local" value={endDate} onChange={e => setEndDate(e.target.value)} />
-            </div>
-
-            {/* Attachments Section */}
-            <div className="col-span-2 border rounded-md p-4 space-y-4 mt-2">
-              <h4 className="font-semibold text-sm">Tender Attachments</h4>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Upload Documents</Label>
-                  <Input type="file" multiple onChange={handleFileUpload} />
-                </div>
-                <div className="space-y-2">
-                  <Label>Upload Photos</Label>
-                  <Input type="file" accept="image/*" multiple onChange={handleFileUpload} />
-                </div>
-              </div>
-
-              {documents.length > 0 && (
-                <div className="mt-4">
-                  <Label className="mb-2 block">Attached Files</Label>
-                  <div className="space-y-2 max-h-40 overflow-y-auto pr-2">
-                    {documents.map((doc, idx) => (
-                      <div key={idx} className="flex items-center justify-between bg-slate-50 p-2 rounded border text-sm">
-                        <span className="truncate">{doc.name}</span>
-                      </div>
+            {!editingTenderId && (
+              <div className="col-span-2 border rounded-md p-4 space-y-2 mt-2">
+                <h4 className="font-semibold text-sm">Vendor Form</h4>
+                <p className="text-xs text-muted-foreground">Choose what vendors fill in when they submit this tender — the standard default fields, or one of your saved Form templates.</p>
+                <Select value={formTemplateId} onValueChange={setFormTemplateId}>
+                  <SelectTrigger><SelectValue placeholder="Choose a form..." /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__default__">Default (standard quotation fields only)</SelectItem>
+                    {formTemplates.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                     ))}
-                  </div>
-                </div>
-              )}
-            </div>
+                  </SelectContent>
+                </Select>
+                {formTemplates.length === 0 && (
+                  <p className="text-xs text-muted-foreground">No saved form templates yet — create one from Form Builder first.</p>
+                )}
 
-            {/* Client Info Toggle */}
-            <div className="col-span-2 border rounded-md p-4 space-y-4 mt-2">
-              <div className="flex items-center justify-between">
-                <h4 className="font-semibold text-sm">Client Info</h4>
-                <Switch checked={clientInfoEnabled} onCheckedChange={setClientInfoEnabled} />
-              </div>
-              {clientInfoEnabled && (
-                <div className="grid grid-cols-2 gap-4 mt-4">
-                  <div className="col-span-2 space-y-1">
-                    <Label>Client Name</Label>
-                    <Input placeholder="Enter client name" value={clientName} onChange={e => setClientName(e.target.value)} />
+                {loadingTemplate && <p className="text-xs text-muted-foreground">Loading form...</p>}
+
+                {!loadingTemplate && adminSchema && adminSchema.sections.length > 0 && (
+                  <div className="border-t pt-4 mt-2 space-y-1">
+                    <p className="text-xs text-muted-foreground mb-2">
+                      Fill in your fields below. Any field marked "Visible to Vendor" in this form isn't shown here — the vendor fills that part when they submit.
+                    </p>
+                    <FormRenderer schema={adminSchema} data={adminFormData} onChange={setAdminFormData} />
                   </div>
-                  <div className="col-span-2 space-y-1">
-                    <Label>Client Details</Label>
-                    <Textarea placeholder="Additional client information..." value={clientInfoDetails} onChange={e => setClientInfoDetails(e.target.value)} />
+                )}
+
+                {!loadingTemplate && templateSchema && adminSchema && adminSchema.sections.length === 0 && (
+                  <p className="text-xs text-muted-foreground">Every field in this form is marked "Visible to Vendor" — nothing here for you to fill; the vendor will fill it all.</p>
+                )}
+              </div>
+            )}
+
+            {/* Everything below is the standard tender setup. It's hidden once a custom
+                Form is chosen above, since that form replaces these fields entirely -
+                only the Title (required) and the form's own fields are needed. */}
+            {isDefaultForm && (
+              <>
+                <div className="col-span-2 space-y-1">
+                  <Label>Detailed Description</Label>
+                  <Textarea placeholder="Scope of work..." value={description} onChange={e => setDescription(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Category</Label>
+                  <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background" value={category} onChange={e => setCategory(e.target.value)}>
+                    {projectCategories.length === 0 ? (
+                      <option value="">No categories defined</option>
+                    ) : (
+                      projectCategories.map((c) => (
+                        <option key={c.id} value={c.value}>{c.value}</option>
+                      ))
+                    )}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label>Estimated Budget</Label>
+                  <Input type="number" placeholder="0.00" value={estimatedBudget} onChange={e => setEstimatedBudget(e.target.value)} />
+                </div>
+
+                <div className="col-span-2 border rounded-md p-4 space-y-4 mt-2">
+                  <h4 className="font-semibold text-sm">Quotation Submission Window</h4>
+                  <p className="text-xs text-muted-foreground">Vendors can only submit quotes during this time window. Outside this window, they can only save drafts.</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label>Submission Start Date & Time</Label>
+                      <Input type="datetime-local" value={submissionStart} onChange={e => setSubmissionStart(e.target.value)} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Submission End Date & Time (Deadline) *</Label>
+                      <Input type="datetime-local" value={submissionDeadline} onChange={e => setSubmissionDeadline(e.target.value)} />
+                    </div>
                   </div>
                 </div>
-              )}
-            </div>
+                <div className="space-y-1">
+                  <Label>Visibility</Label>
+                  <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background" value={visibility} onChange={e => setVisibility(e.target.value)}>
+                    <option value="Public">Public</option>
+                    <option value="Private">Private (Invited Only)</option>
+                  </select>
+                </div>
+
+                {/* Location Details */}
+                <div className="col-span-2 border rounded-md p-4 space-y-4 mt-2">
+                  <h4 className="font-semibold text-sm">Location Details</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <Label>Project Location</Label>
+                      <Input placeholder="City / Area" value={location} onChange={e => setLocation(e.target.value)} />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Address</Label>
+                      <Input placeholder="Detailed Address" value={address} onChange={e => setAddress(e.target.value)} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <Label>Tender Start Date & Time</Label>
+                  <Input type="datetime-local" value={startDate} onChange={e => setStartDate(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <Label>Tender End Date & Time</Label>
+                  <Input type="datetime-local" value={endDate} onChange={e => setEndDate(e.target.value)} />
+                </div>
+
+                {/* Attachments Section */}
+                <div className="col-span-2 border rounded-md p-4 space-y-4 mt-2">
+                  <h4 className="font-semibold text-sm">Tender Attachments</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Upload Documents</Label>
+                      <Input type="file" multiple onChange={handleFileUpload} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Upload Photos</Label>
+                      <Input type="file" accept="image/*" multiple onChange={handleFileUpload} />
+                    </div>
+                  </div>
+
+                  {documents.length > 0 && (
+                    <div className="mt-4">
+                      <Label className="mb-2 block">Attached Files</Label>
+                      <div className="space-y-2 max-h-40 overflow-y-auto pr-2">
+                        {documents.map((doc, idx) => (
+                          <div key={idx} className="flex items-center justify-between bg-slate-50 p-2 rounded border text-sm">
+                            <span className="truncate">{doc.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Client Info Toggle */}
+                <div className="col-span-2 border rounded-md p-4 space-y-4 mt-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-semibold text-sm">Client Info</h4>
+                    <Switch checked={clientInfoEnabled} onCheckedChange={setClientInfoEnabled} />
+                  </div>
+                  {clientInfoEnabled && (
+                    <div className="grid grid-cols-2 gap-4 mt-4">
+                      <div className="col-span-2 space-y-1">
+                        <Label>Client Name</Label>
+                        <Input placeholder="Enter client name" value={clientName} onChange={e => setClientName(e.target.value)} />
+                      </div>
+                      <div className="col-span-2 space-y-1">
+                        <Label>Client Details</Label>
+                        <Textarea placeholder="Additional client information..." value={clientInfoDetails} onChange={e => setClientInfoDetails(e.target.value)} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
 
           </div>
           <DialogFooter className="gap-2">

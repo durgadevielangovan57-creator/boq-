@@ -90,3 +90,24 @@ export function emptyGridSection(): GridSection {
 export function emptySchema(): FormSchema {
     return { sections: [] };
 }
+
+// Splits a schema into the piece the Admin fills at tender-creation time
+// (fields marked "Visible to Vendor" = false) and the piece the Vendor fills
+// later (fields marked "Visible to Vendor" = true, the default).
+// Sections with nothing left after filtering are dropped entirely.
+export function filterSchemaForAdmin(schema: FormSchema): FormSchema {
+    const sections = Array.isArray(schema?.sections) ? schema.sections : [];
+    const filtered = sections
+        .map((s: Section) => {
+            if (s.type === "grid") {
+                const columns = (s.columns || []).filter((c) => c.visibleToVendor === false);
+                if (columns.length === 0) return null;
+                return { ...s, columns };
+            }
+            const fields = (s.fields || []).filter((f) => f.visibleToVendor === false);
+            if (fields.length === 0) return null;
+            return { ...s, fields };
+        })
+        .filter(Boolean) as Section[];
+    return { sections: filtered };
+}

@@ -140,6 +140,29 @@ async function ensureFormBuilderTables(): Promise<void> {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_et_fb_quote_items_quote ON et_fb_quote_items(quote_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_et_fb_quote_resp_quote ON et_fb_quote_responses(quote_id)`);
 
+    await pool.query(`ALTER TABLE et_fb_tender_links ADD COLUMN IF NOT EXISTS admin_data JSONB DEFAULT '{}'`);
+
+    // 8. Generic "Copy Link" for a Tender (Google-Forms style, no vendor login required).
+    //    Mirrors the et_fb_quotes.open_token pattern above, just scoped to a Tender instead.
+    await pool.query(`ALTER TABLE et_tenders ADD COLUMN IF NOT EXISTS open_token VARCHAR(64) UNIQUE`);
+
+    // 9. Whoever fills a tender via the public open link isn't a logged-in vendor, so we
+    //    capture their company/contact details here instead of relying on a users row.
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS et_fb_open_respondents (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tender_id UUID NOT NULL,
+      vendor_id VARCHAR(64) NOT NULL UNIQUE, -- synthetic id, e.g. "open-abcd1234"
+      company_name VARCHAR(255) NOT NULL,
+      contact_name VARCHAR(255),
+      email VARCHAR(255),
+      phone VARCHAR(50),
+      submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_et_fb_open_respondents_tender ON et_fb_open_respondents(tender_id)`);
+
     console.log("[form-builder-module] Tables ensured.");
 }
 
@@ -281,7 +304,7 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
     // Admin: attach a template to a tender (creates a snapshot, so future template edits don't retroactively change a live tender)
     app.post("/api/fb/tenders/:tenderId/forms", authMiddleware, requireRole(...ADMIN_ROLES), async (req: Request, res: Response) => {
         try {
-            const { templateId, name, category, schema, visibleToVendor } = req.body;
+            const { templateId, name, category, schema, visibleToVendor, adminData } = req.body;
             let finalSchema = schema;
             let finalCategory = category || "FORM";
             let finalName = name;
@@ -299,9 +322,9 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
             }
 
             const result = await query(
-                `INSERT INTO et_fb_tender_links (tender_id, template_id, category, name, schema, visible_to_vendor, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-                [req.params.tenderId, templateId || null, finalCategory, finalName, JSON.stringify(finalSchema), visibleToVendor !== false, req.user?.id || null]
+                `INSERT INTO et_fb_tender_links (tender_id, template_id, category, name, schema, visible_to_vendor, admin_data, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+                [req.params.tenderId, templateId || null, finalCategory, finalName, JSON.stringify(finalSchema), visibleToVendor !== false, JSON.stringify(adminData || {}), req.user?.id || null]
             );
             res.status(201).json({ form: result.rows[0] });
         } catch (err: any) {
@@ -875,6 +898,117 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
             await client.query("ROLLBACK");
             console.error("[fb public quote:open:respond]", err);
             res.status(500).json({ message: "Failed to submit quote" });
+        } finally {
+            client.release();
+        }
+    });
+
+    // ---------------------------------------------------------------
+    // TENDERS - Public, no-login "Copy Link" (mirrors the Quotes open-link flow)
+    // ---------------------------------------------------------------
+
+    // Admin: get (or create) the tender's generic no-login share link. Anyone with the
+    // link can view the tender and submit the Form(s) attached to it as their quotation -
+    // no vendor account required.
+    app.post("/api/fb/tenders/:tenderId/open-link", authMiddleware, requireRole(...ADMIN_ROLES), async (req: Request, res: Response) => {
+        try {
+            const existing = await query(`SELECT open_token FROM et_tenders WHERE id = $1`, [req.params.tenderId]);
+            if (!existing.rows[0]) return res.status(404).json({ message: "Tender not found" });
+            let token = existing.rows[0].open_token;
+            if (!token) {
+                token = crypto.randomBytes(20).toString("hex");
+                await query(`UPDATE et_tenders SET open_token = $1 WHERE id = $2`, [token, req.params.tenderId]);
+            }
+            res.json({ token });
+        } catch (err: any) {
+            console.error("[fb tenders:open-link]", err);
+            res.status(500).json({ message: "Failed to create link" });
+        }
+    });
+
+    // Public: whoever opens {app}/t/open/:token sees the tender + any Forms attached to
+    // it that are marked visible-to-vendor. No login needed.
+    app.get("/api/fb/public/tenders/:token", async (req: Request, res: Response) => {
+        try {
+            const tenderRes = await query(
+                `SELECT id, tender_number, title, description, category_name, location, address,
+                estimated_budget, status, is_published, submission_start, submission_deadline, end_date
+         FROM et_tenders WHERE open_token = $1`,
+                [req.params.token]
+            );
+            const tender = tenderRes.rows[0];
+            if (!tender) return res.status(404).json({ message: "This link is invalid or has expired." });
+
+            const docsRes = await query(
+                `SELECT id, name, file_type, uploaded_at FROM et_tender_documents WHERE tender_id = $1 AND share_with_vendor = true ORDER BY uploaded_at ASC`,
+                [tender.id]
+            );
+
+            const linksRes = await query(
+                `SELECT id, name, category, schema FROM et_fb_tender_links WHERE tender_id = $1 AND category = 'FORM' AND visible_to_vendor = true ORDER BY created_at ASC`,
+                [tender.id]
+            );
+            const forms = linksRes.rows.map((r: any) => ({ ...r, schema: filterSchemaForVendor(r.schema) }));
+
+            res.json({ tender, documents: docsRes.rows, forms });
+        } catch (err: any) {
+            console.error("[fb public tender:get]", err);
+            res.status(500).json({ message: "Failed to load tender" });
+        }
+    });
+
+    // Public: submit the filled-in form(s) via the open link - no login required.
+    // Creates a synthetic vendor id (like the Quotes open-link flow) and saves one
+    // et_fb_submissions row per attached Form, plus the company/contact details.
+    app.post("/api/fb/public/tenders/:token/submit", async (req: Request, res: Response) => {
+        const client = await pool.connect();
+        try {
+            const { companyName, contactName, email, phone, forms } = req.body;
+            if (!companyName || !String(companyName).trim()) {
+                return res.status(400).json({ message: "Company / Firm name is required" });
+            }
+            if (!forms || typeof forms !== "object") {
+                return res.status(400).json({ message: "forms is required" });
+            }
+
+            const tenderRes = await client.query(`SELECT id FROM et_tenders WHERE open_token = $1`, [req.params.token]);
+            const tender = tenderRes.rows[0];
+            if (!tender) return res.status(404).json({ message: "This link is invalid or has expired." });
+
+            // Only allow responses against forms that are actually attached + visible for this tender.
+            const linksRes = await client.query(
+                `SELECT id FROM et_fb_tender_links WHERE tender_id = $1 AND category = 'FORM' AND visible_to_vendor = true`,
+                [tender.id]
+            );
+            const validLinkIds = new Set(linksRes.rows.map((r: any) => r.id));
+
+            const vendorId = `open-${crypto.randomBytes(10).toString("hex")}`;
+
+            await client.query("BEGIN");
+
+            await client.query(
+                `INSERT INTO et_fb_open_respondents (tender_id, vendor_id, company_name, contact_name, email, phone)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+                [tender.id, vendorId, String(companyName).trim(), contactName || null, email || null, phone || null]
+            );
+
+            for (const [linkId, data] of Object.entries(forms)) {
+                if (!validLinkIds.has(linkId)) continue;
+                await client.query(
+                    `INSERT INTO et_fb_submissions (tender_link_id, vendor_id, data, status, submitted_at)
+           VALUES ($1,$2,$3,'Submitted', now())
+           ON CONFLICT (tender_link_id, vendor_id)
+           DO UPDATE SET data = $3, status = 'Submitted', submitted_at = now(), updated_at = now()`,
+                    [linkId, vendorId, JSON.stringify(data || {})]
+                );
+            }
+
+            await client.query("COMMIT");
+            res.json({ message: "Tender submitted successfully", vendorId });
+        } catch (err: any) {
+            await client.query("ROLLBACK");
+            console.error("[fb public tender:submit]", err);
+            res.status(500).json({ message: "Failed to submit tender" });
         } finally {
             client.release();
         }

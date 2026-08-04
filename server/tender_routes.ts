@@ -680,6 +680,41 @@ export async function registerTenderRoutes(app: Express): Promise<void> {
     }
   });
 
+  // DELETE /api/et/admin/tenders/:id
+  app.delete("/api/et/admin/tenders/:id", authMiddleware, requireRole(...ADMIN_ROLES), async (req: Request, res: Response) => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { id } = req.params;
+
+      const existing = await client.query(`SELECT id, title, tender_number FROM et_tenders WHERE id = $1`, [id]);
+      if (existing.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ message: "Tender not found" });
+      }
+      const tender = existing.rows[0];
+
+      // Clean up tables that reference tender_id without an ON DELETE CASCADE constraint.
+      // Everything else (timelines, settings, dynamic forms, documents, submissions,
+      // clarifications, invitations) cascades automatically via FK constraints.
+      await client.query(`DELETE FROM et_fb_open_respondents WHERE tender_id = $1`, [id]);
+      await client.query(`DELETE FROM et_fb_tender_links WHERE tender_id = $1`, [id]);
+
+      await client.query(`DELETE FROM et_tenders WHERE id = $1`, [id]);
+
+      await logAudit(req, 'DELETE_TENDER', `Deleted Tender ${tender.tender_number} - ${tender.title}`, id);
+
+      await client.query("COMMIT");
+      res.json({ message: "Tender deleted successfully" });
+    } catch (err: any) {
+      await client.query("ROLLBACK");
+      console.error("[tenders] delete error:", err);
+      res.status(500).json({ message: "Failed to delete tender" });
+    } finally {
+      client.release();
+    }
+  });
+
   /* ============================ VENDOR FACING ============================ */
 
   // GET /api/et/vendor/tenders - Fetch published tenders for vendors
