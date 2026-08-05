@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from "react";
+﻿import React, { useEffect, useState, useRef, useCallback } from "react";
 import { Reorder, useDragControls } from "framer-motion";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
@@ -128,6 +128,25 @@ const resolveSource = (src: string, ctx: SrcCtx): number => {
   if (src === "Override Total") return ctx.overrideTotal;
   if (ctx.rowCalc[src] !== undefined) return ctx.rowCalc[src];
   return parseFloat(ctx.customVals[src] || "0") || 0;
+};
+
+// Returns true only for the "Supply Rate" / "Labour Rate" pair, and only when
+// their combined percentage EXCEEDS 100% for this row (under 100% is not flagged).
+const isSupplyLabourExceeding = (itemCols: any[], colName: string): boolean => {
+  const normalizedTarget = (colName || "").trim().toLowerCase();
+  if (normalizedTarget !== "supply rate" && normalizedTarget !== "labour rate" && normalizedTarget !== "labor rate") {
+    return false;
+  }
+
+  const supplyCol = itemCols.find(c => (c.name || "").trim().toLowerCase() === "supply rate");
+  const labourCol = itemCols.find(c => {
+    const n = (c.name || "").trim().toLowerCase();
+    return n === "labour rate" || n === "labor rate";
+  });
+  if (!supplyCol || !labourCol) return false;
+
+  const sum = (Number(supplyCol.percentageValue) || 0) + (Number(labourCol.percentageValue) || 0);
+  return sum > 100.01; // strictly exceeds 100%, with a tiny tolerance for float rounding
 };
 
 const getItemMetrics = (td: any) => {
@@ -1507,7 +1526,7 @@ export default function FinalizeBoq() {
     });
 
     return { totals, totalValueSum, totalRateSum, totalQtySum, overrideTotalSum };
-  }, [filteredBoqItems, allCols, customColumns, customColumnValues, productQuantities, overrideRates]);
+  }, [filteredBoqItems, allCols, customColumns, customColumnValues, productQuantities, overrideRates, overrideTypes, globalOverrideType, globalOverrideValue, roundOff]);
 
 
   const handleColumnReorder = async (newOrder: typeof allCols) => {
@@ -2225,51 +2244,6 @@ export default function FinalizeBoq() {
   };
 
   const handleGlobalCalculation = async (colName: string, base: number, multiplier: number, baseSource: string = "manual", operator: string = "%", multiplierSource: string = "manual") => {
-    const oldSettings = globalColSettings[colName] || {};
-    const oldMultiplier = oldSettings.percentageValue || 0;
-    const deltaMultiplier = multiplier - oldMultiplier;
-
-    // Calculate future total
-    let futureTotal = 0;
-    boqItems.forEach(item => {
-      let td = item.table_data || {};
-      if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
-      const { itemRate, itemQty } = getItemMetrics(td);
-      const displayQty = productQuantities[item.id] !== undefined ? (parseFloat(productQuantities[item.id]) || 0) : itemQty;
-      const baseTotalValue = itemRate * displayQty;
-
-      let itemCols = [...(customColumns[item.id] || [])];
-      let colIdx = itemCols.findIndex(c => c.name === colName);
-      if (colIdx === -1) {
-        const globalCol = allCols.find(c => c.name === colName);
-        if (globalCol) itemCols.push({ ...globalCol });
-        else itemCols.push({ name: colName, isTotal: false });
-        colIdx = itemCols.length - 1;
-      }
-      const itemCol = itemCols[colIdx];
-      const currentRowMultiplier = itemCol?.percentageValue || oldMultiplier;
-      const newRowMultiplier = currentRowMultiplier + deltaMultiplier;
-
-      const oRateRaw = parseFloat((overrideRates[item.id] ?? globalOverrideValue) || "0") || 0;
-      const itemOverrideType = overrideTypes[item.id] ?? globalOverrideType ?? "value";
-      const effectiveOverrideRate = itemOverrideType === "percentage" ? (itemRate * oRateRaw / 100) : oRateRaw;
-      const srcCtx: SrcCtx = {
-        totalVal: baseTotalValue, rate: itemRate, qty: displayQty,
-        overrideRate: effectiveOverrideRate, overrideTotal: effectiveOverrideRate * displayQty,
-        rowCalc: {}, customVals: customColumnValues[item.id]?.[0] || {},
-      };
-      const rowBase = baseSource === "manual" ? base : resolveSource(baseSource, srcCtx);
-      const rowMultiplierVal = multiplierSource === "manual" ? newRowMultiplier : resolveSource(multiplierSource, srcCtx);
-      const calculated = applyOperator(rowBase, rowMultiplierVal, operator);
-
-      // This is a simplified check - we assume the rest of the row stays same.
-      // Accurate enough for a warning.
-      futureTotal += baseTotalValue; // Base value
-      // Plus calculated columns... (this is complex because columns depend on each other)
-      // For now, we use the easiest approximation: base value + the change in THIS column.
-      // But currentProjectValue is already reactive.
-    });
-
     // Better approach: Since currentProjectValue is reactive to state, 
     // but withBudgetCheck needs to know the FUTURE value before we update state.
     // We'll use a pragmatic approach: if the multiplier/item changes, we check if it increases.
@@ -2293,9 +2267,7 @@ export default function FinalizeBoq() {
         colIdx = itemCols.length - 1;
       }
 
-      const itemCol = itemCols[colIdx];
-      const currentRowMultiplier = itemCol?.percentageValue || oldMultiplier;
-      const newRowMultiplier = currentRowMultiplier + deltaMultiplier;
+      const newRowMultiplier = multiplier;
 
       let td = item.table_data || {};
       if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
@@ -3282,7 +3254,7 @@ export default function FinalizeBoq() {
             s + (it.qty || 0) * ((it.supply_rate || 0) + (it.install_rate || 0)), 0);
           _exRate = (currentStep11Items[0]?.qty ?? 0) > 0 ? _exTotal / (currentStep11Items[0]?.qty || 1) : _exTotal;
         }
-        const rateSqft = tableData.is_lump_sum === true ? _exTotal : _exRate;
+        const rateSqft = (tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls') ? _exTotal : _exRate;
         const totalVal = rateSqft * displayQty;
 
         const manualDesc = productDescriptions[boqItem.id] ?? (
@@ -3603,7 +3575,7 @@ export default function FinalizeBoq() {
             s + (it.qty || 0) * ((it.supply_rate || 0) + (it.install_rate || 0)), 0);
           _rateSqft = (currentStep11Items[0]?.qty ?? 0) > 0 ? _total / (currentStep11Items[0]?.qty || 1) : _total;
         }
-        const rateSqft = tableData.is_lump_sum === true ? _total : _rateSqft;
+        const rateSqft = (tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls') ? _total : _rateSqft;
         const totalVal = rateSqft * displayQty;
 
         const manualDesc = productDescriptions[boqItem.id] ?? (
@@ -4037,7 +4009,7 @@ export default function FinalizeBoq() {
     }, 0);
   };
 
-  const generatedBudget = calculateGeneratedBudget();
+  const generatedBudget = calculatedColumnTotals.totalValueSum;
   // Project Value is the total shown on this Finalize BOQ page
   const currentProjectValue = (() => {
     if (grandTotalColumn === "Total Value (₹)") return calculatedColumnTotals.totalValueSum;
@@ -5735,7 +5707,7 @@ export default function FinalizeBoq() {
                         }
 
                         // When Convert to LS: use grand total as rate, qty becomes 1
-                        const isLumpSum = tableData.is_lump_sum === true;
+                        const isLumpSum = tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls';
                         if (isLumpSum) {
                           rateSqft = total;
                         }
@@ -5934,9 +5906,7 @@ export default function FinalizeBoq() {
                                     <div className="text-[8px] text-blue-600 font-semibold text-center bg-blue-50 rounded px-1 py-0.5">
                                       {(() => {
                                         const pctVal = parseFloat((overrideRates[boqItem.id] ?? globalOverrideValue) || "0") || 0;
-                                        const displayQty = (tableData.is_lump_sum || productUnits[boqItem.id]?.toLowerCase() === 'ls') ? 1 : (productQuantities[boqItem.id] !== undefined ? parseFloat(productQuantities[boqItem.id]) || 0 : (tableData.targetRequiredQty !== undefined ? Number(tableData.targetRequiredQty) : Number(currentStep11Items[0]?.qty || 0)));
-                                        const systemTotal = rateSqft * displayQty;
-                                        const computedRate = systemTotal * pctVal / 100;
+                                        const computedRate = rateSqft * pctVal / 100;
                                         return `≈ ₹${roundOff ? Math.round(computedRate) : computedRate.toFixed(2)}`;
                                       })()}
                                     </div>
@@ -6058,7 +6028,10 @@ export default function FinalizeBoq() {
                                   return (
                                     <td
                                       key={`${col.name}-${idx}`}
-                                      className={`border-r px-2 py-1 relative group/cell align-middle text-[11px] min-w-[180px] ${getIsModified(boqItem.id, "columns", col.name) ? "bg-blue-50/40 text-blue-600 border-2 border-blue-100" : "bg-transparent"}`}
+                                      className={`border-r px-2 py-1 relative group/cell align-middle text-[11px] min-w-[180px] ${isSupplyLabourExceeding(customColumns[boqItem.id] || [], col.name)
+                                        ? "bg-red-200 text-red-900 border-2 border-red-400"
+                                        : getIsModified(boqItem.id, "columns", col.name) ? "bg-blue-50/40 text-blue-600 border-2 border-blue-100" : "bg-transparent"
+                                        }`}
                                       title={getIsModified(boqItem.id, "columns", col.name) ? "Modified from Template" : ""}
                                       onDoubleClick={() => {
                                         if (!isVersionSubmitted) {
