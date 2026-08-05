@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { Reorder, useDragControls } from "framer-motion";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
@@ -291,7 +291,7 @@ type Step11Item = {
   [key: string]: any;
 };
 
-type DraggableHeaderColProps = { col: any; idx: number; isVersionSubmitted: boolean; allCols: any[]; getExcelColumnName: (n: number) => string; handleGlobalCalculation: any; globalColSettings: any; handleHideColumn: any; boqItems: any[]; customColumns: any; customColumnValues: any; saveItemLayout: any; toast: any; setCustomColumns: any; setCustomColumnValues: any; openDeleteConfirm: (title: string, itemName: string, onConfirm: (action: "archive" | "trash") => void) => void; handleClearColumnFormula: (colName: string) => void; handleApplyColumnFormula: (colName: string) => void; startResize?: (colKey: string, e: React.MouseEvent) => void; autoFitColumn?: (colKey: string) => void; };
+type DraggableHeaderColProps = { col: any; idx: number; isVersionSubmitted: boolean; allCols: any[]; getExcelColumnName: (n: number) => string; handleGlobalCalculation: any; globalColSettings: any; handleHideColumn: any; boqItems: any[]; customColumns: any; customColumnValues: any; saveItemLayout: any; toast: any; setCustomColumns: any; setCustomColumnValues: any; openDeleteConfirm: (title: string, itemName: string, onConfirm: (action: "archive" | "trash") => void) => void; handleClearColumnFormula: (colName: string) => void; handleApplyColumnFormula: (colName: string) => void; startResize?: (colKey: string, e: React.MouseEvent) => void; autoFitColumn?: (colKey: string) => void; versionId?: string | null; };
 
 const DraggableHeaderCol = ({
   col,
@@ -314,9 +314,14 @@ const DraggableHeaderCol = ({
   handleClearColumnFormula,
   handleApplyColumnFormula,
   startResize,
-  autoFitColumn
+  autoFitColumn,
+  versionId
 }: DraggableHeaderColProps & { setGlobalColSettings: any }) => {
   const controls = useDragControls();
+  // Tracks the VAL % at the moment the field was focused, so we can log ONE
+  // Change Log entry on blur (the actual completed edit) instead of one per
+  // keystroke while the user is typing.
+  const globalValAtFocusRef = useRef<number | null>(null);
 
   const handleRenameColumn = async () => {
     const oldName = col.name;
@@ -541,7 +546,25 @@ const DraggableHeaderCol = ({
                     type="number"
                     className="w-8 focus:w-16 bg-white text-[8px] focus:text-[10px] font-bold text-gray-700 px-0.5 rounded border border-purple-200 focus:border-2 focus:border-purple-500 h-3.5 focus:h-5 text-right transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md outline-none"
                     value={globalColSettings[col.name]?.percentageValue || 0}
+                    onFocus={() => { globalValAtFocusRef.current = globalColSettings[col.name]?.percentageValue || 0; }}
                     onChange={(e) => handleGlobalCalculation(col.name, globalColSettings[col.name]?.baseValue || 0, parseFloat(e.target.value) || 0, globalColSettings[col.name]?.baseSource || ((col as any).isPercentage ? "Total Value (₹)" : "manual"), globalColSettings[col.name]?.operator || "%", "manual")}
+                    onBlur={(e) => {
+                      const oldVal = globalValAtFocusRef.current ?? 0;
+                      const newVal = parseFloat(e.target.value) || 0;
+                      if (versionId && oldVal !== newVal) {
+                        apiFetch(`/api/boq-versions/${versionId}/log-field-change`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            field: `${col.name} (VAL %)`,
+                            oldValue: oldVal,
+                            newValue: newVal,
+                            itemName: `Column: ${col.name}`,
+                          }),
+                        }).catch(() => { });
+                      }
+                      globalValAtFocusRef.current = null;
+                    }}
                     onWheel={(e) => e.currentTarget.blur()}
                   />
                 </div>
@@ -2147,7 +2170,7 @@ export default function FinalizeBoq() {
     });
   };
 
-  const saveItemLayout = async (boqItemId: string, updatedCols?: any[], updatedVals?: any, updatedDesc?: string, updatedQty?: string, updatedOverrideRate?: string, updatedUnit?: string, updatedHiddenPredefinedCols?: Record<string, boolean>, updatedOverrideType?: "value" | "percentage") => {
+  const saveItemLayout = async (boqItemId: string, updatedCols?: any[], updatedVals?: any, updatedDesc?: string, updatedQty?: string, updatedOverrideRate?: string, updatedUnit?: string, updatedHiddenPredefinedCols?: Record<string, boolean>, updatedOverrideType?: "value" | "percentage", changeInfo?: { field: string; oldValue: any; newValue: any } | Array<{ field: string; oldValue: any; newValue: any }>) => {
     try {
       const boqItem = boqItems.find(i => i.id === boqItemId);
       if (!boqItem) return;
@@ -2178,7 +2201,12 @@ export default function FinalizeBoq() {
       const resp = await apiFetch(`/api/boq-items/${boqItemId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ table_data: updatedTd }),
+        // change_log carries ONLY the field(s) the user explicitly edited in this
+        // call (e.g. typed a new Rate, Qty, Description, Unit, or custom column
+        // value). Bulk/automatic saves (global % recalculation, column
+        // add/remove/clone, etc.) don't pass this, so they never spam the
+        // Change Log — only real, single, human edits show up there.
+        body: JSON.stringify({ table_data: updatedTd, change_log: changeInfo }),
       });
 
       if (resp.ok) {
@@ -2247,6 +2275,33 @@ export default function FinalizeBoq() {
     // Better approach: Since currentProjectValue is reactive to state, 
     // but withBudgetCheck needs to know the FUTURE value before we update state.
     // We'll use a pragmatic approach: if the multiplier/item changes, we check if it increases.
+
+    if (activeVersionId) {
+      const oldSettings = globalColSettings[colName] || {};
+      const globalColDef = allCols.find(c => c.name === colName);
+      const oldBaseSource = oldSettings.baseSource || ((globalColDef as any)?.isPercentage ? "Total Value (₹)" : "manual");
+      const oldOperator = oldSettings.operator || "%";
+      const oldMultiplierSource = oldSettings.multiplierSource || "manual";
+      
+      if (oldBaseSource !== baseSource) {
+        apiFetch(`/api/boq-versions/${activeVersionId}/log-field-change`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ field: `${colName} (Base Source)`, oldValue: oldBaseSource, newValue: baseSource, itemName: `Column: ${colName}` })
+        }).catch(() => { });
+      }
+      if (oldOperator !== operator) {
+        apiFetch(`/api/boq-versions/${activeVersionId}/log-field-change`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ field: `${colName} (Operator)`, oldValue: oldOperator, newValue: operator, itemName: `Column: ${colName}` })
+        }).catch(() => { });
+      }
+      if (oldMultiplierSource !== multiplierSource) {
+        apiFetch(`/api/boq-versions/${activeVersionId}/log-field-change`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ field: `${colName} (Multiplier Source)`, oldValue: oldMultiplierSource, newValue: multiplierSource, itemName: `Column: ${colName}` })
+        }).catch(() => { });
+      }
+    }
 
     setGlobalColSettings(prev => ({
       ...prev,
@@ -2326,8 +2381,37 @@ export default function FinalizeBoq() {
     }
 
     const itemCol = itemCols[colIdx];
+    const oldBaseSource = itemCol.baseSource || "Total Value (₹)";
+    const oldOperator = itemCol.operator || "%";
+    const oldMultiplierSource = itemCol.multiplierSource || "manual";
 
     const baseSource = baseSourceOverride || itemCol.baseSource || "Total Value (₹)";
+    
+    if (activeVersionId) {
+      let td2 = item.table_data || {};
+      if (typeof td2 === "string") try { td2 = JSON.parse(td2); } catch { td2 = {}; }
+      const resolvedItemName = td2.product_name || item.estimator || "Unknown Item";
+      
+      if (oldBaseSource !== baseSource) {
+        apiFetch(`/api/boq-versions/${activeVersionId}/log-field-change`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ field: `${colName} (Base Source)`, oldValue: oldBaseSource, newValue: baseSource, itemName: resolvedItemName, itemId: boqItemId })
+        }).catch(() => { });
+      }
+      if (oldOperator !== operator) {
+        apiFetch(`/api/boq-versions/${activeVersionId}/log-field-change`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ field: `${colName} (Operator)`, oldValue: oldOperator, newValue: operator, itemName: resolvedItemName, itemId: boqItemId })
+        }).catch(() => { });
+      }
+      if (oldMultiplierSource !== multiplierSource) {
+        apiFetch(`/api/boq-versions/${activeVersionId}/log-field-change`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ field: `${colName} (Multiplier Source)`, oldValue: oldMultiplierSource, newValue: multiplierSource, itemName: resolvedItemName, itemId: boqItemId })
+        }).catch(() => { });
+      }
+    }
+
     let td = item.table_data || {};
     if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
     const { itemRate, itemQty } = getItemMetrics(td);
@@ -5611,6 +5695,7 @@ export default function FinalizeBoq() {
                               handleApplyColumnFormula={handleApplyColumnFormula}
                               startResize={startResize}
                               autoFitColumn={autoFitColumn}
+                              versionId={activeVersionId}
                             />
                           );
                         })}
@@ -5794,9 +5879,14 @@ export default function FinalizeBoq() {
                                   value={manualDesc || tableData.finalize_description || ""}
                                   disabled={isVersionSubmitted}
                                   onChange={e => setProductDescriptions(prev => ({ ...prev, [boqItem.id]: e.target.value }))}
-                                  onBlur={() => saveItemLayout(boqItem.id, undefined, undefined, productDescriptions[boqItem.id])}
+                                  onBlur={() => {
+                                    const newDesc = productDescriptions[boqItem.id] ?? "";
+                                    const oldDesc = tableData.finalize_description ?? "";
+                                    saveItemLayout(boqItem.id, undefined, undefined, productDescriptions[boqItem.id], undefined, undefined, undefined, undefined, undefined,
+                                      oldDesc !== newDesc ? { field: "Description", oldValue: oldDesc, newValue: newDesc } : undefined);
+                                  }}
                                   rows={2}
-                                  className={`w-full border-none rounded p-1 text-[10px] focus:ring-1 ring-blue-300 outline-none bg-transparent resize-y min-h-[35px] leading-tight ${getIsModified(boqItem.id, "description", manualDesc) ? "text-blue-600 font-bold italic" : ""}`}
+                                  className={`w-full border-none rounded p-1 text-[10px] focus:ring-1 ring-blue-300 outline-none bg-transparent resize-y min-h-[35px] leading-tight ${getIsModified(boqItem.id, "description", manualDesc) ? "text-amber-900 font-bold italic bg-amber-200 ring-2 ring-amber-400 rounded" : ""}`}
                                   placeholder="Description..."
                                 />
                               </td>
@@ -5832,10 +5922,12 @@ export default function FinalizeBoq() {
                                   }}
                                   onBlur={() => {
                                     const currentUnit = productUnits[boqItem.id];
+                                    const oldUnit = tableData.finalize_unit ?? "";
+                                    const unitChange = oldUnit !== (currentUnit ?? "") ? { field: "Unit", oldValue: oldUnit, newValue: currentUnit } : undefined;
                                     if (currentUnit?.toLowerCase() === 'ls') {
-                                      saveItemLayout(boqItem.id, undefined, undefined, undefined, "1", undefined, currentUnit);
+                                      saveItemLayout(boqItem.id, undefined, undefined, undefined, "1", undefined, currentUnit, undefined, undefined, unitChange);
                                     } else {
-                                      saveItemLayout(boqItem.id, undefined, undefined, undefined, undefined, undefined, currentUnit);
+                                      saveItemLayout(boqItem.id, undefined, undefined, undefined, undefined, undefined, currentUnit, undefined, undefined, unitChange);
                                     }
                                   }}
                                   className={`w-full border-none rounded p-0.5 text-[10px] focus:ring-1 ring-blue-300 outline-none ${tableData.is_lump_sum ? 'bg-transparent text-gray-500' : 'bg-transparent'} text-center font-semibold h-7 ${(() => {
@@ -5843,7 +5935,7 @@ export default function FinalizeBoq() {
                                       ? (tableData.configBasis?.requiredUnitType || tableData.unit || "Sqft")
                                       : (currentStep11Items[0]?.unit || tableData.unit || "nos");
                                     return getIsModified(boqItem.id, "unit", productUnits[boqItem.id] ?? defaultUnit);
-                                  })() ? "text-blue-600 underline" : ""}`}
+                                  })() ? "text-amber-900 font-bold underline bg-amber-200 ring-2 ring-amber-400 rounded" : ""}`}
                                   placeholder="Unit"
                                 />
                               </td>
@@ -5861,8 +5953,13 @@ export default function FinalizeBoq() {
                                     if (isLS) return;
                                     setProductQuantities(prev => ({ ...prev, [boqItem.id]: newQty }));
                                   }}
-                                  onBlur={async () => { await saveItemLayout(boqItem.id, undefined, undefined, undefined, productQuantities[boqItem.id]); }}
-                                  className={`w-full border border-transparent focus:border-2 focus:border-blue-500 rounded p-0.5 text-[10px] focus:text-[12px] focus:ring-1 ring-blue-300 outline-none transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md ${(tableData.is_lump_sum || (productUnits[boqItem.id]?.toLowerCase() === 'ls')) ? 'bg-transparent text-gray-500' : 'bg-blue-100/50'} focus:bg-white text-center font-semibold h-7 focus:h-8 ${getIsModified(boqItem.id, "qty", productQuantities[boqItem.id] ?? (tableData.targetRequiredQty !== undefined ? tableData.targetRequiredQty : (currentStep11Items[0]?.qty || 0))) ? "text-blue-600 border-b border-blue-400" : ""}`}
+                                  onBlur={async () => {
+                                    const newQty = productQuantities[boqItem.id];
+                                    const oldQty = tableData.finalize_qty;
+                                    await saveItemLayout(boqItem.id, undefined, undefined, undefined, productQuantities[boqItem.id], undefined, undefined, undefined, undefined,
+                                      String(oldQty ?? "") !== String(newQty ?? "") ? { field: "Quantity", oldValue: oldQty, newValue: newQty } : undefined);
+                                  }}
+                                  className={`w-full border border-transparent focus:border-2 focus:border-blue-500 rounded p-0.5 text-[10px] focus:text-[12px] focus:ring-1 ring-blue-300 outline-none transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md ${(tableData.is_lump_sum || (productUnits[boqItem.id]?.toLowerCase() === 'ls')) ? 'bg-transparent text-gray-500' : 'bg-blue-100/50'} focus:bg-white text-center font-semibold h-7 focus:h-8 ${getIsModified(boqItem.id, "qty", productQuantities[boqItem.id] ?? (tableData.targetRequiredQty !== undefined ? tableData.targetRequiredQty : (currentStep11Items[0]?.qty || 0))) ? "text-amber-900 font-extrabold border-2 border-amber-500 ring-2 ring-amber-300 rounded" : ""}`}
                                   placeholder="Qty"
                                 />
                               </td>
@@ -5897,9 +5994,12 @@ export default function FinalizeBoq() {
                                       const val = e.target.value;
                                       setOverrideRates(prev => ({ ...prev, [boqItem.id]: val }));
                                       setOverrideTypes(prev => ({ ...prev, [boqItem.id]: globalOverrideType }));
-                                      await saveItemLayout(boqItem.id, undefined, undefined, undefined, undefined, val === "" ? undefined : val, undefined, undefined, globalOverrideType);
+                                      const oldRate = tableData.finalize_override_rate ?? "";
+                                      const newRate = val === "" ? "" : val;
+                                      await saveItemLayout(boqItem.id, undefined, undefined, undefined, undefined, val === "" ? undefined : val, undefined, undefined, globalOverrideType,
+                                        String(oldRate) !== String(newRate) ? { field: "Override Rate", oldValue: oldRate, newValue: newRate } : undefined);
                                     }}
-                                    className={`w-full border border-transparent focus:border-2 focus:border-blue-500 rounded p-0.5 text-[10px] focus:text-[12px] focus:ring-1 ring-gray-300 outline-none bg-gray-50 focus:bg-white text-center font-semibold h-6 focus:h-7 transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md ${getIsModified(boqItem.id, "rate", overrideRates[boqItem.id] ?? "") ? "text-blue-600 font-bold" : ""}`}
+                                    className={`w-full border border-transparent focus:border-2 focus:border-blue-500 rounded p-0.5 text-[10px] focus:text-[12px] focus:ring-1 ring-gray-300 outline-none bg-gray-50 focus:bg-white text-center font-semibold h-6 focus:h-7 transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md ${getIsModified(boqItem.id, "rate", overrideRates[boqItem.id] ?? "") ? "text-amber-900 font-extrabold border-2 border-amber-500 ring-2 ring-amber-300 rounded" : ""}`}
                                     placeholder="0.00"
                                   />
                                   {globalOverrideType === "percentage" && (
@@ -6008,7 +6108,7 @@ export default function FinalizeBoq() {
                                 // Render the cell only if not hidden
                                 if (isTotalColumn) {
                                   return (
-                                    <td key={`${col.name}-${idx}`} className={`border-r px-2 py-1.5 text-right font-semibold text-green-900 bg-green-100/40 text-[10px] ${getIsModified(boqItem.id, "columns", col.name) ? "text-blue-600 border-2 border-blue-100" : ""}`}>
+                                    <td key={`${col.name}-${idx}`} className={`border-r px-2 py-1.5 text-right font-semibold text-green-900 bg-green-100/40 text-[10px] ${getIsModified(boqItem.id, "columns", col.name) ? "text-amber-900 font-extrabold bg-amber-200 border-2 border-amber-500 ring-2 ring-amber-300" : ""}`}>
                                       ₹{(roundOff ? Math.round(valNum) : valNum).toLocaleString(undefined, { minimumFractionDigits: roundOff ? 0 : 2, maximumFractionDigits: roundOff ? 0 : 2 })}
                                     </td>
                                   );
@@ -6030,7 +6130,7 @@ export default function FinalizeBoq() {
                                       key={`${col.name}-${idx}`}
                                       className={`border-r px-2 py-1 relative group/cell align-middle text-[11px] min-w-[180px] ${isSupplyLabourExceeding(customColumns[boqItem.id] || [], col.name)
                                         ? "bg-red-200 text-red-900 border-2 border-red-400"
-                                        : getIsModified(boqItem.id, "columns", col.name) ? "bg-blue-50/40 text-blue-600 border-2 border-blue-100" : "bg-transparent"
+                                        : getIsModified(boqItem.id, "columns", col.name) ? "bg-amber-200 text-amber-900 font-extrabold border-2 border-amber-500 ring-2 ring-amber-300" : "bg-transparent"
                                         }`}
                                       title={getIsModified(boqItem.id, "columns", col.name) ? "Modified from Template" : ""}
                                       onDoubleClick={() => {
@@ -6112,6 +6212,25 @@ export default function FinalizeBoq() {
                                                 className="w-16 focus:w-20 h-6 focus:h-7 bg-white border border-purple-400 focus:border-2 focus:border-purple-600 rounded-md px-1.5 text-[11px] font-semibold text-purple-800 outline-none text-right shadow-sm focus:ring-1 ring-purple-600/30 transition-all duration-150 ease-out focus:relative focus:z-30"
                                                 value={itemMultiplier}
                                                 disabled={isVersionSubmitted}
+                                                onFocus={(e) => {
+                                                  if (!e.currentTarget.dataset.origVal) {
+                                                    e.currentTarget.dataset.origVal = itemMultiplier.toString();
+                                                  }
+                                                }}
+                                                onBlur={(e) => {
+                                                  const oldVal = parseFloat(e.currentTarget.dataset.origVal || "0") || 0;
+                                                  const newVal = parseFloat(e.target.value) || 0;
+                                                  if (activeVersionId && oldVal !== newVal) {
+                                                    let td2 = boqItem.table_data || {};
+                                                    if (typeof td2 === "string") try { td2 = JSON.parse(td2); } catch { td2 = {}; }
+                                                    const resolvedItemName = td2.product_name || boqItem.estimator || "Unknown Item";
+                                                    apiFetch(`/api/boq-versions/${activeVersionId}/log-field-change`, {
+                                                      method: "POST", headers: { "Content-Type": "application/json" },
+                                                      body: JSON.stringify({ field: `${col.name} (VAL %)`, oldValue: oldVal, newValue: newVal, itemName: resolvedItemName, itemId: boqItem.id })
+                                                    }).catch(() => { });
+                                                  }
+                                                  e.currentTarget.removeAttribute('data-orig-val');
+                                                }}
                                                 onWheel={(e) => e.currentTarget.blur()}
                                                 onChange={(e) => {
                                                   const newVal = parseFloat(e.target.value) || 0;
@@ -6205,7 +6324,12 @@ export default function FinalizeBoq() {
                                                 0: { ...(prev[boqItem.id]?.[0] || {}), [col.name]: e.target.value }
                                               }
                                             }))}
-                                            onBlur={() => saveItemLayout(boqItem.id)}
+                                            onBlur={() => {
+                                              const oldColVal = tableData.finalize_column_values?.[0]?.[col.name] ?? "";
+                                              const newColVal = customColumnValues[boqItem.id]?.[0]?.[col.name] ?? "";
+                                              saveItemLayout(boqItem.id, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+                                                String(oldColVal) !== String(newColVal) ? { field: col.name, oldValue: oldColVal, newValue: newColVal } : undefined);
+                                            }}
                                             className={`w-full h-7 focus:h-8 border border-transparent focus:border-2 focus:border-blue-500 rounded px-1 py-0.5 text-[11px] focus:text-[13px] outline-none bg-transparent focus:bg-white text-right font-bold transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md ${historyUsedFields[boqItem.id]?.[col.name] ? 'text-blue-700' : 'text-gray-800'
                                               }`}
                                             placeholder="0.00"

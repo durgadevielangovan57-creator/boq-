@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { History, Clock, User, FileText, Plus, Trash2, Download, ArrowRightLeft, Maximize2, Minimize2, Pencil, Check, X } from "lucide-react";
+import { History, Clock, User, FileText, Plus, Trash2, Download, ArrowRightLeft, Maximize2, Minimize2, Pencil, Check, X, MessageSquare, ArrowRight } from "lucide-react";
 import { format } from "date-fns";
 import apiFetch from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,11 @@ export function VersionHistoryModal({ isOpen, onOpenChange, versionId, projectId
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editReason, setEditReason] = useState('');
   const [savingId, setSavingId] = useState<string | null>(null);
+  // Field-level change log ("who changed this value from X to Y") — shown in a
+  // separate chat-style dialog, opened via the icon in the history header.
+  // This is purely additive and does not affect the existing added/deleted list below.
+  const [changeLog, setChangeLog] = useState<any[]>([]);
+  const [showChangeLog, setShowChangeLog] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -42,17 +47,27 @@ export function VersionHistoryModal({ isOpen, onOpenChange, versionId, projectId
 
     setLoading(true);
     try {
-      const url = viewMode === 'all' 
+      const url = viewMode === 'all'
         ? `/api/boq-projects/${projectId}/all-history`
         : `/api/boq-versions/${versionId}/history`;
-        
+
       const res = await apiFetch(url);
       if (res.ok) {
         const data = await res.json();
-        const filteredHistory = (data.history || []).filter((entry: any) => {
+        const rawHistory = data.history || [];
+
+        // Field-level change entries ("who changed what from -> to") power the
+        // separate chat/change-log dialog. Extracted here from the raw, unfiltered
+        // response so the existing added/deleted list logic below is untouched.
+        const fieldChanges = rawHistory
+          .filter((entry: any) => (entry.action || '').toLowerCase() === 'field_changed')
+          .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        setChangeLog(fieldChanges);
+
+        const filteredHistory = rawHistory.filter((entry: any) => {
           const action = (entry.action || '').toLowerCase();
           // Exclude version-level status actions (these are not item changes)
-          const versionLevelActions = ['approved', 'pending_approval', 'rejected', 'edited', 'locked', 'edit_requested', 'edit_rejected', 'edit_approved'];
+          const versionLevelActions = ['approved', 'pending_approval', 'rejected', 'edited', 'locked', 'edit_requested', 'edit_rejected', 'edit_approved', 'field_changed'];
           if (versionLevelActions.includes(action)) return false;
           // Also exclude any entry with no item_id and no item_name (these are status-only logs)
           if (!entry.item_id && (!entry.item_name || entry.item_name === 'Unknown Item' || entry.item_name === 'Unnamed Item')) return false;
@@ -60,17 +75,17 @@ export function VersionHistoryModal({ isOpen, onOpenChange, versionId, projectId
         }).map((entry: any) => {
           let itemName = entry.item_name;
           if (!itemName || itemName === 'Unknown Item' || itemName === 'Unnamed Item') {
-             if (boqItems.length > 0 && entry.item_id) {
-               const item = boqItems.find((i: any) => i.id === entry.item_id);
-               if (item) {
-                 let td = item.table_data;
-                 if (typeof td === 'string') {
-                   try { td = JSON.parse(td); } catch (e) {}
-                 }
-                 td = td || {};
-                 itemName = td.product_name || td.item || td.name || td.category_name || item.estimator || 'Unknown Item';
-               }
-             }
+            if (boqItems.length > 0 && entry.item_id) {
+              const item = boqItems.find((i: any) => i.id === entry.item_id);
+              if (item) {
+                let td = item.table_data;
+                if (typeof td === 'string') {
+                  try { td = JSON.parse(td); } catch (e) { }
+                }
+                td = td || {};
+                itemName = td.product_name || td.item || td.name || td.category_name || item.estimator || 'Unknown Item';
+              }
+            }
           }
           return { ...entry, item_name: itemName };
         });
@@ -85,11 +100,11 @@ export function VersionHistoryModal({ isOpen, onOpenChange, versionId, projectId
 
   const handleDownloadPdf = async () => {
     if (!history || history.length === 0) return;
-    
-    const itemsToDownload = selectedHistoryIds.size > 0 
+
+    const itemsToDownload = selectedHistoryIds.size > 0
       ? history.filter((entry, idx) => selectedHistoryIds.has(entry.id || idx))
       : history;
-      
+
     if (selectedHistoryIds.size === 0) return;
 
     const doc = new jsPDF();
@@ -159,11 +174,11 @@ export function VersionHistoryModal({ isOpen, onOpenChange, versionId, projectId
     doc.setFontSize(11);
     doc.setFont("helvetica", "bold");
     doc.text(viewMode === 'all' ? "All Versions History Log" : "Version History Log", pageWidth / 2, boxBottom + 8, { align: "center" });
-    
-    const head = viewMode === 'all' 
+
+    const head = viewMode === 'all'
       ? [["Version", "Date", "User", "Action", "Item Name", "Reason"]]
       : [["Date", "User", "Action", "Item Name", "Reason"]];
-      
+
     const body = itemsToDownload.map(entry => {
       const row = [
         format(new Date(entry.created_at), 'MMM d, yyyy h:mm a'),
@@ -177,7 +192,7 @@ export function VersionHistoryModal({ isOpen, onOpenChange, versionId, projectId
       }
       return row;
     });
-    
+
     const tableAvailW = pageWidth - (marginX * 2);
 
     // Column widths for proper alignment
@@ -216,7 +231,7 @@ export function VersionHistoryModal({ isOpen, onOpenChange, versionId, projectId
       tableLineColor: [0, 0, 0],
       tableLineWidth: 0.5,
     });
-    
+
     doc.save(`Version_History_${viewMode === 'all' ? 'All' : versionId || 'Export'}.pdf`);
   };
 
@@ -258,8 +273,8 @@ export function VersionHistoryModal({ isOpen, onOpenChange, versionId, projectId
   const renderHistoryEntry = (entry: any, idx: number) => (
     <div key={entry.id || idx} className="flex gap-4 p-3 rounded-lg border border-slate-100 bg-white shadow-sm">
       <div className="shrink-0 mt-1 flex flex-col items-center gap-2">
-        <input 
-          type="checkbox" 
+        <input
+          type="checkbox"
           className="w-4 h-4 cursor-pointer accent-blue-600 rounded"
           checked={selectedHistoryIds.has(entry.id || idx)}
           onChange={(e) => {
@@ -330,9 +345,8 @@ export function VersionHistoryModal({ isOpen, onOpenChange, versionId, projectId
           </div>
         ) : (
           <div className="mt-2 group/reason flex items-start gap-2">
-            <div className={`flex-1 p-2 rounded border text-[12px] text-slate-700 ${
-              entry.reason ? 'bg-slate-50 border-slate-200' : 'bg-slate-50/50 border-dashed border-slate-200 text-slate-400'
-            }`}>
+            <div className={`flex-1 p-2 rounded border text-[12px] text-slate-700 ${entry.reason ? 'bg-slate-50 border-slate-200' : 'bg-slate-50/50 border-dashed border-slate-200 text-slate-400'
+              }`}>
               {entry.reason ? (
                 <><span className="font-semibold text-slate-600">Reason:</span> {entry.reason}</>
               ) : (
@@ -377,105 +391,173 @@ export function VersionHistoryModal({ isOpen, onOpenChange, versionId, projectId
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className={`bg-white border-slate-200 flex flex-col overflow-hidden transition-all duration-200 ${
-        isFullscreen ? "max-w-[98vw] w-[98vw] h-[98vh] max-h-[98vh]" : "max-w-6xl max-h-[85vh]"
-      }`}>
-        <DialogHeader className="flex flex-row items-start justify-between pr-10 border-b pb-4 shrink-0">
-          <div>
-            <DialogTitle className="flex items-center gap-2 text-slate-800">
-              <History className="h-5 w-5 text-blue-500" />
-              {viewMode === 'all' ? 'All Versions History' : 'Version History'}
-            </DialogTitle>
-            <DialogDescription className="text-slate-500 mt-1">
-              {viewMode === 'all' ? 'Activity and item changes across all versions of the project.' : 'Activity and item changes for this version.'}
-            </DialogDescription>
-          </div>
-          <div className="flex gap-2 items-center">
-            {onCompareClick && (
+    <>
+      <Dialog open={isOpen} onOpenChange={onOpenChange}>
+        <DialogContent className={`bg-white border-slate-200 flex flex-col overflow-hidden transition-all duration-200 ${isFullscreen ? "max-w-[98vw] w-[98vw] h-[98vh] max-h-[98vh]" : "max-w-6xl max-h-[85vh]"
+          }`}>
+          <DialogHeader className="flex flex-row items-start justify-between pr-10 border-b pb-4 shrink-0">
+            <div>
+              <DialogTitle className="flex items-center gap-2 text-slate-800">
+                <History className="h-5 w-5 text-blue-500" />
+                {viewMode === 'all' ? 'All Versions History' : 'Version History'}
+              </DialogTitle>
+              <DialogDescription className="text-slate-500 mt-1">
+                {viewMode === 'all' ? 'Activity and item changes across all versions of the project.' : 'Activity and item changes for this version.'}
+              </DialogDescription>
+            </div>
+            <div className="flex gap-2 items-center">
               <Button
                 variant="outline"
                 size="sm"
-                onClick={onCompareClick}
-                className="flex items-center gap-2 text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+                onClick={() => setShowChangeLog(true)}
+                className="flex items-center gap-2 text-emerald-600 border-emerald-200 hover:bg-emerald-50 relative"
+                title="View who changed what value"
               >
-                <ArrowRightLeft className="h-4 w-4" />
-                Detailed Comparison
+                <MessageSquare className="h-4 w-4" />
+                Change Log
+                {changeLog.length > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 bg-emerald-600 text-white text-[10px] font-bold rounded-full h-4 min-w-[16px] px-1 flex items-center justify-center">
+                    {changeLog.length}
+                  </span>
+                )}
               </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleDownloadPdf}
-              disabled={loading || history.length === 0 || selectedHistoryIds.size === 0}
-              className="flex items-center gap-2 text-blue-600 border-blue-200 hover:bg-blue-50"
-            >
-              <Download className="h-4 w-4" />
-              Download Selected ({selectedHistoryIds.size})
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setIsFullscreen(!isFullscreen)}
-              className="h-8 w-8 text-slate-500 hover:text-slate-700 hover:bg-slate-100"
-              title={isFullscreen ? "Restore" : "Maximize"}
-            >
-              {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-            </Button>
-          </div>
-        </DialogHeader>
-        
-        {projectId && (
-          <div className="flex space-x-1 p-1 bg-slate-100 rounded-lg mx-1 mt-2 shrink-0">
-            <button
-              onClick={() => setViewMode('current')}
-              className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                viewMode === 'current' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              Current Version
-            </button>
-            <button
-              onClick={() => setViewMode('all')}
-              className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                viewMode === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              All Versions
-            </button>
-          </div>
-        )}
+              {onCompareClick && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onCompareClick}
+                  className="flex items-center gap-2 text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+                >
+                  <ArrowRightLeft className="h-4 w-4" />
+                  Detailed Comparison
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDownloadPdf}
+                disabled={loading || history.length === 0 || selectedHistoryIds.size === 0}
+                className="flex items-center gap-2 text-blue-600 border-blue-200 hover:bg-blue-50"
+              >
+                <Download className="h-4 w-4" />
+                Download Selected ({selectedHistoryIds.size})
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsFullscreen(!isFullscreen)}
+                className="h-8 w-8 text-slate-500 hover:text-slate-700 hover:bg-slate-100"
+                title={isFullscreen ? "Restore" : "Maximize"}
+              >
+                {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              </Button>
+            </div>
+          </DialogHeader>
 
-        {!loading && history.length > 0 && viewMode === 'current' && (
-          <div className="flex items-center gap-2 px-3 py-2 mt-2 bg-slate-50 border border-slate-200 rounded-lg mx-1 shrink-0">
-            <input 
-              type="checkbox" 
-              className="w-4 h-4 cursor-pointer accent-blue-600 rounded"
-              checked={selectedHistoryIds.size === history.length && history.length > 0}
-              onChange={(e) => {
-                if (e.target.checked) {
-                  setSelectedHistoryIds(new Set(history.map((entry, idx) => entry.id || idx)));
-                } else {
-                  setSelectedHistoryIds(new Set());
-                }
-              }}
-            />
-            <span className="text-sm font-semibold text-slate-700">Select All</span>
+          {projectId && (
+            <div className="flex space-x-1 p-1 bg-slate-100 rounded-lg mx-1 mt-2 shrink-0">
+              <button
+                onClick={() => setViewMode('current')}
+                className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-colors ${viewMode === 'current' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+              >
+                Current Version
+              </button>
+              <button
+                onClick={() => setViewMode('all')}
+                className={`flex-1 py-1.5 text-sm font-medium rounded-md transition-colors ${viewMode === 'all' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                  }`}
+              >
+                All Versions
+              </button>
+            </div>
+          )}
+
+          {!loading && history.length > 0 && viewMode === 'current' && (
+            <div className="flex items-center gap-2 px-3 py-2 mt-2 bg-slate-50 border border-slate-200 rounded-lg mx-1 shrink-0">
+              <input
+                type="checkbox"
+                className="w-4 h-4 cursor-pointer accent-blue-600 rounded"
+                checked={selectedHistoryIds.size === history.length && history.length > 0}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setSelectedHistoryIds(new Set(history.map((entry, idx) => entry.id || idx)));
+                  } else {
+                    setSelectedHistoryIds(new Set());
+                  }
+                }}
+              />
+              <span className="text-sm font-semibold text-slate-700">Select All</span>
+            </div>
+          )}
+
+          {loading ? (
+            <div className="text-center text-slate-500 py-8 w-full flex-1">Loading history...</div>
+          ) : history.length === 0 ? (
+            <div className="text-center text-slate-500 py-8 w-full flex-1">No history recorded yet.</div>
+          ) : viewMode === 'all' ? (
+            renderHistoryColumns()
+          ) : (
+            <div className="py-2 overflow-y-auto space-y-4 pr-2 mx-1 mb-2 flex-1 min-h-0">
+              {history.map((entry, idx) => renderHistoryEntry(entry, idx))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Change Log dialog — Zoho-style "who changed what value" view.
+          Opened via the chat icon above. Completely separate from the
+          added/deleted item history list, which remains unchanged. */}
+      <Dialog open={showChangeLog} onOpenChange={setShowChangeLog}>
+        <DialogContent className="bg-white border-slate-200 flex flex-col overflow-hidden max-w-2xl max-h-[80vh]">
+          <DialogHeader className="border-b pb-3 shrink-0">
+            <DialogTitle className="flex items-center gap-2 text-slate-800">
+              <MessageSquare className="h-5 w-5 text-emerald-600" />
+              Change Log
+            </DialogTitle>
+            <DialogDescription className="text-slate-500 mt-1">
+              Every value change, showing who changed it and what it was before and after.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="overflow-y-auto flex-1 min-h-0 py-2 space-y-2 pr-1">
+            {changeLog.length === 0 ? (
+              <div className="text-center text-slate-500 py-8 text-sm">No value changes recorded yet.</div>
+            ) : (
+              changeLog.map((entry, idx) => (
+                <div key={entry.id || idx} className="flex gap-3 p-3 rounded-lg border border-slate-100 bg-slate-50">
+                  <div className="shrink-0 mt-0.5 w-7 h-7 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">
+                    <User className="h-3.5 w-3.5" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-sm text-slate-700">
+                        <span className="font-bold text-slate-800">{entry.user_full_name || 'System User'}</span>
+                        {' '}changed{' '}
+                        <span className="font-semibold text-slate-800">{entry.field_name || 'a field'}</span>
+                        {' '}on{' '}
+                        <span className="italic text-slate-600">{entry.item_name || 'Unknown Item'}</span>
+                      </span>
+                      <span className="text-[11px] text-slate-400 flex items-center gap-1 shrink-0 whitespace-nowrap">
+                        <Clock className="h-3 w-3" />
+                        {format(new Date(entry.created_at), 'MMM d, yyyy h:mm a')}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex items-center gap-2 text-[12px] flex-wrap">
+                      <span className="px-2 py-0.5 rounded bg-red-50 border border-red-200 text-red-700 line-through">
+                        {entry.old_value === '' || entry.old_value === null || entry.old_value === undefined ? '(empty)' : entry.old_value}
+                      </span>
+                      <ArrowRight className="h-3 w-3 text-slate-400 shrink-0" />
+                      <span className="px-2 py-0.5 rounded bg-green-50 border border-green-200 text-green-700 font-semibold">
+                        {entry.new_value === '' || entry.new_value === null || entry.new_value === undefined ? '(empty)' : entry.new_value}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
-        )}
-        
-        {loading ? (
-          <div className="text-center text-slate-500 py-8 w-full flex-1">Loading history...</div>
-        ) : history.length === 0 ? (
-          <div className="text-center text-slate-500 py-8 w-full flex-1">No history recorded yet.</div>
-        ) : viewMode === 'all' ? (
-          renderHistoryColumns()
-        ) : (
-          <div className="py-2 overflow-y-auto space-y-4 pr-2 mx-1 mb-2 flex-1 min-h-0">
-            {history.map((entry, idx) => renderHistoryEntry(entry, idx))}
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
