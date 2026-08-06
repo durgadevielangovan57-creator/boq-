@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { Reorder, useDragControls } from "framer-motion";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
@@ -88,7 +88,8 @@ import {
   Eraser,
   Percent,
   History,
-  Star
+  Star,
+  GitMerge
 } from "lucide-react";
 import { BoqAnalysisDialog } from "@/components/BoqAnalysisDialog";
 import { RateSuggestionPopover } from "@/components/RateSuggestionPopover";
@@ -270,6 +271,7 @@ type BOQVersion = {
   is_disabled?: boolean;
   is_boq_submission?: boolean;
   is_last_final?: boolean;
+  source_version_id?: string | null;
 };
 
 type BOMItem = {
@@ -765,6 +767,7 @@ export default function FinalizeBoq() {
   const [boqVersions, setBoqVersions] = useState<BOQVersion[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [bomFinalizeLocked, setBomFinalizeLocked] = useState(false);
+  const [isSyncingFromBom, setIsSyncingFromBom] = useState(false);
   const [selectedBomVersionId, setSelectedBomVersionId] = useState<string | null>(null);
   const [selectedBoqVersionId, setSelectedBoqVersionId] = useState<string | null>(null);
   const [showFinalizedPicker, setShowFinalizedPicker] = useState(false);
@@ -1499,6 +1502,7 @@ export default function FinalizeBoq() {
     let totalRateSum = 0;
     let totalQtySum = 0;
     let overrideTotalSum = 0;
+    const itemFinalValues: Record<string, number> = {};
 
     filteredBoqItems.forEach(item => {
       let td = item.table_data || {};
@@ -1573,10 +1577,17 @@ export default function FinalizeBoq() {
           totals[idx] += val;
         }
       });
+      
+      let finalVal = 0;
+      if (grandTotalColumn === "Total Value (₹)") finalVal = baseTotalValue;
+      else if (grandTotalColumn === "Override Total") finalVal = overrideTotalVal;
+      else finalVal = rowCalculatedValues[grandTotalColumn] || 0;
+      
+      itemFinalValues[item.id] = finalVal;
     });
 
-    return { totals, totalValueSum, totalRateSum, totalQtySum, overrideTotalSum };
-  }, [filteredBoqItems, allCols, customColumns, customColumnValues, productQuantities, overrideRates, overrideTypes, globalOverrideType, globalOverrideValue, roundOff]);
+    return { totals, totalValueSum, totalRateSum, totalQtySum, overrideTotalSum, itemFinalValues };
+  }, [filteredBoqItems, allCols, customColumns, customColumnValues, productQuantities, overrideRates, overrideTypes, globalOverrideType, globalOverrideValue, roundOff, grandTotalColumn]);
 
 
   const handleColumnReorder = async (newOrder: typeof allCols) => {
@@ -2027,6 +2038,61 @@ export default function FinalizeBoq() {
     toast({ title: "Refreshed", description: "BOM data reloaded from server." });
   }, [selectedProjectId, toast]);
 
+  // Append any items that exist in a BOM version but are missing from the
+  // currently selected BOQ version — WITHOUT touching, editing, or removing
+  // any item already present in the BOQ draft. Uses the BOM version picked in
+  // the "BOM Version" dropdown; if none is picked, falls back to the BOM
+  // version this BOQ draft was originally created from.
+  const handleSyncMissingFromBom = useCallback(async () => {
+    if (!selectedBoqVersionId) {
+      toast({ title: "Select a BOQ Version first", variant: "destructive" });
+      return;
+    }
+    const currentBoqVersion = boqVersions.find(v => v.id === selectedBoqVersionId);
+    const sourceBomVersionId = selectedBomVersionId || currentBoqVersion?.source_version_id || null;
+
+    if (!sourceBomVersionId) {
+      toast({
+        title: "No BOM version to sync from",
+        description: "Select a BOM version in the BOM Version dropdown, then try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsSyncingFromBom(true);
+    try {
+      const resp = await apiFetch(`/api/boq-versions/${encodeURIComponent(selectedBoqVersionId)}/sync-from-bom`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bom_version_id: sourceBomVersionId }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        if ((data.added_count || 0) > 0) {
+          toast({
+            title: "Synced",
+            description: `Added ${data.added_count} item(s) from BOM. Existing items were left unchanged.${data.skipped_count ? ` (${data.skipped_count} already present, skipped.)` : ""}`,
+          });
+          // Reload the current BOQ version's items to show the newly appended rows
+          setRefreshKey(prev => prev + 1);
+        } else {
+          toast({
+            title: "Already up to date",
+            description: `No new items found in the selected BOM version. ${data.skipped_count ? `${data.skipped_count} item(s) already present.` : ""}`,
+          });
+        }
+      } else {
+        toast({ title: "Sync failed", description: data.message || "Failed to sync items from BOM", variant: "destructive" });
+      }
+    } catch (err) {
+      console.error("Failed to sync items from BOM:", err);
+      toast({ title: "Error", description: "Failed to sync items from BOM", variant: "destructive" });
+    } finally {
+      setIsSyncingFromBom(false);
+    }
+  }, [selectedBoqVersionId, selectedBomVersionId, boqVersions, toast]);
+
   useEffect(() => {
     // The materials/items table should only ever show BOQ Version content.
     // Selecting a BOM version by itself (the "incoming" Final BOM shown for
@@ -2223,6 +2289,7 @@ export default function FinalizeBoq() {
         finalize_grand_total_column: grandTotalColumn,
         finalize_hidden_predefined_cols: updatedHiddenPredefinedCols !== undefined ? updatedHiddenPredefinedCols : hiddenPredefinedCols,
         is_lump_sum: isLS,
+        frontend_computed_value: calculatedColumnTotals.itemFinalValues[boqItemId],
       };
 
       const resp = await apiFetch(`/api/boq-items/${boqItemId}`, {
@@ -4146,6 +4213,27 @@ export default function FinalizeBoq() {
   })();
   const revenue = currentProjectValue - generatedBudget;
 
+  useEffect(() => {
+    const activeId = activeVersionId;
+    if (!activeId || loading) return;
+    const profit = revenue;
+    const margin = currentProjectValue !== 0 ? (profit / currentProjectValue) * 100 : 0;
+    const timer = setTimeout(() => {
+      apiFetch(`/api/boq-versions/${activeId}/sync-project-value`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_value: currentProjectValue,
+          project_id: selectedProjectId,
+          budget: generatedBudget,
+          revenue: currentProjectValue,
+          profit,
+          margin,
+        })
+      }).catch(console.error);
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [currentProjectValue, generatedBudget, revenue, activeVersionId, loading, selectedProjectId]);
 
   if (loading) {
     return (
@@ -4334,6 +4422,16 @@ export default function FinalizeBoq() {
                         onClick={handleRefreshBomData}
                       >
                         <RefreshCw className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 text-slate-400 hover:text-indigo-600 border border-slate-200 hover:bg-indigo-50 bg-white shadow-sm shrink-0"
+                        title="Sync Missing Items — adds items present in the BOM but missing from this BOQ Version, without changing or removing any existing item. No duplicates are added."
+                        disabled={!selectedBoqVersionId || isSyncingFromBom}
+                        onClick={handleSyncMissingFromBom}
+                      >
+                        <GitMerge className={cn("h-3.5 w-3.5", isSyncingFromBom && "animate-spin")} />
                       </Button>
                     </div>
                   </div>

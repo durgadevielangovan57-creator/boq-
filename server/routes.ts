@@ -5803,6 +5803,158 @@ export async function registerRoutes(
     },
   );
 
+  // POST /api/boq-versions/:id/sync-from-bom - Append items that exist in a BOM
+  // version but are missing from this (already-created) BOQ version, WITHOUT
+  // touching, editing, or removing any item already present in the BOQ version.
+  // This does not re-run the original copy_from_version snapshot; it only adds
+  // the delta, so existing pricing/column edits on the BOQ draft are preserved.
+  app.post(
+    "/api/boq-versions/:id/sync-from-bom",
+    authMiddleware,
+    async (req: Request, res: Response) => {
+      try {
+        const { id: targetVersionId } = req.params;
+        const { bom_version_id } = req.body;
+
+        if (!bom_version_id) {
+          res.status(400).json({ message: "bom_version_id is required" });
+          return;
+        }
+
+        // Validate both versions exist and belong to the same project
+        const [targetVerRes, bomVerRes] = await Promise.all([
+          query(`SELECT id, project_id, type FROM boq_versions WHERE id = $1`, [targetVersionId]),
+          query(`SELECT id, project_id, type FROM boq_versions WHERE id = $1`, [bom_version_id]),
+        ]);
+        const targetVer = targetVerRes.rows[0];
+        const bomVer = bomVerRes.rows[0];
+
+        if (!targetVer) {
+          res.status(404).json({ message: "Target BOQ version not found" });
+          return;
+        }
+        if (!bomVer) {
+          res.status(404).json({ message: "Source BOM version not found" });
+          return;
+        }
+        if (targetVer.project_id !== bomVer.project_id) {
+          res.status(400).json({ message: "Versions belong to different projects" });
+          return;
+        }
+
+        const archivedIds = await archiveService.getArchivedItemIds('boq_items');
+        const trashedIds = await archiveService.getTrashedItemIds('boq_items');
+
+        // Source: current items in the BOM version
+        const bomItemsResult = await query(
+          `SELECT * FROM boq_items
+           WHERE version_id = $1
+           AND user_added = true
+           ORDER BY sort_order ASC, created_at ASC`,
+          [bom_version_id],
+        );
+
+        // Existing: items already in the target BOQ version (any status,
+        // so we correctly detect prior copies and avoid re-adding them)
+        const existingItemsResult = await query(
+          `SELECT id, table_data, copied_from_item_id, sort_order FROM boq_items
+           WHERE version_id = $1`,
+          [targetVersionId],
+        );
+
+        const normalizeKey = (tableData: any) => {
+          let td = typeof tableData === 'string' ? JSON.parse(tableData) : tableData;
+          td = td ? { ...td } : {};
+          delete td.created_at;
+          return JSON.stringify(td);
+        };
+
+        // Track what's already covered in the target version, by original
+        // item id (preferred) and by content (fallback safety net) so we
+        // never insert a duplicate.
+        const alreadyCopiedFromIds = new Set<string>();
+        const existingDataKeys = new Set<string>();
+        let maxSortOrder = 0;
+        for (const row of existingItemsResult.rows) {
+          if (row.copied_from_item_id) alreadyCopiedFromIds.add(row.copied_from_item_id);
+          existingDataKeys.add(normalizeKey(row.table_data));
+          if (typeof row.sort_order === "number" && row.sort_order > maxSortOrder) {
+            maxSortOrder = row.sort_order;
+          }
+        }
+
+        const addedItems: { id: string; name: string }[] = [];
+        let skippedCount = 0;
+        let nextSortOrder = maxSortOrder + 1;
+
+        for (const item of bomItemsResult.rows) {
+          // Skip archived/trashed source items
+          if (archivedIds.includes(item.id) || trashedIds.includes(item.id)) continue;
+
+          // Already synced into this BOQ version before -> skip, don't touch it
+          if (alreadyCopiedFromIds.has(item.id)) {
+            skippedCount++;
+            continue;
+          }
+
+          // Content-identical item already present -> skip, don't duplicate
+          const key = normalizeKey(item.table_data);
+          if (existingDataKeys.has(key)) {
+            skippedCount++;
+            continue;
+          }
+          existingDataKeys.add(key);
+
+          const newItemId = `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.random().toString(36).substr(2, 9)}`;
+          await query(
+            `INSERT INTO boq_items (id, project_id, estimator, table_data, version_id, sort_order, user_added, computed_value, copied_from_item_id, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
+            [
+              newItemId,
+              targetVer.project_id,
+              item.estimator,
+              item.table_data,
+              targetVersionId,
+              nextSortOrder++,
+              item.user_added ?? true,
+              item.computed_value ?? 0,
+              item.id,
+            ],
+          );
+
+          let td = item.table_data;
+          if (typeof td === "string") { try { td = JSON.parse(td); } catch { td = {}; } }
+          const itemName = td?.product_name || td?.item || td?.name || td?.category_name || item.estimator || "Unknown Item";
+          addedItems.push({ id: newItemId, name: itemName });
+        }
+
+        // Recalculate project value for the target version (existing items
+        // are untouched; this only accounts for the newly appended ones)
+        await recalculateProjectValue(targetVer.project_id, targetVersionId);
+
+        if (addedItems.length > 0) {
+          const userObj = (req.user as any) || {};
+          for (const added of addedItems) {
+            await query(
+              `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name) VALUES ($1, $2, $3, $4, $5, $6)`,
+              [targetVersionId, userObj.id || 'system', userObj.fullName || userObj.username || 'System', 'SYNCED_FROM_BOM', added.id, added.name],
+            );
+          }
+        }
+
+        res.json({
+          message: `Synced ${addedItems.length} new item(s) from BOM. ${skippedCount} already present.`,
+          added_count: addedItems.length,
+          skipped_count: skippedCount,
+          added_items: addedItems,
+        });
+      } catch (err) {
+        console.error("POST /api/boq-versions/:id/sync-from-bom error", err);
+        res.status(500).json({ message: "Failed to sync items from BOM" });
+      }
+    },
+  );
+
   // POST /api/boq-versions/:id/make-final - Manually mark a version as the final one
   app.post("/api/boq-versions/:id/make-final", authMiddleware, async (req: Request, res: Response) => {
     try {
@@ -6042,7 +6194,19 @@ export async function registerRoutes(
       );
 
       if (result.rows.length === 0) {
-        return res.json(null);
+        // Fallback: return the latest version that has financial data synced from the frontend
+        const fallback = await query(
+          `SELECT id, version_number, type, final_budget as "budgetValue", 
+                  final_revenue as "revenueValue", final_profit as "profitValue", 
+                  final_margin as "margin"
+           FROM boq_versions 
+           WHERE project_id = $1 AND final_revenue IS NOT NULL
+           ORDER BY CASE WHEN type = 'boq' THEN 1 ELSE 2 END ASC, version_number DESC
+           LIMIT 1`,
+          [id]
+        );
+        if (fallback.rows.length === 0) return res.json(null);
+        return res.json(fallback.rows[0]);
       }
 
       res.json(result.rows[0]);
@@ -6441,6 +6605,37 @@ export async function registerRoutes(
       }
     }
   );
+
+  app.put("/api/boq-versions/:id/sync-project-value", authMiddleware, async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { project_value, project_id, budget, revenue, profit, margin } = req.body;
+      
+      if (project_value !== undefined) {
+        await query(`UPDATE boq_versions SET project_value = $1, updated_at = NOW() WHERE id = $2`, [project_value.toString(), id]);
+      }
+
+      // Also sync financial snapshot (budget, revenue, profit, margin) so the
+      // Project Dashboard shows real numbers even before "Make Final" is clicked.
+      if (budget !== undefined && revenue !== undefined) {
+        const p = profit !== undefined ? profit : (revenue - budget);
+        const m = margin !== undefined ? margin : (revenue !== 0 ? (p / revenue) * 100 : 0);
+        await query(
+          `UPDATE boq_versions SET final_budget = $1, final_revenue = $2, final_profit = $3, final_margin = $4, updated_at = NOW() WHERE id = $5`,
+          [budget, revenue, p, m, id]
+        );
+      }
+
+      if (project_id) {
+        await recalculateProjectValue(project_id, id);
+      }
+
+      res.json({ success: true });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Failed to sync project value" });
+    }
+  });
 
   // PUT /api/boq-versions/:versionId - Update version status (lock/submit)
   app.put(
@@ -7200,39 +7395,80 @@ export async function registerRoutes(
   // no logic changes, no simplifications.
   function computeItemValue(tableData: any): number {
     if (!tableData) return 0;
-    let itemSubtotal = 0;
+    
+    if (typeof tableData.frontend_computed_value === 'number') {
+      return tableData.frontend_computed_value;
+    }
+
+    let itemRate = 0;
+    let baseItemQty = 1;
+
     if (tableData.materialLines && tableData.targetRequiredQty !== undefined && tableData.configBasis) {
-      const requiredQty = Number(tableData.targetRequiredQty) || 0;
+      baseItemQty = parseFloat(tableData.targetRequiredQty) || 1;
+      let sumRate = 0;
       if (Array.isArray(tableData.materialLines)) {
-        const base = Number(tableData.configBasis?.baseRequiredQty || 1);
+        const base = parseFloat(tableData.configBasis?.baseRequiredQty) || 1;
         tableData.materialLines.forEach((line: any) => {
           if (!line) return;
-          const perUnitQty = parseFloat(line.perUnitQty || line.qty || line.baseQty || 0);
-          const rate = parseFloat(line.rate || (line.supplyRate + line.installRate) || 0);
-          const scaledPerUnit = base > 0 ? perUnitQty / base : 0;
-          itemSubtotal += (requiredQty * scaledPerUnit) * rate;
+          const lineQty = parseFloat(line.perUnitQty || line.qty || line.baseQty || 0);
+          const r = parseFloat(line.rate || (line.supplyRate + line.installRate) || 0);
+          if (base > 0) {
+            sumRate += (lineQty / base) * r;
+          }
         });
       }
       if (Array.isArray(tableData.step11_items)) {
         tableData.step11_items.forEach((item: any) => {
-          const qty = parseFloat(item.qty) || 0;
-          const supply = parseFloat(item.supply_rate || item.rate || 0);
-          const install = parseFloat(item.install_rate) || 0;
-          itemSubtotal += qty * (supply + install);
+          const q = parseFloat(item.qty) || 0;
+          const sr = parseFloat(item.supply_rate || item.rate || 0);
+          const ir = parseFloat(item.install_rate) || 0;
+          if (baseItemQty > 0) {
+            sumRate += (q / baseItemQty) * (sr + ir);
+          }
         });
       }
+      itemRate = sumRate;
     } else {
       const items = tableData.step11_items || [];
       if (Array.isArray(items)) {
         items.forEach((item: any) => {
-          const qty = parseFloat(item.qty) || 0;
-          const supply = parseFloat(item.supply_rate || item.rate || 0);
-          const install = parseFloat(item.install_rate) || 0;
-          itemSubtotal += qty * (supply + install);
+          const q = parseFloat(item.qty) || 0;
+          const sr = parseFloat(item.supply_rate || item.rate || 0);
+          const ir = parseFloat(item.install_rate) || 0;
+          itemRate += (sr + ir);
+          baseItemQty = q;
         });
       }
     }
-    return itemSubtotal;
+
+    const isLumpSum = tableData.is_lump_sum || (tableData.finalize_unit || "").toLowerCase() === 'ls';
+    let displayQty = baseItemQty;
+    if (isLumpSum) {
+      displayQty = 1;
+    } else if (tableData.finalize_qty !== undefined && tableData.finalize_qty !== null && tableData.finalize_qty !== "") {
+      displayQty = parseFloat(tableData.finalize_qty) || 0;
+    }
+
+    const baseTotalValue = itemRate * displayQty;
+
+    let overrideRateRaw = 0;
+    if (tableData.finalize_override_rate !== undefined && tableData.finalize_override_rate !== null && tableData.finalize_override_rate !== "") {
+      overrideRateRaw = parseFloat(tableData.finalize_override_rate) || 0;
+    }
+
+    const overrideType = tableData.finalize_override_type || "value";
+    let overrideTotalVal = baseTotalValue;
+
+    if (overrideRateRaw !== 0) {
+      if (overrideType === "percentage") {
+        const markup = (itemRate * overrideRateRaw / 100) * displayQty;
+        overrideTotalVal = baseTotalValue + markup;
+      } else {
+        overrideTotalVal = overrideRateRaw * displayQty;
+      }
+    }
+
+    return overrideTotalVal;
   }
 
   // Helper function to update project_value in boq_projects table
@@ -7256,22 +7492,17 @@ export async function registerRoutes(
       const trashedIds = await archiveService.getTrashedItemIds('boq_items');
       const excludedIds = [...archivedIds, ...trashedIds];
 
-      const sumResult = await query(
-        `SELECT COALESCE(SUM(computed_value), 0) AS total
-         FROM boq_items
-         WHERE version_id = $1
-         ${excludedIds.length > 0 ? 'AND id != ALL($2::text[])' : ''}`,
-        excludedIds.length > 0 ? [targetVersionId, excludedIds] : [targetVersionId],
-      );
-      const totalValue = parseFloat(sumResult.rows[0].total) || 0;
+      // We no longer sum computed_value to overwrite the version's project_value.
+      // The frontend FinalizeBoq.tsx is the sole source of truth and syncs the 
+      // exact calculated value (including custom columns) to the version table.
+      
+      const verRes = await query(`SELECT project_value FROM boq_versions WHERE id = $1`, [targetVersionId]);
+      const totalValue = parseFloat(verRes.rows[0]?.project_value) || 0;
 
-      // 2. Update the specific version's price snapshot
-      await query(
-        `UPDATE boq_versions SET project_value = $1, updated_at = NOW() WHERE id = $2`,
-        [totalValue.toString(), targetVersionId]
-      );
-
-      // 3. Sync the main project value from the "Last Final" version
+      // 3. Sync the main project value.
+      // Prefer the version that was just synced (targetVersionId) since the
+      // frontend pushed the exact calculated value to it. Only override with
+      // a different "final" version's value if one exists.
       const finalVerResult = await query(`
          SELECT project_value 
          FROM boq_versions 
@@ -7280,9 +7511,15 @@ export async function registerRoutes(
          LIMIT 1
       `, [projectId]);
 
+      // Use the active version's value by default
       let consolidatedValue = totalValue.toString();
       if (finalVerResult.rows.length > 0) {
-        consolidatedValue = finalVerResult.rows[0].project_value;
+        // If the final version has a real value, use it — but only if we weren't
+        // explicitly syncing a different version right now.
+        const finalVal = parseFloat(finalVerResult.rows[0].project_value) || 0;
+        if (finalVal > 0) {
+          consolidatedValue = finalVal.toString();
+        }
       }
       await query(
         `UPDATE boq_projects SET project_value = $1, updated_at = NOW() WHERE id = $2`,
