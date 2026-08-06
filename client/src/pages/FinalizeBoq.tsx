@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from "react";
+﻿import React, { useEffect, useState, useRef, useCallback } from "react";
 import { Reorder, useDragControls } from "framer-motion";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
@@ -1577,12 +1577,12 @@ export default function FinalizeBoq() {
           totals[idx] += val;
         }
       });
-      
+
       let finalVal = 0;
       if (grandTotalColumn === "Total Value (₹)") finalVal = baseTotalValue;
       else if (grandTotalColumn === "Override Total") finalVal = overrideTotalVal;
       else finalVal = rowCalculatedValues[grandTotalColumn] || 0;
-      
+
       itemFinalValues[item.id] = finalVal;
     });
 
@@ -1872,10 +1872,24 @@ export default function FinalizeBoq() {
             if (td.finalize_override_rate !== undefined && td.finalize_override_rate !== null) {
               restoredOverrideRates[item.id] = String(td.finalize_override_rate);
             }
-            // Restore override type - default to 'value' for backward compatibility
+            // Restore override type - only when this item actually has its own
+            // saved override data. IMPORTANT: do NOT default every item to
+            // 'value' here — that used to force-set overrideTypes[item.id]
+            // for every single item (including items with no override at
+            // all, e.g. newly added/synced items), which made the render's
+            // `overrideTypes[item.id] ?? globalOverrideType` fallback never
+            // apply. That caused newly added items to always be treated as
+            // "₹ value" mode instead of following the global "%" mode, so a
+            // global 20% override showed up as a flat "₹20" instead of the
+            // computed percentage amount. Items without their own saved
+            // override type are left out of the map so they correctly fall
+            // back to whatever the global override type is.
             if (td.finalize_override_type && (td.finalize_override_type === 'value' || td.finalize_override_type === 'percentage')) {
               restoredOverrideTypes[item.id] = td.finalize_override_type;
-            } else {
+            } else if (td.finalize_override_rate !== undefined && td.finalize_override_rate !== null) {
+              // Has an override rate but no explicit type saved (older data) -
+              // preserve old backward-compatible default of 'value' ONLY for
+              // items that actually have an override rate.
               restoredOverrideTypes[item.id] = 'value';
             }
           }
@@ -2092,6 +2106,27 @@ export default function FinalizeBoq() {
       setIsSyncingFromBom(false);
     }
   }, [selectedBoqVersionId, selectedBomVersionId, boqVersions, toast]);
+
+  // Auto-sync: whenever a BOQ version is (re)selected/opened, silently pull
+  // in any items that exist in its source BOM version but are missing from
+  // this BOQ draft — e.g. items added to the BOM after the BOQ version was
+  // created (via "edit request" -> add items). This mirrors clicking the
+  // manual "Sync from BOM" button, but happens automatically so the user
+  // doesn't have to remember to click it. It never touches/edits/removes
+  // existing BOQ items (see handleSyncMissingFromBom / server route), so
+  // this is safe to run automatically. Guarded by a ref so it only runs
+  // once per version (not on every refreshKey bump, e.g. after saving a
+  // cell edit), and skipped while a manual sync is already in flight.
+  const autoSyncedVersionsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!selectedBoqVersionId) return;
+    if (autoSyncedVersionsRef.current.has(selectedBoqVersionId)) return;
+    const currentBoqVersion = boqVersions.find(v => v.id === selectedBoqVersionId);
+    const sourceBomVersionId = selectedBomVersionId || currentBoqVersion?.source_version_id || null;
+    if (!sourceBomVersionId) return;
+    autoSyncedVersionsRef.current.add(selectedBoqVersionId);
+    handleSyncMissingFromBom();
+  }, [selectedBoqVersionId, boqVersions, selectedBomVersionId, handleSyncMissingFromBom]);
 
   useEffect(() => {
     // The materials/items table should only ever show BOQ Version content.
