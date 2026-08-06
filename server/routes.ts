@@ -366,6 +366,31 @@ export async function registerRoutes(
     }
   });
 
+  // GET /api/audit/online-users - Who is currently online & which page/module they're on (Current Activity tab)
+  app.get("/api/audit/online-users", authMiddleware, requireRole("admin", "software_team"), async (req: Request, res: Response) => {
+    try {
+      // "Online" = most recent logged action (navigation or write action) within the last 5 minutes
+      const sql = `
+        SELECT DISTINCT ON (username)
+          user_id, username, user_role as role, action, module, page,
+          requested_at as last_active
+        FROM audit_logs
+        WHERE username IS NOT NULL
+          AND requested_at > NOW() - INTERVAL '5 minutes'
+        ORDER BY username, requested_at DESC
+      `;
+      const result = await query(sql);
+      // Most recently active first
+      const rows = result.rows.sort(
+        (a: any, b: any) => new Date(b.last_active).getTime() - new Date(a.last_active).getTime()
+      );
+      res.json({ users: rows });
+    } catch (err) {
+      console.error("/api/audit/online-users GET error", err);
+      res.status(500).json({ message: "Failed to fetch online users" });
+    }
+  });
+
   // ==================== END AUDIT ROUTES ====================
 
 
@@ -1322,22 +1347,6 @@ export async function registerRoutes(
   } catch (err: unknown) {
     console.warn(
       "[db] Could not create boq_history table:",
-      (err as any)?.message || err,
-    );
-  }
-
-  // Ensure boq_history has field-level change tracking columns (safe, idempotent)
-  // These power the "who changed what value" chat/change-log dialog.
-  try {
-    await query(`ALTER TABLE boq_history ADD COLUMN IF NOT EXISTS item_id VARCHAR(100)`);
-    await query(`ALTER TABLE boq_history ADD COLUMN IF NOT EXISTS item_name TEXT`);
-    await query(`ALTER TABLE boq_history ADD COLUMN IF NOT EXISTS field_name TEXT`);
-    await query(`ALTER TABLE boq_history ADD COLUMN IF NOT EXISTS old_value TEXT`);
-    await query(`ALTER TABLE boq_history ADD COLUMN IF NOT EXISTS new_value TEXT`);
-    console.log("[db] boq_history field-change tracking columns verified/created");
-  } catch (err: unknown) {
-    console.warn(
-      "[db] Could not add boq_history field-change columns:",
       (err as any)?.message || err,
     );
   }
@@ -6196,23 +6205,6 @@ export async function registerRoutes(
         // Process each BOQ item that has edits
         let totalItemsUpdated = 0;
         const updatedRows: any[] = [];
-        // Field-level change log — powers the "who changed what value" chat/change-log dialog.
-        // This does not affect the existing added/deleted item history in any way.
-        const FIELD_LABELS: Record<string, string> = {
-          supply_rate: "Supply Rate",
-          rate: "Rate",
-          install_rate: "Install Rate",
-          qty: "Quantity",
-          description: "Description",
-          unit: "Unit",
-          hsn_code: "HSN Code",
-          materialName: "Material Name",
-          material_name: "Material Name",
-          location: "Location",
-        };
-        const fmtFieldLabel = (key: string) =>
-          FIELD_LABELS[key] || key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-        const fieldChangeLog: Array<{ itemId: string; itemName: string; field: string; oldValue: any; newValue: any }> = [];
 
         for (const [boqItemId, types] of Object.entries(editsByItem)) {
           console.log(`Processing edits for BOQ Item ID: ${boqItemId}`);
@@ -6246,30 +6238,7 @@ export async function registerRoutes(
             if (tableData.materialLines && tableData.materialLines[itemIdx]) {
               console.log(`Applying ENGINE edits to material index ${itemIdx} of BOQ Item ${boqItemId}`);
               const f = fields as any;
-              const engineItemName = tableData.materialLines[itemIdx].materialName || tableData.materialLines[itemIdx].name
-                || tableData.product_name || tableData.item || tableData.name || tableData.category_name || "Unknown Item";
               // MaterialLines uses supplyRate/installRate (camelCase)
-              if (f.supply_rate !== undefined || f.rate !== undefined) {
-                const oldVal = tableData.materialLines[itemIdx].supplyRate;
-                const newVal = Number(f.supply_rate !== undefined ? f.supply_rate : f.rate);
-                if (String(oldVal ?? "") !== String(newVal)) {
-                  fieldChangeLog.push({ itemId: boqItemId, itemName: engineItemName, field: fmtFieldLabel("supply_rate"), oldValue: oldVal, newValue: newVal });
-                }
-              }
-              if (f.install_rate !== undefined) {
-                const oldVal = tableData.materialLines[itemIdx].installRate;
-                const newVal = Number(f.install_rate);
-                if (String(oldVal ?? "") !== String(newVal)) {
-                  fieldChangeLog.push({ itemId: boqItemId, itemName: engineItemName, field: fmtFieldLabel("install_rate"), oldValue: oldVal, newValue: newVal });
-                }
-              }
-              if (f.qty !== undefined) {
-                const oldVal = tableData.materialLines[itemIdx].perUnitQty;
-                const newVal = Number(f.qty);
-                if (String(oldVal ?? "") !== String(newVal)) {
-                  fieldChangeLog.push({ itemId: boqItemId, itemName: engineItemName, field: fmtFieldLabel("qty"), oldValue: oldVal, newValue: newVal });
-                }
-              }
               if (f.supply_rate !== undefined) tableData.materialLines[itemIdx].supplyRate = Number(f.supply_rate);
               else if (f.rate !== undefined) tableData.materialLines[itemIdx].supplyRate = Number(f.rate);
               if (f.install_rate !== undefined) tableData.materialLines[itemIdx].installRate = Number(f.install_rate);
@@ -6287,17 +6256,8 @@ export async function registerRoutes(
             const itemIdx = parseInt(itemIdxStr, 10);
             if (tableData.step11_items && tableData.step11_items[itemIdx]) {
               console.log(`Applying MANUAL edits to sub-item index ${itemIdx} of BOQ Item ${boqItemId}`);
-              const oldSubItem = tableData.step11_items[itemIdx] as any;
-              const manualItemName = oldSubItem.materialName || oldSubItem.material_name || oldSubItem.name
-                || tableData.product_name || tableData.item || tableData.name || tableData.category_name || "Unknown Item";
-              for (const [fKey, fNewVal] of Object.entries(fields as any)) {
-                const oldVal = oldSubItem?.[fKey];
-                if (String(oldVal ?? "") !== String(fNewVal ?? "")) {
-                  fieldChangeLog.push({ itemId: boqItemId, itemName: manualItemName, field: fmtFieldLabel(fKey), oldValue: oldVal, newValue: fNewVal });
-                }
-              }
               tableData.step11_items[itemIdx] = {
-                ...oldSubItem,
+                ...tableData.step11_items[itemIdx],
                 ...fields as any
               };
               editsAppliedToThisItem++;
@@ -6357,33 +6317,6 @@ export async function registerRoutes(
           } catch (hErr) {
             console.warn("Failed to log edit history:", hErr);
           }
-
-          // Log individual field-level changes (who changed what value from -> to).
-          // Stored with action 'FIELD_CHANGED' so it never shows up in the existing
-          // Added/Deleted item history list — it only powers the new change-log dialog.
-          if (fieldChangeLog.length > 0) {
-            try {
-              const user = (req as any).user;
-              for (const change of fieldChangeLog) {
-                await query(
-                  `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name, field_name, old_value, new_value, created_at)
-                   VALUES ($1, $2, $3, 'FIELD_CHANGED', $4, $5, $6, $7, $8, NOW())`,
-                  [
-                    versionId,
-                    user?.id,
-                    user?.fullName || user?.username,
-                    change.itemId,
-                    change.itemName,
-                    change.field,
-                    change.oldValue === undefined || change.oldValue === null ? "" : String(change.oldValue),
-                    change.newValue === undefined || change.newValue === null ? "" : String(change.newValue),
-                  ]
-                );
-              }
-            } catch (hErr) {
-              console.warn("Failed to log field-change history:", hErr);
-            }
-          }
         }
 
         res.json({ message: "Edits saved successfully", updatedItems: updatedRows });
@@ -6420,52 +6353,6 @@ export async function registerRoutes(
       } catch (err) {
         console.error("PATCH /api/boq-history/:historyId/reason error", err);
         res.status(500).json({ message: "Failed to update reason" });
-      }
-    }
-  );
-
-  // POST /api/boq-versions/:versionId/log-field-change - Log a single explicit
-  // field change for the Change Log dialog. Used for edits that don't belong
-  // to one specific BOQ item row — e.g. a global column % setting (like the
-  // "Negotiation" or "Margin" VAL box in the column header) that applies a
-  // formula across many rows. This logs ONE entry for that one user action,
-  // instead of the per-item recalculation spam that would come from diffing
-  // every row's saved table_data.
-  app.post(
-    "/api/boq-versions/:versionId/log-field-change",
-    authMiddleware,
-    async (req: Request, res: Response) => {
-      try {
-        const { versionId } = req.params;
-        const { field, oldValue, newValue, itemName, itemId } = req.body;
-
-        if (!field) {
-          return res.status(400).json({ message: "field is required" });
-        }
-        if (String(oldValue ?? "") === String(newValue ?? "")) {
-          // No actual change — nothing to log.
-          return res.json({ success: true, skipped: true });
-        }
-
-        const user = (req as any).user;
-        await query(
-          `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name, field_name, old_value, new_value, created_at)
-           VALUES ($1, $2, $3, 'FIELD_CHANGED', $4, $5, $6, $7, $8, NOW())`,
-          [
-            versionId,
-            user?.id,
-            user?.fullName || user?.username,
-            itemId || null,
-            itemName || "Global Column Setting",
-            field,
-            oldValue === undefined || oldValue === null ? "" : String(oldValue),
-            newValue === undefined || newValue === null ? "" : String(newValue),
-          ]
-        );
-        res.json({ success: true });
-      } catch (err) {
-        console.error("POST /api/boq-versions/:versionId/log-field-change error", err);
-        res.status(500).json({ message: "Failed to log field change" });
       }
     }
   );
@@ -8098,81 +7985,17 @@ export async function registerRoutes(
     async (req: Request, res: Response) => {
       try {
         const { id } = req.params;
-        const { table_data, change_log } = req.body;
+        const { table_data } = req.body;
 
         if (!table_data) {
           res.status(400).json({ message: "table_data is required" });
           return;
         }
 
-        // Change Log entries: the client sends this ONLY when the user
-        // explicitly edited a specific field (Description, Qty, Unit,
-        // Override Rate, or a custom formula column cell) and the value
-        // actually changed. Bulk/automatic saves (global % recalculation,
-        // column add/remove/clone, layout-only saves, etc.) don't send this,
-        // so they never appear in the Change Log — this avoids duplicate /
-        // noisy entries every time a formula recalculates across all items.
-        let fieldChangeLog: Array<{ field: string; oldValue: any; newValue: any }> = [];
-        if (change_log) {
-          const entries = Array.isArray(change_log) ? change_log : [change_log];
-          fieldChangeLog = entries.filter((c: any) => c && c.field);
-        }
-
-        let itemNameForLog = "Unknown Item";
-        let versionIdForLog: string | null = null;
-        if (fieldChangeLog.length > 0) {
-          try {
-            const prevRes = await query(
-              `SELECT version_id, estimator, table_data FROM boq_items WHERE id = $1`,
-              [id]
-            );
-            if (prevRes.rows.length > 0) {
-              versionIdForLog = prevRes.rows[0].version_id || null;
-              let oldTd = prevRes.rows[0].table_data;
-              if (typeof oldTd === "string") {
-                try { oldTd = JSON.parse(oldTd); } catch (e) { oldTd = {}; }
-              }
-              oldTd = oldTd || {};
-              const newTd = table_data as any;
-              itemNameForLog = oldTd.product_name || oldTd.item || oldTd.name || oldTd.category_name
-                || newTd.product_name || newTd.item || newTd.name || newTd.category_name
-                || prevRes.rows[0].estimator || "Unknown Item";
-            }
-          } catch (lookupErr) {
-            console.warn("PUT /api/boq-items/:id — could not resolve item name/version for change log:", lookupErr);
-          }
-        }
-
         await query(
           "UPDATE boq_items SET table_data = $1, computed_value = $2, created_at = NOW() WHERE id = $3",
           [JSON.stringify(table_data), computeItemValue(table_data), id]
         );
-
-        // Log field-level changes for the Change Log dialog. Purely additive —
-        // does not affect the item update above or the existing history list.
-        if (fieldChangeLog.length > 0 && versionIdForLog) {
-          try {
-            const user = (req as any).user;
-            for (const change of fieldChangeLog) {
-              await query(
-                `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name, field_name, old_value, new_value, created_at)
-                 VALUES ($1, $2, $3, 'FIELD_CHANGED', $4, $5, $6, $7, $8, NOW())`,
-                [
-                  versionIdForLog,
-                  user?.id,
-                  user?.fullName || user?.username,
-                  id,
-                  itemNameForLog,
-                  change.field,
-                  change.oldValue === undefined || change.oldValue === null ? "" : String(change.oldValue),
-                  change.newValue === undefined || change.newValue === null ? "" : String(change.newValue),
-                ]
-              );
-            }
-          } catch (hErr) {
-            console.warn("Failed to log field-change history for boq-items PUT:", hErr);
-          }
-        }
 
         res.json({ message: "BOM item updated successfully" });
       } catch (err) {

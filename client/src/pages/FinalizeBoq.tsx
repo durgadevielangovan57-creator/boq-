@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from "react";
+﻿import React, { useEffect, useState, useRef, useCallback } from "react";
 import { Reorder, useDragControls } from "framer-motion";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
@@ -147,6 +147,33 @@ const isSupplyLabourExceeding = (itemCols: any[], colName: string): boolean => {
 
   const sum = (Number(supplyCol.percentageValue) || 0) + (Number(labourCol.percentageValue) || 0);
   return sum > 100.01; // strictly exceeds 100%, with a tiny tolerance for float rounding
+};
+
+// Hard-caps whatever the user types into "Supply Rate" / "Labour Rate" so the two can
+// never add up to more than 100% for a given row. e.g. if Supply Rate is already 60,
+// Labour Rate can be at most 40 (and vice-versa). Any other column, or either column
+// when its counterpart doesn't exist, is returned unchanged.
+const clampSupplyLabourPercent = (itemCols: any[], colName: string, proposedValue: number): number => {
+  const normalizedTarget = (colName || "").trim().toLowerCase();
+  const isSupply = normalizedTarget === "supply rate";
+  const isLabour = normalizedTarget === "labour rate" || normalizedTarget === "labor rate";
+  if (!isSupply && !isLabour) return proposedValue;
+
+  const supplyCol = itemCols.find(c => (c.name || "").trim().toLowerCase() === "supply rate");
+  const labourCol = itemCols.find(c => {
+    const n = (c.name || "").trim().toLowerCase();
+    return n === "labour rate" || n === "labor rate";
+  });
+  if (!supplyCol || !labourCol) return proposedValue; // counterpart column doesn't exist — nothing to cap against
+
+  const otherValue = isSupply
+    ? (Number(labourCol.percentageValue) || 0)
+    : (Number(supplyCol.percentageValue) || 0);
+
+  const maxAllowed = Math.max(0, 100 - otherValue);
+  if (proposedValue < 0) return 0;
+  if (proposedValue > maxAllowed) return maxAllowed;
+  return proposedValue;
 };
 
 const getItemMetrics = (td: any) => {
@@ -2276,13 +2303,22 @@ export default function FinalizeBoq() {
     // but withBudgetCheck needs to know the FUTURE value before we update state.
     // We'll use a pragmatic approach: if the multiplier/item changes, we check if it increases.
 
+    // Hard cap: Supply Rate + Labour Rate can never exceed 100% overall. Global settings
+    // apply one value to every item, so we cap against the first item's saved column
+    // definitions (same reference the rest of this function already treats as "the" config).
+    if (multiplierSource === "manual" && operator === "%") {
+      const firstItemId = boqItems[0]?.id;
+      const referenceCols = firstItemId ? (customColumns[firstItemId] || []) : allCols;
+      multiplier = clampSupplyLabourPercent(referenceCols, colName, multiplier);
+    }
+
     if (activeVersionId) {
       const oldSettings = globalColSettings[colName] || {};
       const globalColDef = allCols.find(c => c.name === colName);
       const oldBaseSource = oldSettings.baseSource || ((globalColDef as any)?.isPercentage ? "Total Value (₹)" : "manual");
       const oldOperator = oldSettings.operator || "%";
       const oldMultiplierSource = oldSettings.multiplierSource || "manual";
-      
+
       if (oldBaseSource !== baseSource) {
         apiFetch(`/api/boq-versions/${activeVersionId}/log-field-change`, {
           method: "POST", headers: { "Content-Type": "application/json" },
@@ -2385,13 +2421,20 @@ export default function FinalizeBoq() {
     const oldOperator = itemCol.operator || "%";
     const oldMultiplierSource = itemCol.multiplierSource || "manual";
 
+    // Hard cap: Supply Rate + Labour Rate can never exceed 100% for this row.
+    // (itemCols/colIdx reflect the OTHER column's already-saved value, since this
+    // column's own entry hasn't been written yet.)
+    if (multiplierSource === "manual" && operator === "%") {
+      multiplier = clampSupplyLabourPercent(itemCols, colName, multiplier);
+    }
+
     const baseSource = baseSourceOverride || itemCol.baseSource || "Total Value (₹)";
-    
+
     if (activeVersionId) {
       let td2 = item.table_data || {};
       if (typeof td2 === "string") try { td2 = JSON.parse(td2); } catch { td2 = {}; }
       const resolvedItemName = td2.product_name || item.estimator || "Unknown Item";
-      
+
       if (oldBaseSource !== baseSource) {
         apiFetch(`/api/boq-versions/${activeVersionId}/log-field-change`, {
           method: "POST", headers: { "Content-Type": "application/json" },
