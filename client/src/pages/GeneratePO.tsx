@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, AlertCircle, FileText, GripVertical, Plus } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, AlertCircle, FileText, GripVertical, Plus, Search } from "lucide-react";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -645,6 +645,8 @@ export default function GeneratePo() {
   const [isPOModalOpen, setIsPOModalOpen] = useState(false);
   const [previewVendors, setPreviewVendors] = useState<any[]>([]);
   const [isLoadingVendors, setIsLoadingVendors] = useState(false);
+  const [vendorSearchQuery, setVendorSearchQuery] = useState("");
+  const [productSearchQuery, setProductSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [projectSearchTerm, setProjectSearchTerm] = useState("");
   // Budget warning/modals removed for Generate BOM page per request
@@ -657,6 +659,7 @@ export default function GeneratePo() {
   const handleOpenPOModal = async () => {
     if (!selectedVersionId) return;
     setIsPOModalOpen(true);
+    setVendorSearchQuery("");
     setIsLoadingVendors(true);
     try {
       const res = await apiFetch(`/api/purchase-orders/preview-vendors?versionId=${selectedVersionId}`);
@@ -1021,6 +1024,58 @@ export default function GeneratePo() {
     return Array.from(shopNames);
   };
   const uniqueShops = computeUniqueShops();
+
+  // Count how many material lines fall under each shop (same traversal/filters as
+  // computeUniqueShops above, just tallying instead of just collecting unique names).
+  const computeShopMaterialCounts = (): Record<string, number> => {
+    const counts: Record<string, number> = {};
+    const tally = (items: any[]) => {
+      for (const item of items) {
+        const qty = parseFloat(item.qty || item.quantity || item.requiredQty || item.baseQty || 0) || 0;
+        if (qty > 0) {
+          const name = item.shop_name || item.shopName;
+          if (name && typeof name === "string" && name.trim().length > 0) {
+            const key = name.trim();
+            counts[key] = (counts[key] || 0) + 1;
+          }
+        }
+      }
+    };
+    for (const boqItem of boqItems) {
+      const td = parseTableData(boqItem.table_data);
+      if (td.materialLines && td.targetRequiredQty !== undefined) {
+        if (Array.isArray(td.materialLines)) tally(td.materialLines);
+        if (Array.isArray(td.step11_items)) tally(td.step11_items.filter((it: any) => it.manual === true));
+      } else {
+        if (Array.isArray(td.step11_items)) tally(td.step11_items);
+        else if (Array.isArray(td.materialLines)) tally(td.materialLines);
+      }
+    }
+    return counts;
+  };
+  const shopMaterialCounts = computeShopMaterialCounts();
+  const totalMaterialCount = Object.values(shopMaterialCounts).reduce((sum, c) => sum + c, 0);
+
+  // Filter the on-page product list by product name, shop name, or material/item name —
+  // used by the search bar above "Annexure Items". Doesn't touch boqItems itself.
+  const filteredBoqItems = (() => {
+    const q = productSearchQuery.trim().toLowerCase();
+    if (!q) return boqItems;
+    return boqItems.filter((boqItem: BOMItem) => {
+      const td = parseTableData(boqItem.table_data);
+      const productName = String(td.product_name || boqItem.estimator || "").toLowerCase();
+      if (productName.includes(q)) return true;
+
+      const lineMatches = (items: any[]): boolean =>
+        Array.isArray(items) && items.some((it: any) => {
+          const itemName = String(it.name || it.title || it.material_name || "").toLowerCase();
+          const shopName = String(it.shop_name || it.shopName || "").toLowerCase();
+          return itemName.includes(q) || shopName.includes(q);
+        });
+
+      return lineMatches(td.materialLines) || lineMatches(td.step11_items) || lineMatches(td.rows) || lineMatches(td.items);
+    });
+  })();
 
   const projectBudget = parseFloat(selectedProject?.budget || "0");
   const currentProjectValue = calculateCurrentProjectValue();
@@ -1887,22 +1942,37 @@ export default function GeneratePo() {
           {selectedProjectId && (
             <Card>
               <CardContent className="space-y-4 pt-6">
-                <h2 className="text-lg font-semibold">Annexure Items</h2>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <h2 className="text-lg font-semibold">Annexure Items</h2>
+                  {boqItems.length > 0 && (
+                    <div className="relative w-full sm:w-72">
+                      <Search className="h-4 w-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <Input
+                        value={productSearchQuery}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setProductSearchQuery(e.target.value)}
+                        placeholder="Search products, materials, or shops..."
+                        className="pl-8 h-9 text-sm"
+                      />
+                    </div>
+                  )}
+                </div>
                 {boqItems.length === 0
                   ? <div className="text-gray-500 text-center py-4">No products added yet. Click Add Product +</div>
-                  : <div className="space-y-8">
-                    {boqItems.map((boqItem: BOMItem, boqIdx: number) => (
-                      <BoqItemCard key={boqItem.id} boqItem={boqItem} boqIdx={boqIdx} isVersionSubmitted={isVersionSubmitted}
-                        expandedProductIds={expandedProductIds} setExpandedProductIds={setExpandedProductIds}
-                        getEditedValue={getEditedValue} updateEditedField={updateEditedField}
-                        handleDeleteRow={handleDeleteRow} handleFinalizeProduct={handleFinalizeProduct}
-                        handleAddItem={handleAddItem} loadBoqItemsAndEdits={loadBoqItemsAndEdits} setBoqItems={setBoqItems}
-                        checkBudgetEarly={checkBudgetEarly}
-                        handleSaveProject={handleSaveProject}
-                        isPurchaseTeam={isPurchaseTeam}
-                      />
-                    ))}
-                  </div>
+                  : filteredBoqItems.length === 0
+                    ? <div className="text-gray-500 text-center py-4">No products match "{productSearchQuery}"</div>
+                    : <div className="space-y-8">
+                      {filteredBoqItems.map((boqItem: BOMItem, boqIdx: number) => (
+                        <BoqItemCard key={boqItem.id} boqItem={boqItem} boqIdx={boqIdx} isVersionSubmitted={isVersionSubmitted}
+                          expandedProductIds={expandedProductIds} setExpandedProductIds={setExpandedProductIds}
+                          getEditedValue={getEditedValue} updateEditedField={updateEditedField}
+                          handleDeleteRow={handleDeleteRow} handleFinalizeProduct={handleFinalizeProduct}
+                          handleAddItem={handleAddItem} loadBoqItemsAndEdits={loadBoqItemsAndEdits} setBoqItems={setBoqItems}
+                          checkBudgetEarly={checkBudgetEarly}
+                          handleSaveProject={handleSaveProject}
+                          isPurchaseTeam={isPurchaseTeam}
+                        />
+                      ))}
+                    </div>
                 }
               </CardContent>
             </Card>
@@ -2012,19 +2082,57 @@ export default function GeneratePo() {
                 <div><strong>No Vendors Found.</strong> Please ensure you have selected vendors for your items before generating POs.</div>
               </div>
             ) : (
-              <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
-                <p className="text-xs font-bold text-gray-500 uppercase">Found {previewVendors.length} Vendors:</p>
-                {previewVendors.map((vendor, idx) => (
-                  <div key={vendor.id} className="flex items-center gap-3 p-2 rounded border bg-gray-50">
-                    <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-xs">
-                      {idx + 1}
+              <div className="space-y-2">
+                <div className="relative">
+                  <Search className="h-4 w-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <Input
+                    value={vendorSearchQuery}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setVendorSearchQuery(e.target.value)}
+                    placeholder="Search shops..."
+                    className="pl-8 h-9 text-sm"
+                  />
+                </div>
+
+                {(() => {
+                  const q = vendorSearchQuery.trim().toLowerCase();
+                  const filteredVendors = q
+                    ? previewVendors.filter(v => (v.name || "").toLowerCase().includes(q))
+                    : previewVendors;
+                  return (
+                    <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-bold text-gray-500 uppercase">
+                          {q ? `Showing ${filteredVendors.length} of ${previewVendors.length} Vendors:` : `Found ${previewVendors.length} Vendors:`}
+                        </p>
+                        <span className="text-[11px] font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-2 py-0.5">
+                          {totalMaterialCount} total {totalMaterialCount === 1 ? "material" : "materials"}
+                        </span>
+                      </div>
+                      {filteredVendors.length === 0 ? (
+                        <p className="text-sm text-gray-500 py-4 text-center">No shops match "{vendorSearchQuery}"</p>
+                      ) : (
+                        filteredVendors.map((vendor) => {
+                          const origIdx = previewVendors.indexOf(vendor);
+                          const materialCount = shopMaterialCounts[(vendor.name || "").trim()] || 0;
+                          return (
+                            <div key={vendor.id ?? vendor.name} className="flex items-center gap-3 p-2 rounded border bg-gray-50">
+                              <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-bold text-xs">
+                                {origIdx + 1}
+                              </div>
+                              <div className="flex-1">
+                                <div className="text-sm font-semibold text-gray-800">{vendor.name}</div>
+                                <div className="text-[10px] text-gray-500">{vendor.location || "No location set"}</div>
+                              </div>
+                              <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-[11px] font-bold">
+                                {materialCount} {materialCount === 1 ? "material" : "materials"}
+                              </span>
+                            </div>
+                          );
+                        })
+                      )}
                     </div>
-                    <div>
-                      <div className="text-sm font-semibold text-gray-800">{vendor.name}</div>
-                      <div className="text-[10px] text-gray-500">{vendor.location || "No location set"}</div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })()}
               </div>
             )}
           </div>

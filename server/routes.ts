@@ -10562,6 +10562,20 @@ export async function registerRoutes(
           return res.status(404).json({ message: "No items found for this BOM version" });
         }
 
+        // Exclude archived/trashed items — must match the same filtering used by
+        // GET /api/boq-items/version/:versionId (the BOM screen / Annexure export),
+        // otherwise a stray archived/trashed duplicate product still gets pulled in
+        // here and inflates PO quantities beyond what the BOM actually shows.
+        const archivedBoqItemIds = await archiveService.getArchivedItemIds('boq_items');
+        const trashedBoqItemIds = await archiveService.getTrashedItemIds('boq_items');
+        itemsResult.rows = itemsResult.rows.filter(
+          (row: any) => !archivedBoqItemIds.includes(row.id) && !trashedBoqItemIds.includes(row.id)
+        );
+
+        if (itemsResult.rows.length === 0) {
+          return res.status(404).json({ message: "No items found for this BOM version" });
+        }
+
         // 2. Extract lines from each item's table_data and group by vendor (shop_id)
         const vendorGroups: Record<string, any[]> = {};
 
@@ -10610,9 +10624,10 @@ export async function registerRoutes(
                 // Include wastage so PO matches BOM exactly
                 const effectiveQtyAtBasis = baseQty + wastageQty;
                 const roundedQtyAtBasis = applyR ? Math.ceil(effectiveQtyAtBasis) : effectiveQtyAtBasis;
-                const computedPerUnitQty = base > 0 ? roundedQtyAtBasis / base : 0;
-                // Use l.perUnitQty if it exists (allows respecting edits from Generate PO / BOM Edit screen)
-                const perUnitQty = l.perUnitQty !== undefined ? Number(l.perUnitQty) : computedPerUnitQty;
+                // Always recompute fresh from current base/wastage/rounding so PO qty matches
+                // the BOM exactly (including wastage). Do NOT fall back to any stored l.perUnitQty —
+                // that field can go stale after edits and silently drop wastage from just that line.
+                const perUnitQty = base > 0 ? roundedQtyAtBasis / base : 0;
 
                 const scaledQty = isFrozenQty ? roundedQtyAtBasis : Number((perUnitQty * target).toFixed(2));
                 const roundOffQty = isFrozenQty ? roundedQtyAtBasis : (applyR ? Math.ceil(scaledQty) : scaledQty);
