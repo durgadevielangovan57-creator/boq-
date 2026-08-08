@@ -29,7 +29,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { fuzzySearch, cn } from "@/lib/utils";
 import XLSX from 'xlsx-js-style';
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import apiFetch from "@/lib/api";
 import { computeBoq } from "@/lib/boqCalc";
@@ -89,7 +89,9 @@ import {
   Percent,
   History,
   Star,
-  GitMerge
+  GitMerge,
+  Check,
+  FolderOpen
 } from "lucide-react";
 import { BoqAnalysisDialog } from "@/components/BoqAnalysisDialog";
 import { RateSuggestionPopover } from "@/components/RateSuggestionPopover";
@@ -774,8 +776,23 @@ export default function FinalizeBoq() {
   const [finalizedItems, setFinalizedItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [location, setLocation] = useLocation();
+  // wouter's useLocation() only ever returns the PATH (e.g. "/finalize-bom"),
+  // never the query string — that's a separate hook. The old code was
+  // trying to read "?project=..." off of `location` itself, which never
+  // contained it, so the very first restore-on-refresh attempt silently
+  // did nothing. useSearch() is the hook that actually tracks "?...".
+  const search = useSearch();
   const { toast } = useToast();
   const { user } = useAuth();
+  // --- Refresh persistence: keep the current project/BOM-version/BOQ-version
+  // selection reflected in the URL so a hard refresh reopens the same view
+  // instead of dropping back to the "select a project" state. See the two
+  // effects below ("restore selection from URL on load" and "keep URL in
+  // sync with selection") plus the pending-restore refs used inside
+  // loadVersions() to apply the restored version ids once their lists load.
+  const didInitialUrlRestoreRef = useRef(false);
+  const pendingRestoreBomVersionIdRef = useRef<string | null>(null);
+  const pendingRestoreBoqVersionIdRef = useRef<string | null>(null);
   const isFinanceTeam = user?.role === "finance_team";
   const dragControls = useDragControls();
   const [templates, setTemplates] = useState<BOQTemplate[]>([]);
@@ -824,6 +841,60 @@ export default function FinalizeBoq() {
   const [productDescriptions, setProductDescriptions] = useState<{ [id: string]: string }>({});
   const [projectStatusFilter, setProjectStatusFilter] = useState<string>("all");
   const [projectSearchTerm, setProjectSearchTerm] = useState("");
+
+  // --- UI-only state for the redesigned "Project Filters" dropdown (no filter logic here) ---
+  const [isStatusFilterOpen, setIsStatusFilterOpen] = useState(false);
+  const [statusFilterSearch, setStatusFilterSearch] = useState("");
+  const statusFilterRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isStatusFilterOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (statusFilterRef.current && !statusFilterRef.current.contains(e.target as Node)) {
+        setIsStatusFilterOpen(false);
+      }
+    };
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsStatusFilterOpen(false);
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [isStatusFilterOpen]);
+
+  useEffect(() => {
+    if (!isStatusFilterOpen) setStatusFilterSearch("");
+  }, [isStatusFilterOpen]);
+  // --- end UI-only state ---
+
+  // --- UI-only state for the redesigned "Table Actions" dropdown (no business logic here) ---
+  const [isTableActionsOpen, setIsTableActionsOpen] = useState(false);
+  const [tableActionsSearch, setTableActionsSearch] = useState("");
+  const [activeTableActionIndex, setActiveTableActionIndex] = useState(0);
+  const tableActionsRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isTableActionsOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (tableActionsRef.current && !tableActionsRef.current.contains(e.target as Node)) {
+        setIsTableActionsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isTableActionsOpen]);
+
+  useEffect(() => {
+    if (!isTableActionsOpen) {
+      setTableActionsSearch("");
+      setActiveTableActionIndex(0);
+    }
+  }, [isTableActionsOpen]);
+  // --- end UI-only state ---
+
 
   const filteredProjects = React.useMemo(() => {
     return projects.filter((p) => {
@@ -1759,6 +1830,16 @@ export default function FinalizeBoq() {
           // Logic for selecting initial BOM version
           if (selectedBomVersionId && bomList.some((v: BOQVersion) => v.id === selectedBomVersionId)) {
             // keep existing
+          } else if (
+            pendingRestoreBomVersionIdRef.current &&
+            bomList.some((v: BOQVersion) => v.id === pendingRestoreBomVersionIdRef.current)
+          ) {
+            // Restoring the BOM version the user had open before a page
+            // refresh (id came from the URL) — treat it the same as
+            // "keep existing" so it isn't overridden by the default
+            // auto-select-approved-version logic below.
+            setSelectedBomVersionId(pendingRestoreBomVersionIdRef.current);
+            approved = bomList.find((v: BOQVersion) => v.id === pendingRestoreBomVersionIdRef.current) || null;
           } else {
             const finalBom = bomList.filter((v: BOQVersion) => v.is_last_final && !v.is_disabled);
             const selectable = finalBom.length > 0
@@ -1772,10 +1853,17 @@ export default function FinalizeBoq() {
               setSelectedBomVersionId(null);
             }
           }
+          pendingRestoreBomVersionIdRef.current = null;
 
           // Logic for selecting initial BOQ version
           if (selectedBoqVersionId && boqList.some((v: BOQVersion) => v.id === selectedBoqVersionId)) {
             // keep existing
+          } else if (
+            pendingRestoreBoqVersionIdRef.current &&
+            boqList.some((v: BOQVersion) => v.id === pendingRestoreBoqVersionIdRef.current)
+          ) {
+            // Restoring the BOQ version from the URL after a refresh.
+            setSelectedBoqVersionId(pendingRestoreBoqVersionIdRef.current);
           } else {
             const selectableBoqs = boqList.filter((v: BOQVersion) => !v.is_disabled);
             // ONLY auto-select a BOQ if no approved BOM was selected above to prevent conflicting data views
@@ -1785,6 +1873,7 @@ export default function FinalizeBoq() {
               setSelectedBoqVersionId(null);
             }
           }
+          pendingRestoreBoqVersionIdRef.current = null;
         }
       } catch (err) {
         console.error("Failed to load versions:", err);
@@ -2182,22 +2271,64 @@ export default function FinalizeBoq() {
 
   useEffect(() => {
     try {
-      const qs =
-        typeof location === "string" ? location.split("?")[1] || "" : "";
+      const qs = search || "";
       const params = new URLSearchParams(qs);
       const projectParam = params.get("project");
-      if (projectParam && projectParam !== selectedProjectId) {
-        const exists = projects.find((p) => p.id === projectParam);
-        if (exists) {
-          setSelectedProjectId(projectParam);
-          setSelectedBomVersionId(null);
-          setSelectedBoqVersionId(null);
+      const bomParam = params.get("bom");
+      const boqParam = params.get("boq");
+
+      if (projectParam) {
+        // IMPORTANT: don't mark the restore attempt "done" (which arms the
+        // URL-sync/write effect below) until the projects list has actually
+        // finished loading. `projects` starts out as [] while the initial
+        // fetch is in flight, so on the very first render this project id
+        // would never be found — if we armed the write effect right then,
+        // it would see nothing selected yet and immediately overwrite the
+        // URL back to a bare "/finalize-bom", wiping out ?project=...&boq=...
+        // before we ever got a real chance to restore it (this was exactly
+        // the refresh bug: the URL params were stripped instantly).
+        if (loading) return;
+        if (projectParam !== selectedProjectId) {
+          const exists = projects.find((p) => p.id === projectParam);
+          if (exists) {
+            // Stash the BOM/BOQ version ids from the URL so loadVersions()
+            // (triggered by the selectedProjectId change below) can apply
+            // them once the version lists come back — restores the exact
+            // view the user had before a page refresh instead of always
+            // falling back to the default auto-selected version.
+            pendingRestoreBomVersionIdRef.current = bomParam || null;
+            pendingRestoreBoqVersionIdRef.current = boqParam || null;
+            setSelectedProjectId(projectParam);
+          }
         }
       }
+      didInitialUrlRestoreRef.current = true;
     } catch (e) {
-      // ignore
+      didInitialUrlRestoreRef.current = true;
     }
-  }, [location, projects]);
+  }, [search, projects, loading]);
+
+  // Keep the URL in sync with the current selection (project / BOM version /
+  // BOQ version) so that refreshing the page — or bookmarking/sharing the
+  // link — reopens the same Finalize BOQ view instead of dropping back to
+  // the project picker. Uses `replace` so it doesn't spam browser history.
+  // Waits for the initial URL-restore attempt above so it doesn't wipe out
+  // an incoming ?project=... link before that effect has had a chance to
+  // read it.
+  useEffect(() => {
+    if (!didInitialUrlRestoreRef.current) return;
+    const basePath = typeof location === "string" && location ? location : "/finalize-bom";
+    const params = new URLSearchParams();
+    if (selectedProjectId) params.set("project", selectedProjectId);
+    if (selectedBomVersionId) params.set("bom", selectedBomVersionId);
+    if (selectedBoqVersionId) params.set("boq", selectedBoqVersionId);
+    const qs = params.toString();
+    // useSearch() returns the query string WITHOUT a leading "?" (or "" when
+    // absent) — compare against that same shape before deciding to navigate.
+    if (qs !== (search || "")) {
+      setLocation(qs ? `${basePath}?${qs}` : basePath, { replace: true });
+    }
+  }, [selectedProjectId, selectedBomVersionId, selectedBoqVersionId]);
 
   // Project creation moved to dedicated Create Project page
 
@@ -4270,6 +4401,194 @@ export default function FinalizeBoq() {
     return () => clearTimeout(timer);
   }, [currentProjectValue, generatedBudget, revenue, activeVersionId, loading, selectedProjectId]);
 
+  // --- Table Actions list for the redesigned dropdown. Each entry's onClick is the exact
+  // same handler/logic that previously lived on its individual button — nothing here changes
+  // business logic, calculations, or API calls; it only reorganizes how actions are presented. ---
+  const tableActions: {
+    id: string;
+    label: string;
+    icon: React.ReactNode;
+    onClick: () => void;
+    disabled?: boolean;
+    destructive?: boolean;
+  }[] = [
+      {
+        id: "add-global-column",
+        label: "Add Global Column",
+        icon: <Plus className="w-3.5 h-3.5" />,
+        onClick: async () => {
+          const colName = window.prompt("Enter new column name (adds to all products):");
+          if (!colName?.trim()) return;
+          const isPct = window.confirm("Do you want to calculate percentage for this column?");
+          const updates = boqItems.map(item => {
+            const nextCols = [...(customColumns[item.id] || []), {
+              name: colName.trim(),
+              isTotal: false,
+              isPercentage: isPct,
+              percentageValue: 0,
+              baseSource: isPct ? "Total Value (₹)" : "manual",
+              operator: "%",
+              multiplierSource: "manual"
+            }];
+            setCustomColumns(prev => ({ ...prev, [item.id]: nextCols }));
+            return saveItemLayout(item.id, nextCols);
+          });
+          if (isPct) {
+            setGlobalColSettings(prev => ({
+              ...prev,
+              [colName.trim()]: {
+                baseValue: 0,
+                percentageValue: 0,
+                baseSource: "Total Value (₹)",
+                operator: "%",
+                multiplierSource: "manual"
+              }
+            }));
+          }
+          await Promise.all(updates);
+          toast({ title: "Global Column Added", description: `"${colName}" added.` });
+        },
+      },
+      {
+        id: "full-screen",
+        label: "Full Screen",
+        icon: <Maximize2 className="w-3.5 h-3.5" />,
+        onClick: () => setIsFullscreen(true),
+      },
+      {
+        id: "add-global-total",
+        label: "Add Global Total",
+        icon: <Plus className="w-3.5 h-3.5" />,
+        onClick: async () => {
+          const colName = window.prompt("Enter Global Total column name:");
+          if (!colName?.trim()) return;
+          const updates = boqItems.map(item => {
+            const nextCols = [...(customColumns[item.id] || []), { name: colName.trim(), isTotal: true }];
+            setCustomColumns(prev => ({ ...prev, [item.id]: nextCols }));
+            return saveItemLayout(item.id, nextCols);
+          });
+          await Promise.all(updates);
+          toast({ title: "Global Total Added", description: `"${colName}" added.` });
+        },
+      },
+      {
+        id: "toggle-totals-row",
+        label: showColumnTotals ? "Hide Totals Row" : "Show Totals Row",
+        icon: showColumnTotals ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />,
+        onClick: () => setShowColumnTotals(!showColumnTotals),
+      },
+      {
+        id: "reset-all-visibility",
+        label: "Restore (Reset All Visibility)",
+        icon: <RefreshCw className="w-3.5 h-3.5" />,
+        onClick: async () => {
+          if (!confirm("Restoring all hidden totals, columns, and rows for all lines?")) return;
+          setHideSystemTotalFooter(false);
+          setHiddenPredefinedCols({});
+
+          // Update local state immediately
+          const updatedCustomCols: Record<string, any[]> = {};
+          boqItems.forEach(item => {
+            updatedCustomCols[item.id] = (customColumns[item.id] || []).map(c => ({ ...c, hideTotal: false, hideColumn: false }));
+          });
+          setCustomColumns(prev => ({ ...prev, ...updatedCustomCols }));
+
+          // Update database - clear ALL visibility flags
+          const updates = boqItems.map(item => {
+            let td = item.table_data || {};
+            if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
+            const nextCols = (customColumns[item.id] || []).map(c => ({ ...c, hideTotal: false, hideColumn: false }));
+            const updatedTd = {
+              ...td,
+              finalize_hide_row: false,
+              finalize_columns: nextCols,
+              finalize_hidden_predefined_cols: {},
+              finalize_hide_system_total: false
+            };
+            return apiFetch(`/api/boq-items/${item.id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ table_data: updatedTd }),
+            });
+          });
+          await Promise.all(updates);
+
+          // Update local boqItems state to reflect reset
+          setBoqItems(prev => prev.map(item => {
+            let td = item.table_data || {};
+            if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
+            const nextCols = (customColumns[item.id] || []).map(c => ({ ...c, hideTotal: false, hideColumn: false }));
+            return {
+              ...item,
+              table_data: {
+                ...td,
+                finalize_hide_row: false,
+                finalize_columns: nextCols,
+                finalize_hidden_predefined_cols: {},
+                finalize_hide_system_total: false
+              }
+            };
+          }));
+
+          loadBoqItemsAndEdits(activeVersionId);
+          toast({ title: "Visibility Restored", description: "All hidden rows, columns and totals are now visible." });
+        },
+      },
+      {
+        id: "hide-selected",
+        label: `Hide Selected (${selectedProductIds.size})`,
+        icon: <EyeOff className="w-3.5 h-3.5" />,
+        disabled: selectedProductIds.size === 0,
+        onClick: () => handleHideSelectedRows(true),
+      },
+      {
+        id: "labour-only",
+        label: `Labour Only (${selectedProductIds.size})`,
+        icon: <Briefcase className="w-3.5 h-3.5" />,
+        disabled: selectedProductIds.size === 0,
+        onClick: handleLabourOnlyBulk,
+      },
+      {
+        id: "manage-columns",
+        label: "Manage Columns",
+        icon: <Eye className="w-3.5 h-3.5" />,
+        onClick: () => setIsColumnManagerOpen(true),
+      },
+      {
+        id: "save-all-layouts",
+        label: "Save All Layouts",
+        icon: <Save className="w-3.5 h-3.5" />,
+        onClick: async () => {
+          const updates = boqItems.map(item => saveItemLayout(item.id));
+          await Promise.all(updates);
+          toast({ title: "✅ Saved All", description: "Manual descriptions and layouts saved." });
+        },
+      },
+      {
+        id: "delete-selected",
+        label: "Delete Selected",
+        icon: <Trash2 className="w-3.5 h-3.5" />,
+        disabled: selectedProductIds.size === 0,
+        destructive: true,
+        onClick: () => {
+          openDeleteConfirm(`Delete ${selectedProductIds.size} selected products from this BOM?`, `${selectedProductIds.size} products`, async (action) => {
+            try {
+              const ids = Array.from(selectedProductIds);
+              await Promise.all(ids.map(id => apiFetch(`/api/boq-items/${id}?action=${action}`, { method: "DELETE" })));
+              setSelectedProductIds(new Set());
+              // Reload all data from server to keep columns and state consistent
+              loadBoqItemsAndEdits(activeVersionId);
+              toast({ title: action === 'trash' ? "Moved to Trash" : "Archived", description: `${ids.length} products removed successfully.` });
+            } catch {
+              toast({ title: "Error", description: "Failed to delete some products", variant: "destructive" });
+            }
+          });
+        },
+      },
+    ];
+  const filteredTableActions = tableActions.filter(a => a.label.toLowerCase().includes(tableActionsSearch.toLowerCase()));
+  // --- end Table Actions list ---
+
   if (loading) {
     return (
       <Layout>
@@ -4290,30 +4609,110 @@ export default function FinalizeBoq() {
           <CardContent className="p-2 space-y-2">
             {/* Filter by Status Row */}
             {/* Row 1: Project Filters */}
-            <div className="flex items-center gap-3 p-1.5 bg-slate-50 rounded-lg border border-slate-200 w-full mb-2">
+            <div className="flex items-center gap-3 p-1.5 bg-slate-50 rounded-lg border border-slate-200 w-full mb-2" ref={statusFilterRef}>
               <Label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold ml-2 whitespace-nowrap">Project Filters:</Label>
-              <div className="flex flex-wrap gap-1.5">
-                {PROJECT_STATUSES.map(s => (
-                  <button
-                    key={s.value}
-                    onClick={() => setProjectStatusFilter(s.value)}
-                    className={cn(
-                      "px-2 py-1 text-[9px] font-bold uppercase rounded-md transition-all border border-transparent",
-                      projectStatusFilter === s.value ? "bg-white text-blue-600 shadow-sm border-blue-100 ring-1 ring-blue-50/50" : "text-slate-500 hover:bg-slate-100"
-                    )}
-                  >
-                    {s.label}
-                  </button>
-                ))}
+              <div className="relative inline-block">
                 <button
-                  onClick={() => setProjectStatusFilter("all")}
+                  type="button"
+                  onClick={() => setIsStatusFilterOpen(o => !o)}
+                  aria-haspopup="listbox"
+                  aria-expanded={isStatusFilterOpen}
                   className={cn(
-                    "px-2 py-1 text-[9px] font-bold uppercase rounded-md transition-all border border-transparent",
-                    projectStatusFilter === "all" ? "bg-white text-blue-600 shadow-sm border-blue-100 ring-1 ring-blue-50/50" : "text-slate-500 hover:bg-slate-100"
+                    "flex items-center gap-2 pl-3 pr-2.5 py-2 rounded-[14px] border text-[11px] font-bold uppercase tracking-wide transition-all duration-200",
+                    "bg-white/80 backdrop-blur-md border-slate-200 text-slate-600 shadow-sm hover:shadow-md hover:border-blue-200 hover:text-blue-600",
+                    isStatusFilterOpen && "border-blue-300 ring-2 ring-blue-100 text-blue-600 shadow-md"
                   )}
                 >
-                  All
+                  <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                  <span>Project Filters</span>
+                  <span className="flex items-center gap-1 ml-0.5 px-1.5 py-0.5 rounded-md bg-blue-50 text-blue-600 text-[9px] font-extrabold normal-case tracking-normal">
+                    {projectStatusFilter === "all" ? "All" : getProjectStatusMeta(projectStatusFilter).label}
+                  </span>
+                  <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform duration-200", isStatusFilterOpen && "rotate-180")} />
                 </button>
+
+                <div
+                  role="listbox"
+                  aria-label="Project status filters"
+                  className={cn(
+                    "absolute z-50 mt-2 w-72 origin-top-left rounded-[14px] border border-white/60",
+                    "bg-white/90 backdrop-blur-xl shadow-2xl shadow-slate-300/50 ring-1 ring-black/5",
+                    "transition-all duration-200 ease-out",
+                    isStatusFilterOpen
+                      ? "opacity-100 scale-100 translate-y-0 pointer-events-auto"
+                      : "opacity-0 scale-95 -translate-y-1 pointer-events-none"
+                  )}
+                >
+                  <div className="p-2 border-b border-slate-100">
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={statusFilterSearch}
+                        onChange={(e) => setStatusFilterSearch(e.target.value)}
+                        placeholder="Search project status..."
+                        aria-label="Search project status"
+                        className="w-full pl-8 pr-7 py-1.5 text-[11px] rounded-lg border border-slate-200 bg-slate-50/70 focus:bg-white focus:border-blue-300 focus:ring-2 focus:ring-blue-100 outline-none transition-all"
+                      />
+                      {statusFilterSearch && (
+                        <button
+                          type="button"
+                          onClick={() => setStatusFilterSearch("")}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500 transition-colors"
+                          aria-label="Clear search"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="max-h-64 overflow-y-auto p-1.5 space-y-0.5">
+                    {"all".includes(statusFilterSearch.toLowerCase()) && (
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={projectStatusFilter === "all"}
+                        onClick={() => { setProjectStatusFilter("all"); setIsStatusFilterOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors",
+                          projectStatusFilter === "all" ? "bg-blue-50 text-blue-600" : "text-slate-600 hover:bg-slate-50"
+                        )}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+                          All
+                        </span>
+                        {projectStatusFilter === "all" && <Check className="h-3.5 w-3.5" />}
+                      </button>
+                    )}
+
+                    {PROJECT_STATUSES.filter(s => s.label.toLowerCase().includes(statusFilterSearch.toLowerCase())).map(s => (
+                      <button
+                        key={s.value}
+                        type="button"
+                        role="option"
+                        aria-selected={projectStatusFilter === s.value}
+                        onClick={() => { setProjectStatusFilter(s.value); setIsStatusFilterOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors",
+                          projectStatusFilter === s.value ? "bg-blue-50 text-blue-600" : "text-slate-600 hover:bg-slate-50"
+                        )}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className={cn("h-1.5 w-1.5 rounded-full", s.color.replace("100", "500").replace("200", "500").split(" ")[0])} />
+                          {s.label}
+                        </span>
+                        {projectStatusFilter === s.value && <Check className="h-3.5 w-3.5" />}
+                      </button>
+                    ))}
+
+                    {!"all".includes(statusFilterSearch.toLowerCase()) &&
+                      PROJECT_STATUSES.filter(s => s.label.toLowerCase().includes(statusFilterSearch.toLowerCase())).length === 0 && (
+                        <div className="px-2.5 py-4 text-center text-[10px] text-slate-400">No matching status</div>
+                      )}
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -5159,210 +5558,133 @@ export default function FinalizeBoq() {
                   </div>
                 )}
                 {!isVersionSubmitted && (
-                  <div className="flex items-center gap-3 p-4 bg-gray-50/80 border-b overflow-x-auto whitespace-nowrap scrollbar-hide">
-                    <span className="text-[12px] font-semibold uppercase tracking-widest text-gray-500 mr-2 flex-shrink-0">Unified BOQ Actions:</span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-9 px-4 text-[12px] font-bold uppercase border-purple-300 text-purple-700 hover:bg-purple-100/80 hover:border-purple-400 transition-all shadow-sm"
-                      onClick={async () => {
-                        const colName = window.prompt("Enter new column name (adds to all products):");
-                        if (!colName?.trim()) return;
-                        const isPct = window.confirm("Do you want to calculate percentage for this column?");
-                        const updates = boqItems.map(item => {
-                          const nextCols = [...(customColumns[item.id] || []), {
-                            name: colName.trim(),
-                            isTotal: false,
-                            isPercentage: isPct,
-                            percentageValue: 0,
-                            baseSource: isPct ? "Total Value (₹)" : "manual",
-                            operator: "%",
-                            multiplierSource: "manual"
-                          }];
-                          setCustomColumns(prev => ({ ...prev, [item.id]: nextCols }));
-                          return saveItemLayout(item.id, nextCols);
-                        });
-                        if (isPct) {
-                          setGlobalColSettings(prev => ({
-                            ...prev,
-                            [colName.trim()]: {
-                              baseValue: 0,
-                              percentageValue: 0,
-                              baseSource: "Total Value (₹)",
-                              operator: "%",
-                              multiplierSource: "manual"
-                            }
-                          }));
-                        }
-                        await Promise.all(updates);
-                        toast({ title: "Global Column Added", description: `"${colName}" added.` });
-                      }}
-                    >
-                      + Add Global Column
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-9 px-4 text-[12px] font-bold uppercase border-gray-300 text-gray-700 hover:bg-gray-100 transition-all shadow-sm ml-2"
-                      onClick={() => setIsFullscreen(true)}
-                    >
-                      Full Screen
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-9 px-4 text-[12px] font-bold uppercase border-blue-300 text-blue-700 hover:bg-blue-100/80 hover:border-blue-400 transition-all shadow-sm"
-                      onClick={async () => {
-                        const colName = window.prompt("Enter Global Total column name:");
-                        if (!colName?.trim()) return;
-                        const updates = boqItems.map(item => {
-                          const nextCols = [...(customColumns[item.id] || []), { name: colName.trim(), isTotal: true }];
-                          setCustomColumns(prev => ({ ...prev, [item.id]: nextCols }));
-                          return saveItemLayout(item.id, nextCols);
-                        });
-                        await Promise.all(updates);
-                        toast({ title: "Global Total Added", description: `"${colName}" added.` });
-                      }}
-                    >
-                      + Add Global Total
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className={`h-9 px-4 text-[12px] font-bold uppercase transition-all shadow-sm ${showColumnTotals ? "border-orange-300 text-orange-700 hover:bg-orange-50" : "border-gray-300 text-gray-500 hover:bg-gray-100"}`}
-                      onClick={() => setShowColumnTotals(!showColumnTotals)}
-                    >
-                      {showColumnTotals ? "Hide Totals Row" : "Show Totals Row"}
-                    </Button>
-                    <div className="flex items-center gap-2 border border-blue-200 rounded px-3 h-9 bg-blue-50/30">
-                      <Checkbox
-                        id="round-off-toggle"
-                        checked={roundOff}
-                        onCheckedChange={(checked) => setRoundOff(!!checked)}
-                      />
-                      <Label htmlFor="round-off-toggle" className="text-[11px] font-bold text-blue-800 uppercase cursor-pointer">Round Off</Label>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-9 px-4 text-[12px] font-bold uppercase border-yellow-300 text-yellow-700 hover:bg-yellow-50 hover:border-yellow-400 transition-all shadow-sm"
-                      onClick={async () => {
-                        if (!confirm("Restoring all hidden totals, columns, and rows for all lines?")) return;
-                        setHideSystemTotalFooter(false);
-                        setHiddenPredefinedCols({});
+                  <div className="flex items-center gap-3 p-4 bg-gray-50/80 border-b relative" ref={tableActionsRef}>
+                    <div className="relative inline-block">
+                      <button
+                        type="button"
+                        onClick={() => setIsTableActionsOpen(o => !o)}
+                        aria-haspopup="listbox"
+                        aria-expanded={isTableActionsOpen}
+                        className={cn(
+                          "flex items-center gap-2 pl-3 pr-2.5 py-2 rounded-[14px] border text-[11px] font-bold uppercase tracking-wide transition-all duration-200",
+                          "bg-white/80 backdrop-blur-md border-slate-200 text-slate-600 shadow-sm hover:shadow-md hover:border-blue-200 hover:text-blue-600",
+                          isTableActionsOpen && "border-blue-300 ring-2 ring-blue-100 text-blue-600 shadow-md"
+                        )}
+                      >
+                        <Settings2 className="h-3.5 w-3.5 shrink-0" />
+                        <span>Table Actions</span>
+                        <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform duration-200", isTableActionsOpen && "rotate-180")} />
+                      </button>
 
-                        // Update local state immediately
-                        const updatedCustomCols: Record<string, any[]> = {};
-                        boqItems.forEach(item => {
-                          updatedCustomCols[item.id] = (customColumns[item.id] || []).map(c => ({ ...c, hideTotal: false, hideColumn: false }));
-                        });
-                        setCustomColumns(prev => ({ ...prev, ...updatedCustomCols }));
-
-                        // Update database - clear ALL visibility flags
-                        const updates = boqItems.map(item => {
-                          let td = item.table_data || {};
-                          if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
-                          const nextCols = (customColumns[item.id] || []).map(c => ({ ...c, hideTotal: false, hideColumn: false }));
-                          const updatedTd = {
-                            ...td,
-                            finalize_hide_row: false,
-                            finalize_columns: nextCols,
-                            finalize_hidden_predefined_cols: {},
-                            finalize_hide_system_total: false
-                          };
-                          return apiFetch(`/api/boq-items/${item.id}`, {
-                            method: "PUT",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ table_data: updatedTd }),
-                          });
-                        });
-                        await Promise.all(updates);
-
-                        // Update local boqItems state to reflect reset
-                        setBoqItems(prev => prev.map(item => {
-                          let td = item.table_data || {};
-                          if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
-                          const nextCols = (customColumns[item.id] || []).map(c => ({ ...c, hideTotal: false, hideColumn: false }));
-                          return {
-                            ...item,
-                            table_data: {
-                              ...td,
-                              finalize_hide_row: false,
-                              finalize_columns: nextCols,
-                              finalize_hidden_predefined_cols: {},
-                              finalize_hide_system_total: false
-                            }
-                          };
-                        }));
-
-                        loadBoqItemsAndEdits(activeVersionId);
-                        toast({ title: "Visibility Restored", description: "All hidden rows, columns and totals are now visible." });
-                      }}
-                    >
-                      🔄 Reset All Visibility
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-9 px-4 text-[12px] font-bold uppercase border-orange-300 text-orange-600 hover:bg-orange-50 hover:border-orange-400 transition-all shadow-sm h-9"
-                      disabled={selectedProductIds.size === 0}
-                      onClick={() => handleHideSelectedRows(true)}
-                    >
-                      <EyeOff className="w-3.5 h-3.5 mr-1.5" /> Hide Selected ({selectedProductIds.size})
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-9 px-4 text-[12px] font-bold uppercase border-purple-300 text-purple-600 hover:bg-purple-50 hover:border-purple-400 transition-all shadow-sm h-9"
-                      disabled={selectedProductIds.size === 0}
-                      onClick={handleLabourOnlyBulk}
-                    >
-                      <Briefcase className="w-3.5 h-3.5 mr-1.5" /> Labour Only ({selectedProductIds.size})
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-9 px-4 text-[12px] font-bold uppercase border-slate-300 text-slate-700 hover:bg-slate-50 transition-all shadow-sm h-9"
-                      onClick={() => setIsColumnManagerOpen(true)}
-                    >
-                      <Eye className="w-3.5 h-3.5 mr-1.5" /> Manage Columns
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-9 px-4 text-[12px] font-bold uppercase border-green-300 text-green-700 hover:bg-green-100/80 hover:border-green-400 transition-all shadow-sm"
-                      onClick={async () => {
-                        const updates = boqItems.map(item => saveItemLayout(item.id));
-                        await Promise.all(updates);
-                        toast({ title: "✅ Saved All", description: "Manual descriptions and layouts saved." });
-                      }}
-                    >
-                      💾 Save All Layouts
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-9 px-4 text-[12px] font-bold uppercase border-red-300 text-red-600 hover:bg-red-50 hover:border-red-400 transition-all shadow-sm"
-                      disabled={selectedProductIds.size === 0}
-                      onClick={() => {
-                        openDeleteConfirm(`Delete ${selectedProductIds.size} selected products from this BOM?`, `${selectedProductIds.size} products`, async (action) => {
-                          try {
-                            const ids = Array.from(selectedProductIds);
-                            await Promise.all(ids.map(id => apiFetch(`/api/boq-items/${id}?action=${action}`, { method: "DELETE" })));
-                            setSelectedProductIds(new Set());
-                            // Reload all data from server to keep columns and state consistent
-                            loadBoqItemsAndEdits(activeVersionId);
-                            toast({ title: action === 'trash' ? "Moved to Trash" : "Archived", description: `${ids.length} products removed successfully.` });
-                          } catch {
-                            toast({ title: "Error", description: "Failed to delete some products", variant: "destructive" });
+                      <div
+                        role="listbox"
+                        aria-label="Table actions"
+                        className={cn(
+                          "absolute z-50 mt-2 w-80 origin-top-left rounded-[14px] border border-white/60",
+                          "bg-white/90 backdrop-blur-xl shadow-2xl shadow-slate-300/50 ring-1 ring-black/5",
+                          "transition-all duration-200 ease-out",
+                          isTableActionsOpen
+                            ? "opacity-100 scale-100 translate-y-0 pointer-events-auto"
+                            : "opacity-0 scale-95 -translate-y-1 pointer-events-none"
+                        )}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            setIsTableActionsOpen(false);
+                            return;
                           }
-                        });
-                      }}
-                    >
-                      🗑 Delete Selected
-                    </Button>
+                          if (e.key === "ArrowDown") {
+                            e.preventDefault();
+                            setActiveTableActionIndex(i => Math.min(i + 1, filteredTableActions.length - 1));
+                          } else if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            setActiveTableActionIndex(i => Math.max(i - 1, 0));
+                          } else if (e.key === "Enter") {
+                            e.preventDefault();
+                            const action = filteredTableActions[activeTableActionIndex];
+                            if (action && !action.disabled) {
+                              action.onClick();
+                              setIsTableActionsOpen(false);
+                            }
+                          }
+                        }}
+                      >
+                        <div className="p-2 border-b border-slate-100">
+                          <div className="relative">
+                            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
+                            <input
+                              type="text"
+                              value={tableActionsSearch}
+                              onChange={(e) => { setTableActionsSearch(e.target.value); setActiveTableActionIndex(0); }}
+                              placeholder="Search table action..."
+                              aria-label="Search table action"
+                              autoFocus={isTableActionsOpen}
+                              className="w-full pl-8 pr-7 py-1.5 text-[11px] rounded-lg border border-slate-200 bg-slate-50/70 focus:bg-white focus:border-blue-300 focus:ring-2 focus:ring-blue-100 outline-none transition-all"
+                            />
+                            {tableActionsSearch && (
+                              <button
+                                type="button"
+                                onClick={() => setTableActionsSearch("")}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500 transition-colors"
+                                aria-label="Clear search"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="max-h-80 overflow-y-auto p-1.5 space-y-0.5">
+                          {/* Round Off — kept as its own toggle row since it's a persistent setting, not a one-off action */}
+                          {"round off".includes(tableActionsSearch.toLowerCase()) && (
+                            <div className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-slate-600 hover:bg-slate-50 transition-colors">
+                              <Label htmlFor="round-off-toggle" className="flex items-center gap-2 cursor-pointer">
+                                <Percent className="w-3.5 h-3.5" />
+                                Round Off
+                              </Label>
+                              <Checkbox
+                                id="round-off-toggle"
+                                checked={roundOff}
+                                onCheckedChange={(checked) => setRoundOff(!!checked)}
+                              />
+                            </div>
+                          )}
+
+                          {filteredTableActions.map((action, idx) => (
+                            <button
+                              key={action.id}
+                              type="button"
+                              role="option"
+                              aria-selected={idx === activeTableActionIndex}
+                              disabled={action.disabled}
+                              onMouseEnter={() => setActiveTableActionIndex(idx)}
+                              onClick={() => {
+                                if (action.disabled) return;
+                                action.onClick();
+                                setIsTableActionsOpen(false);
+                              }}
+                              className={cn(
+                                "w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors",
+                                action.disabled
+                                  ? "text-slate-300 cursor-not-allowed"
+                                  : idx === activeTableActionIndex
+                                    ? action.destructive ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"
+                                    : action.destructive ? "text-red-500 hover:bg-red-50" : "text-slate-600 hover:bg-slate-50"
+                              )}
+                            >
+                              {action.icon}
+                              {action.label}
+                            </button>
+                          ))}
+
+                          {filteredTableActions.length === 0 && !"round off".includes(tableActionsSearch.toLowerCase()) && (
+                            <div className="px-2.5 py-4 text-center text-[10px] text-slate-400">No matching action</div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
+
 
                 {!isVersionSubmitted && (hiddenCols.length > 0 || boqItems.some(i => {
                   let td = i.table_data; if (typeof td === 'string') try { td = JSON.parse(td); } catch { td = {}; }
@@ -5947,6 +6269,19 @@ export default function FinalizeBoq() {
                         }
 
                         const isSelected = selectedProductIds.has(boqItem.id);
+                        // Rows that were pulled in automatically (or via the
+                        // manual "Sync from BOM" button) after an edit
+                        // request added new items to the BOM — these get a
+                        // distinct highlight so it's obvious which rows are
+                        // new vs. already reviewed/priced.
+                        // NOTE: this must NOT use copied_from_item_id — every
+                        // item copied during the initial "Create BOQ Version"
+                        // bulk copy also has that set, so it would flag the
+                        // whole table as "new". synced_from_bom_at is only
+                        // ever stamped by the post-creation sync-from-bom
+                        // endpoint, so it correctly identifies just the
+                        // delta items added after the version already existed.
+                        const isNewlySynced = !!tableData.synced_from_bom_at;
 
                         let total = 0;
                         let rateSqft = 0;
@@ -5993,6 +6328,14 @@ export default function FinalizeBoq() {
                                   <span className="text-[10px] font-bold text-gray-500">
                                     {filteredBoqItems.findIndex(i => i.id === boqItem.id) + 1}
                                   </span>
+                                  {isNewlySynced && (
+                                    <span
+                                      title="Newly added from BOM (not yet reviewed)"
+                                      className="text-[8px] font-bold text-[#3730A3] bg-[#E9E7FD] rounded px-1 py-0.5 leading-none"
+                                    >
+                                      NEW
+                                    </span>
+                                  )}
                                   <div className="text-gray-300 hover:text-blue-400 transition-colors flex items-center justify-center">
 
                                     <GripVertical size={14} className="mx-auto" />
@@ -6025,7 +6368,7 @@ export default function FinalizeBoq() {
                             {!hiddenPredefinedCols.product && (
                               <td
                                 style={{ left: hiddenPredefinedCols.sno ? 0 : gripWidth + snoWidth }}
-                                className={`sticky border-r px-1.5 py-1 font-medium text-gray-800 text-[10px] align-middle z-20 transition-colors ${isSelected ? "bg-blue-50" : "bg-white group-hover:bg-blue-50"} col-product col-product-sticky`}
+                                className={`sticky border-r px-1.5 py-1 font-medium text-gray-800 text-[10px] align-middle z-20 transition-colors ${isSelected ? "bg-blue-50" : (isNewlySynced ? "bg-[#E9E7FD]" : "bg-white group-hover:bg-blue-50")} col-product col-product-sticky`}
                               >
                                 <div className="flex items-center gap-2">
                                   {(() => {
@@ -6062,7 +6405,7 @@ export default function FinalizeBoq() {
                                       oldDesc !== newDesc ? { field: "Description", oldValue: oldDesc, newValue: newDesc } : undefined);
                                   }}
                                   rows={2}
-                                  className={`w-full border-none rounded p-1 text-[10px] focus:ring-1 ring-blue-300 outline-none bg-transparent resize-y min-h-[35px] leading-tight ${getIsModified(boqItem.id, "description", manualDesc) ? "text-amber-900 font-bold italic bg-amber-200 ring-2 ring-amber-400 rounded" : ""}`}
+                                  className={`w-full border-none rounded p-1 text-[10px] focus:ring-1 ring-blue-300 outline-none bg-transparent resize-y min-h-[35px] leading-tight ${getIsModified(boqItem.id, "description", manualDesc) ? "text-[#1E3A8A] font-bold italic bg-[#EFF6FF] ring-2 ring-[#BFDBFE] rounded" : ""}`}
                                   placeholder="Description..."
                                 />
                               </td>
@@ -6111,7 +6454,7 @@ export default function FinalizeBoq() {
                                       ? (tableData.configBasis?.requiredUnitType || tableData.unit || "Sqft")
                                       : (currentStep11Items[0]?.unit || tableData.unit || "nos");
                                     return getIsModified(boqItem.id, "unit", productUnits[boqItem.id] ?? defaultUnit);
-                                  })() ? "text-amber-900 font-bold underline bg-amber-200 ring-2 ring-amber-400 rounded" : ""}`}
+                                  })() ? "text-[#1E3A8A] font-bold underline bg-[#EFF6FF] ring-2 ring-[#BFDBFE] rounded" : ""}`}
                                   placeholder="Unit"
                                 />
                               </td>
@@ -6135,7 +6478,7 @@ export default function FinalizeBoq() {
                                     await saveItemLayout(boqItem.id, undefined, undefined, undefined, productQuantities[boqItem.id], undefined, undefined, undefined, undefined,
                                       String(oldQty ?? "") !== String(newQty ?? "") ? { field: "Quantity", oldValue: oldQty, newValue: newQty } : undefined);
                                   }}
-                                  className={`w-full border border-transparent focus:border-2 focus:border-blue-500 rounded p-0.5 text-[10px] focus:text-[12px] focus:ring-1 ring-blue-300 outline-none transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md ${(tableData.is_lump_sum || (productUnits[boqItem.id]?.toLowerCase() === 'ls')) ? 'bg-transparent text-gray-500' : 'bg-blue-100/50'} focus:bg-white text-center font-semibold h-7 focus:h-8 ${getIsModified(boqItem.id, "qty", productQuantities[boqItem.id] ?? (tableData.targetRequiredQty !== undefined ? tableData.targetRequiredQty : (currentStep11Items[0]?.qty || 0))) ? "text-amber-900 font-extrabold border-2 border-amber-500 ring-2 ring-amber-300 rounded" : ""}`}
+                                  className={`w-full border border-transparent focus:border-2 focus:border-blue-500 rounded p-0.5 text-[10px] focus:text-[12px] focus:ring-1 ring-blue-300 outline-none transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md ${(tableData.is_lump_sum || (productUnits[boqItem.id]?.toLowerCase() === 'ls')) ? 'bg-transparent text-gray-500' : 'bg-blue-100/50'} focus:bg-white text-center font-semibold h-7 focus:h-8 ${getIsModified(boqItem.id, "qty", productQuantities[boqItem.id] ?? (tableData.targetRequiredQty !== undefined ? tableData.targetRequiredQty : (currentStep11Items[0]?.qty || 0))) ? "text-[#1E3A8A] font-extrabold border-2 border-[#93C5FD] ring-2 ring-[#BFDBFE] rounded" : ""}`}
                                   placeholder="Qty"
                                 />
                               </td>
@@ -6175,7 +6518,7 @@ export default function FinalizeBoq() {
                                       await saveItemLayout(boqItem.id, undefined, undefined, undefined, undefined, val === "" ? undefined : val, undefined, undefined, globalOverrideType,
                                         String(oldRate) !== String(newRate) ? { field: "Override Rate", oldValue: oldRate, newValue: newRate } : undefined);
                                     }}
-                                    className={`w-full border border-transparent focus:border-2 focus:border-blue-500 rounded p-0.5 text-[10px] focus:text-[12px] focus:ring-1 ring-gray-300 outline-none bg-gray-50 focus:bg-white text-center font-semibold h-6 focus:h-7 transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md ${getIsModified(boqItem.id, "rate", overrideRates[boqItem.id] ?? "") ? "text-amber-900 font-extrabold border-2 border-amber-500 ring-2 ring-amber-300 rounded" : ""}`}
+                                    className={`w-full border border-transparent focus:border-2 focus:border-blue-500 rounded p-0.5 text-[10px] focus:text-[12px] focus:ring-1 ring-gray-300 outline-none bg-gray-50 focus:bg-white text-center font-semibold h-6 focus:h-7 transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md ${getIsModified(boqItem.id, "rate", overrideRates[boqItem.id] ?? "") ? "text-[#1E3A8A] font-extrabold border-2 border-[#93C5FD] ring-2 ring-[#BFDBFE] rounded" : ""}`}
                                     placeholder="0.00"
                                   />
                                   {globalOverrideType === "percentage" && (
@@ -6284,7 +6627,7 @@ export default function FinalizeBoq() {
                                 // Render the cell only if not hidden
                                 if (isTotalColumn) {
                                   return (
-                                    <td key={`${col.name}-${idx}`} className={`border-r px-2 py-1.5 text-right font-semibold text-green-900 bg-green-100/40 text-[10px] ${getIsModified(boqItem.id, "columns", col.name) ? "text-amber-900 font-extrabold bg-amber-200 border-2 border-amber-500 ring-2 ring-amber-300" : ""}`}>
+                                    <td key={`${col.name}-${idx}`} className={`border-r px-2 py-1.5 text-right font-semibold text-green-900 bg-green-100/40 text-[10px] ${getIsModified(boqItem.id, "columns", col.name) ? "text-[#1E3A8A] font-extrabold bg-[#EFF6FF] border-2 border-[#93C5FD] ring-2 ring-[#BFDBFE]" : ""}`}>
                                       ₹{(roundOff ? Math.round(valNum) : valNum).toLocaleString(undefined, { minimumFractionDigits: roundOff ? 0 : 2, maximumFractionDigits: roundOff ? 0 : 2 })}
                                     </td>
                                   );
@@ -6306,7 +6649,7 @@ export default function FinalizeBoq() {
                                       key={`${col.name}-${idx}`}
                                       className={`border-r px-2 py-1 relative group/cell align-middle text-[11px] min-w-[180px] ${isSupplyLabourExceeding(customColumns[boqItem.id] || [], col.name)
                                         ? "bg-red-200 text-red-900 border-2 border-red-400"
-                                        : getIsModified(boqItem.id, "columns", col.name) ? "bg-amber-200 text-amber-900 font-extrabold border-2 border-amber-500 ring-2 ring-amber-300" : "bg-transparent"
+                                        : getIsModified(boqItem.id, "columns", col.name) ? "bg-[#EFF6FF] text-[#1E3A8A] font-extrabold border-2 border-[#93C5FD] ring-2 ring-[#BFDBFE]" : "bg-transparent"
                                         }`}
                                       title={getIsModified(boqItem.id, "columns", col.name) ? "Modified from Template" : ""}
                                       onDoubleClick={() => {

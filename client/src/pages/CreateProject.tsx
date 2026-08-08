@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth-context";
 
 import {
   Building2,
@@ -48,6 +49,8 @@ const getProjectStatusMeta = (s?: string) => PROJECT_STATUSES.find(x => x.value 
 
 
 export default function CreateProject() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const createFormRef = (typeof document !== 'undefined') ? { current: null as HTMLDivElement | null } : { current: null };
   const createFormRefCallback = (el: HTMLDivElement | null) => { createFormRef.current = el; };
   const [name, setName] = useState("");
@@ -694,7 +697,7 @@ export default function CreateProject() {
                                     <span className="bg-indigo-50 text-indigo-700 text-[9px] px-1.5 py-0.5 rounded font-bold border border-indigo-200 uppercase tracking-tight">
                                       BOM V{p.bom_version_number}
                                     </span>
-                                    {p.bom_version_price && (
+                                    {isAdmin && p.bom_version_price && (
                                       <span className="flex items-center gap-1 font-extrabold text-slate-700 text-[11px] px-1">
                                         <Calculator className="w-3 h-3 text-indigo-400" /> ₹{parseFloat(p.bom_version_price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                       </span>
@@ -706,7 +709,7 @@ export default function CreateProject() {
                                     <span className="bg-blue-50 text-blue-700 text-[9px] px-1.5 py-0.5 rounded font-bold border border-blue-200 uppercase tracking-tight">
                                       BOQ C{p.boq_version_number}
                                     </span>
-                                    {p.boq_version_price && (
+                                    {isAdmin && p.boq_version_price && (
                                       <span className="flex items-center gap-1 font-extrabold text-green-700 text-[11px] px-1">
                                         <Calculator className="w-3 h-3 text-green-500" /> ₹{parseFloat(p.boq_version_price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                       </span>

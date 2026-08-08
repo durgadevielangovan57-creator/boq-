@@ -5358,9 +5358,19 @@ export async function registerRoutes(
 
         const archivedIds = await archiveService.getArchivedItemIds('boq_projects');
         const trashedIds = await archiveService.getTrashedItemIds('boq_projects');
-        const filtered = (result.rows || []).filter(
+        let filtered = (result.rows || []).filter(
           (r: any) => !archivedIds.includes(r.id) && !trashedIds.includes(r.id)
         );
+
+        // Project/version monetary values are sensitive — only admins should
+        // see them. Strip these fields at the API level (not just hide in the
+        // UI) so they're never sent over the network to non-admin roles.
+        if (user?.role !== 'admin') {
+          filtered = filtered.map((r: any) => {
+            const { bom_version_price, boq_version_price, ...rest } = r;
+            return rest;
+          });
+        }
 
         res.json({ projects: filtered || [] });
       } catch (err) {
@@ -5906,6 +5916,20 @@ export async function registerRoutes(
           existingDataKeys.add(key);
 
           const newItemId = `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.random().toString(36).substr(2, 9)}`;
+
+          // Mark this row as having arrived via a post-creation BOM sync
+          // (as opposed to the original bulk copy done when the BOQ version
+          // was first created via copy_from_version). The client uses this
+          // flag — NOT copied_from_item_id, which every initially-copied
+          // item also has — to highlight only genuinely new rows.
+          let syncedTableData: any = item.table_data;
+          try {
+            syncedTableData = typeof item.table_data === 'string' ? JSON.parse(item.table_data) : item.table_data;
+            syncedTableData = { ...(syncedTableData || {}), synced_from_bom_at: new Date().toISOString() };
+          } catch {
+            syncedTableData = item.table_data;
+          }
+
           await query(
             `INSERT INTO boq_items (id, project_id, estimator, table_data, version_id, sort_order, user_added, computed_value, copied_from_item_id, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
@@ -5913,7 +5937,7 @@ export async function registerRoutes(
               newItemId,
               targetVer.project_id,
               item.estimator,
-              item.table_data,
+              syncedTableData,
               targetVersionId,
               nextSortOrder++,
               item.user_added ?? true,
@@ -6610,7 +6634,7 @@ export async function registerRoutes(
     try {
       const { id } = req.params;
       const { project_value, project_id, budget, revenue, profit, margin } = req.body;
-      
+
       if (project_value !== undefined) {
         await query(`UPDATE boq_versions SET project_value = $1, updated_at = NOW() WHERE id = $2`, [project_value.toString(), id]);
       }
@@ -7395,7 +7419,7 @@ export async function registerRoutes(
   // no logic changes, no simplifications.
   function computeItemValue(tableData: any): number {
     if (!tableData) return 0;
-    
+
     if (typeof tableData.frontend_computed_value === 'number') {
       return tableData.frontend_computed_value;
     }
@@ -7495,7 +7519,7 @@ export async function registerRoutes(
       // We no longer sum computed_value to overwrite the version's project_value.
       // The frontend FinalizeBoq.tsx is the sole source of truth and syncs the 
       // exact calculated value (including custom columns) to the version table.
-      
+
       const verRes = await query(`SELECT project_value FROM boq_versions WHERE id = $1`, [targetVersionId]);
       const totalValue = parseFloat(verRes.rows[0]?.project_value) || 0;
 
@@ -8229,10 +8253,22 @@ export async function registerRoutes(
           return;
         }
 
-        await query(
-          "UPDATE boq_items SET table_data = $1, computed_value = $2, created_at = NOW() WHERE id = $3",
+        const updateResult = await query(
+          "UPDATE boq_items SET table_data = $1, computed_value = $2, created_at = NOW() WHERE id = $3 RETURNING project_id, version_id",
           [JSON.stringify(table_data), computeItemValue(table_data), id]
         );
+
+        // Best-effort: keep the version/project's stored total in sync after
+        // this edit. Wrapped so a failure here never blocks or breaks the
+        // save that already succeeded above (existing response is unchanged).
+        try {
+          const row = updateResult.rows[0];
+          if (row?.project_id) {
+            await recalculateProjectValue(row.project_id, row.version_id || undefined);
+          }
+        } catch (recalcErr) {
+          console.warn("PUT /api/boq-items/:id — recalculateProjectValue failed (non-fatal):", recalcErr);
+        }
 
         res.json({ message: "BOM item updated successfully" });
       } catch (err) {
