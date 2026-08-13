@@ -1,10 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { Link, useLocation } from "wouter";
 import { Layout } from "@/components/layout/Layout";
 import { SupplierLayout } from "@/components/layout/SupplierLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Plus, Trash2, Edit2, FileText, Calendar, MapPin, Layers, Lock, AlertCircle, Check, X, GitBranch, ChevronDown, Copy } from "lucide-react";
+import { Plus, Trash2, Edit2, FileText, Calendar, MapPin, Layers, Lock, AlertCircle, Check, X, GitBranch, ChevronDown, Copy, ArrowUpDown, Star, Filter } from "lucide-react";
 import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
@@ -85,6 +85,20 @@ export default function SketchPlans() {
   const [projects, setProjects] = useState<any[]>([]);
   const [cloneDialog, setCloneDialog] = useState<{ isOpen: boolean; sourceId: string; name: string; projectId: string; versions: any[] } | null>(null);
   const [isCloning, setIsCloning] = useState(false);
+  const [sortBy, setSortBy] = useState<string>('date');
+  const [dateFilter, setDateFilter] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [pinnedPlans, setPinnedPlans] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('sketch_pinned_plans') || '[]'); } catch { return []; }
+  });
+
+  const togglePin = useCallback((rootId: string) => {
+    setPinnedPlans(prev => {
+      const next = prev.includes(rootId) ? prev.filter(id => id !== rootId) : [...prev, rootId];
+      localStorage.setItem('sketch_pinned_plans', JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (isSupplier) {
@@ -288,10 +302,71 @@ export default function SketchPlans() {
 
   const filteredGroups = groupPlansByRoot(plans).filter(g => {
     const search = planSearch.trim().toLowerCase();
-    if (!search) return true;
-    return [g.name, g.projectName, g.rootId, ...g.versions.map(v => v.location)].some(
+    const matchesSearch = !search || [g.name, g.projectName, g.rootId, ...g.versions.map(v => v.location)].some(
       val => String(val || "").toLowerCase().includes(search)
     );
+    if (!matchesSearch) return false;
+
+    // Date filter
+    if (dateFilter) {
+      const filterDate = new Date(dateFilter).toDateString();
+      const hasMatch = g.versions.some(v => {
+        if (v.plan_date) return new Date(v.plan_date).toDateString() === filterDate;
+        if (v.created_at) return new Date(v.created_at).toDateString() === filterDate;
+        return false;
+      });
+      if (!hasMatch) return false;
+    }
+
+    // Status filter
+    if (statusFilter === 'pinned') {
+      if (!pinnedPlans.includes(g.rootId)) return false;
+    } else if (statusFilter !== 'all') {
+      const selectedPlanForGroup = g.versions[0];
+      const planStatus = selectedPlanForGroup?.is_locked ? 'locked' : (selectedPlanForGroup?.version_status || 'draft');
+      if (statusFilter !== planStatus) return false;
+    }
+
+    return true;
+  }).sort((a, b) => {
+    // Pinned plans always come first
+    const aPin = pinnedPlans.includes(a.rootId) ? 0 : 1;
+    const bPin = pinnedPlans.includes(b.rootId) ? 0 : 1;
+    if (aPin !== bPin) return aPin - bPin;
+    if (sortBy === 'project') {
+      return (a.projectName || 'No Project').localeCompare(b.projectName || 'No Project');
+    }
+    if (sortBy === 'client') {
+      const aClient = a.versions[0]?.client_name || a.versions[0]?.project_client || '';
+      const bClient = b.versions[0]?.client_name || b.versions[0]?.project_client || '';
+      return aClient.localeCompare(bClient);
+    }
+    if (sortBy === 'date-oldest') {
+      const aDate = new Date(a.versions[0]?.created_at || 0).getTime();
+      const bDate = new Date(b.versions[0]?.created_at || 0).getTime();
+      return aDate - bDate;
+    }
+    if (sortBy === 'name-asc') {
+      return (a.name || '').localeCompare(b.name || '');
+    }
+    if (sortBy === 'name-desc') {
+      return (b.name || '').localeCompare(a.name || '');
+    }
+    if (sortBy === 'location') {
+      const aLoc = a.versions[0]?.location || '';
+      const bLoc = b.versions[0]?.location || '';
+      return aLoc.localeCompare(bLoc);
+    }
+    if (sortBy === 'status') {
+      const statusOrder: Record<string, number> = { draft: 0, submitted: 1, approved: 2, locked: 3 };
+      const aStatus = statusOrder[a.versions[0]?.version_status || 'draft'] ?? 0;
+      const bStatus = statusOrder[b.versions[0]?.version_status || 'draft'] ?? 0;
+      return aStatus - bStatus;
+    }
+    // Default: date (newest first)
+    const aDate = new Date(a.versions[0]?.created_at || 0).getTime();
+    const bDate = new Date(b.versions[0]?.created_at || 0).getTime();
+    return bDate - aDate;
   });
 
   const LayoutComponent = isSupplier ? SupplierLayout : Layout;
@@ -342,7 +417,7 @@ export default function SketchPlans() {
         </div>
 
         <div className="sticky top-0 z-20 bg-white shadow-sm border-b border-slate-200 p-4 rounded-lg mb-4">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <input
               type="text"
               value={planSearch}
@@ -350,6 +425,62 @@ export default function SketchPlans() {
               placeholder="Search plans by name, location, project, or ID..."
               className="w-full md:w-80 h-10 px-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400"
             />
+            <div className="flex items-center gap-1.5">
+              <ArrowUpDown className="w-4 h-4 text-slate-400" />
+              <span className="text-xs text-slate-500 font-medium hidden sm:inline">Sort:</span>
+              <Select value={sortBy} onValueChange={(v: any) => setSortBy(v)}>
+                <SelectTrigger className="h-9 w-32 text-xs border-slate-200">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="date" className="text-xs">Date (Newest)</SelectItem>
+                  <SelectItem value="date-oldest" className="text-xs">Date (Oldest)</SelectItem>
+                  <SelectItem value="name-asc" className="text-xs">Plan Name (A-Z)</SelectItem>
+                  <SelectItem value="name-desc" className="text-xs">Plan Name (Z-A)</SelectItem>
+                  <SelectItem value="project" className="text-xs">Project Name</SelectItem>
+                  <SelectItem value="client" className="text-xs">Client Name</SelectItem>
+                  <SelectItem value="location" className="text-xs">Location</SelectItem>
+                  <SelectItem value="status" className="text-xs">Status</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            
+            <div className="flex items-center gap-1.5">
+              <Filter className="w-4 h-4 text-slate-400" />
+              <span className="text-xs text-slate-500 font-medium hidden sm:inline">Status:</span>
+              <Select value={statusFilter} onValueChange={(v: any) => setStatusFilter(v)}>
+                <SelectTrigger className="h-9 w-[120px] text-xs border-slate-200">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all" className="text-xs">All Statuses</SelectItem>
+                  <SelectItem value="draft" className="text-xs">📝 Draft</SelectItem>
+                  <SelectItem value="approved" className="text-xs">✅ Approved</SelectItem>
+                  <SelectItem value="locked" className="text-xs">🔒 Locked</SelectItem>
+                  {pinnedPlans.length > 0 && (
+                    <SelectItem value="pinned" className="text-xs text-amber-600 font-semibold">⭐ Pinned Only</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <Calendar className="w-4 h-4 text-slate-400" />
+              <input
+                type="date"
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+                className="h-9 px-2 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              />
+              {dateFilter && (
+                <button
+                  onClick={() => setDateFilter('')}
+                  className="text-xs text-red-500 hover:text-red-700 font-medium"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -427,13 +558,26 @@ export default function SketchPlans() {
 
               const versionStatusColor = VERSION_STATUS_COLOR[selectedPlan.version_status || 'draft'] || VERSION_STATUS_COLOR.draft;
 
+              const isPinned = pinnedPlans.includes(group.rootId);
+
               return (
-                <div key={group.rootId} className="border rounded-xl shadow-sm bg-white overflow-hidden">
+                <div key={group.rootId} className={`border rounded-xl shadow-sm overflow-hidden ${isPinned ? 'bg-amber-50/40 border-amber-200' : 'bg-white'}`}>
                   {/* Header row with plan name & project */}
-                  <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b">
-                    <div className="min-w-0">
-                      <p className="text-base font-bold text-slate-900 truncate">{group.name}</p>
-                      <p className="text-[11px] text-indigo-600 font-semibold mt-0.5">{group.projectName}</p>
+                  <div className={`flex items-center justify-between px-4 py-3 border-b ${isPinned ? 'bg-amber-50' : 'bg-slate-50'}`}>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); togglePin(group.rootId); }}
+                        className={`flex-shrink-0 p-1 rounded-full transition-all hover:scale-110 ${
+                          isPinned ? 'text-amber-500 hover:text-amber-600' : 'text-slate-300 hover:text-amber-400'
+                        }`}
+                        title={isPinned ? 'Unpin plan' : 'Pin to top'}
+                      >
+                        <Star className={`w-4 h-4 ${isPinned ? 'fill-amber-400' : ''}`} />
+                      </button>
+                      <div className="min-w-0">
+                        <p className="text-base font-bold text-slate-900 truncate">{group.name}</p>
+                        <p className="text-[11px] text-indigo-600 font-semibold mt-0.5">{group.projectName}</p>
+                      </div>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
                       {/* Version Selector */}
