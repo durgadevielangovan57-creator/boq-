@@ -534,9 +534,9 @@ const DraggableHeaderCol = ({
                 onChange={(e) => handleGlobalCalculation(col.name, globalColSettings[col.name]?.baseValue || 0, globalColSettings[col.name]?.percentageValue || 0, e.target.value, globalColSettings[col.name]?.operator || "%", globalColSettings[col.name]?.multiplierSource || "manual")}
               >
                 <option value="manual">Fixed</option>
-                <option value="Rate / Unit">G: Rate</option>
-                <option value="Unit">H: Unit</option>
-                <option value="Qty">I: Qty</option>
+                <option value="Rate / Unit">I: Rate</option>
+                <option value="Unit">G: Unit</option>
+                <option value="Qty">H: Qty</option>
                 <option value="Total Value (₹)">J: Total</option>
                 <option value="Override Rate">K: O.Rate</option>
                 <option value="Override Total">L: O.Total</option>
@@ -560,9 +560,9 @@ const DraggableHeaderCol = ({
                 onChange={(e) => handleGlobalCalculation(col.name, globalColSettings[col.name]?.baseValue || 0, globalColSettings[col.name]?.percentageValue || 0, globalColSettings[col.name]?.baseSource || ((col as any).isPercentage ? "Total Value (₹)" : "manual"), globalColSettings[col.name]?.operator || "%", e.target.value)}
               >
                 <option value="manual">Val</option>
-                <option value="Rate / Unit">G: Rate</option>
-                <option value="Unit">H: Unit</option>
-                <option value="Qty">I: Qty</option>
+                <option value="Rate / Unit">I: Rate</option>
+                <option value="Unit">G: Unit</option>
+                <option value="Qty">H: Qty</option>
                 <option value="Total Value (₹)">J: Total</option>
                 <option value="Override Rate">K: O.Rate</option>
                 <option value="Override Total">L: O.Total</option>
@@ -649,13 +649,33 @@ const measureText = (text: string, font: string) => {
 // categories go last, everything else stays alphabetical in between. This ONLY applies
 // when there's no saved/user-defined order yet (or for brand-new categories that haven't
 // been placed by the user) — once a user drags/reorders, that saved order always wins.
+const isDemolitionCategory = (c: string) => /demoli(sh|tion)/i.test(c);
+// Excludes anything already matched as Demolition, so a category name that happens to
+// match both patterns (e.g. "Demolition & Cleaning") is only ever placed once, never
+// counted as both — no duplicate entries possible.
+const isCleaningCategory = (c: string) => /clean/i.test(c) && !isDemolitionCategory(c);
 const sortCategoriesDefault = (cats: string[]): string[] => {
-  const isDemolition = (c: string) => /demoli(sh|tion)/i.test(c);
-  const isCleaning = (c: string) => /clean/i.test(c);
-  const demolition = cats.filter(isDemolition).sort();
-  const cleaning = cats.filter(isCleaning).sort();
-  const rest = cats.filter(c => !isDemolition(c) && !isCleaning(c)).sort();
+  const demolition = cats.filter(isDemolitionCategory).sort();
+  const cleaning = cats.filter(isCleaningCategory).sort();
+  const rest = cats.filter(c => !isDemolitionCategory(c) && !isCleaningCategory(c)).sort();
   return [...demolition, ...rest, ...cleaning];
+};
+
+// Folds any category NOT already in `existingOrder` into it, without touching the
+// position of anything that's already there. New Demolishing-type categories are
+// pinned to the very front and new Cleaning-type categories to the very back — the
+// same rule sortCategoriesDefault applies for a first-time order — so this rule keeps
+// holding even after an order has been saved/reordered, instead of only applying once.
+// Categories the user has already placed (dragged, arrow-nudged, or previously saved)
+// are never moved by this function.
+const mergeCategoryOrder = (existingOrder: string[], allCats: string[]): string[] => {
+  const existingSet = new Set(existingOrder);
+  const ordered = existingOrder.filter(c => allCats.includes(c));
+  const newCats = allCats.filter(c => !existingSet.has(c));
+  const newDemolition = newCats.filter(isDemolitionCategory).sort();
+  const newCleaning = newCats.filter(isCleaningCategory).sort();
+  const newRest = newCats.filter(c => !isDemolitionCategory(c) && !isCleaningCategory(c)).sort();
+  return [...newDemolition, ...ordered, ...newRest, ...newCleaning];
 };
 
 const CategoryReorderItem = ({
@@ -1011,13 +1031,12 @@ export default function FinalizeBoq() {
 
     const allCatsArr = Array.from(cats);
 
-    // If we have a saved order, show ONLY those categories (in that order).
-    // Any brand-new categories not yet in the saved order get slotted in using the
-    // same default rule (Demolishing first, Cleaning last) rather than plain A-Z.
+    // If we have a saved order, show those categories in that order, and fold in
+    // any brand-new category using the same default rule (new Demolishing categories
+    // pinned to the very front, new Cleaning categories pinned to the very back) —
+    // this keeps applying every time a new category shows up, not just the first time.
     if (savedOrder.length > 0) {
-      const ordered = savedOrder.filter(c => allCatsArr.includes(c));
-      const remaining = sortCategoriesDefault(allCatsArr.filter(c => !savedOrder.includes(c)));
-      return [...ordered, ...remaining];
+      return mergeCategoryOrder(savedOrder, allCatsArr);
     }
 
     // No saved order yet — apply the default rule: Demolishing first, Cleaning last,
@@ -2259,13 +2278,11 @@ export default function FinalizeBoq() {
         // No actual category change — keep current (possibly user-reordered) list as-is.
         return prev;
       }
-      // Categories were added or removed: keep current order for categories
-      // still present, then append any new categories (in availableCategories order).
-      const merged = prev.filter(c => nextSet.has(c));
-      availableCategories.forEach(c => {
-        if (!merged.includes(c)) merged.push(c);
-      });
-      return merged;
+      // Categories were added or removed: keep current order for categories still
+      // present, and fold in any new ones with new Demolishing categories pinned to
+      // the front and new Cleaning categories pinned to the back (same rule as the
+      // very first default), instead of just appending them wherever they land.
+      return mergeCategoryOrder(prev, availableCategories);
     });
   }, [availableCategories]);
 
@@ -5432,32 +5449,12 @@ export default function FinalizeBoq() {
         {/* BOM Items Section — one card+table per product */}
         {selectedProjectId && (
           <div className="space-y-4">
-            {/* Header + bulk actions */}
+            {/* Header — bulk actions (Delete Selected / Labour Only) now live next to the
+                "Table Actions" button below, right where the selection checkboxes are, instead
+                of up here. Kept as a named function so both the standalone button below and the
+                existing "Table Actions" dropdown entry keep using the exact same logic. */}
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-bold text-gray-800">BOQ Items</h2>
-              {selectedProductIds.size > 0 && (
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  disabled={isVersionSubmitted}
-                  onClick={() => {
-                    openDeleteConfirm(`Delete ${selectedProductIds.size} selected product(s)?`, `${selectedProductIds.size} products`, async (action) => {
-                      try {
-                        await Promise.all(
-                          Array.from(selectedProductIds).map(id => apiFetch(`/api/boq-items/${id}?action=${action}`, { method: "DELETE" }))
-                        );
-                        setBoqItems(prev => prev.filter(i => !selectedProductIds.has(i.id)));
-                        setSelectedProductIds(new Set());
-                        toast({ title: action === 'trash' ? "Moved to Trash" : "Archived", description: `${selectedProductIds.size} product(s) removed` });
-                      } catch {
-                        toast({ title: "Error", description: "Failed to delete selected products", variant: "destructive" });
-                      }
-                    });
-                  }}
-                >
-                  🗑 Delete Selected ({selectedProductIds.size})
-                </Button>
-              )}
             </div>
 
             {!selectedBoqVersionId && selectedBomVersionId && (
@@ -5551,7 +5548,7 @@ export default function FinalizeBoq() {
                 </CardContent>
               </Card>
             ) : (
-              <Card className={`border-2 border-gray-200 overflow-hidden shadow-sm ${isFullscreen ? 'fixed inset-0 z-50 m-0 p-6 bg-white overflow-auto' : ''}`}>
+              <Card className={`border-2 border-gray-200 shadow-sm ${isTableActionsOpen ? 'overflow-visible' : 'overflow-hidden'} ${isFullscreen ? 'fixed inset-0 z-50 m-0 p-6 bg-white overflow-auto' : ''}`}>
                 {isFullscreen && (
                   <div className="absolute top-4 right-6 z-50">
                     <Button variant="ghost" onClick={() => setIsFullscreen(false)} className="bg-white/80">Close</Button>
@@ -5682,6 +5679,48 @@ export default function FinalizeBoq() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Bulk actions for the current checkbox selection — shown right next to
+                        "Table Actions" (moved here from above the search bar per request).
+                        Same handlers as before; nothing about what they do has changed. */}
+                    {selectedProductIds.size > 0 && (
+                      <>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-9 gap-1.5 rounded-[14px] border-slate-200 bg-white/80 text-[11px] font-bold uppercase tracking-wide text-slate-600 shadow-sm hover:border-blue-200 hover:text-blue-600"
+                          onClick={handleLabourOnlyBulk}
+                        >
+                          <Briefcase className="h-3.5 w-3.5" />
+                          Labour Only ({selectedProductIds.size})
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="destructive"
+                          className="h-9 gap-1.5 rounded-[14px] text-[11px] font-bold uppercase tracking-wide"
+                          disabled={isVersionSubmitted}
+                          onClick={() => {
+                            openDeleteConfirm(`Delete ${selectedProductIds.size} selected product(s)?`, `${selectedProductIds.size} products`, async (action) => {
+                              try {
+                                await Promise.all(
+                                  Array.from(selectedProductIds).map(id => apiFetch(`/api/boq-items/${id}?action=${action}`, { method: "DELETE" }))
+                                );
+                                setBoqItems(prev => prev.filter(i => !selectedProductIds.has(i.id)));
+                                setSelectedProductIds(new Set());
+                                toast({ title: action === 'trash' ? "Moved to Trash" : "Archived", description: `${selectedProductIds.size} product(s) removed` });
+                              } catch {
+                                toast({ title: "Error", description: "Failed to delete selected products", variant: "destructive" });
+                              }
+                            });
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete Selected ({selectedProductIds.size})
+                        </Button>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -6676,9 +6715,9 @@ export default function FinalizeBoq() {
                                               }}
                                             >
                                               <option value="manual">Val</option>
-                                              <option value="Rate / Unit">G: Rate</option>
-                                              <option value="Unit">H: Unit</option>
-                                              <option value="Qty">I: Qty</option>
+                                              <option value="Rate / Unit">I: Rate</option>
+                                              <option value="Unit">G: Unit</option>
+                                              <option value="Qty">H: Qty</option>
                                               <option value="Total Value (₹)">J: Total</option>
                                               <option value="Override Rate">K: O.Rate</option>
                                               <option value="Override Total">L: O.Total</option>
@@ -6710,8 +6749,8 @@ export default function FinalizeBoq() {
                                               <option value="manual">Fixed Value</option>
                                               <option value="Total Value (₹)">J: Total</option>
 
-                                              <option value="Rate / Unit">G: Rate</option>
-                                              <option value="Qty">I: Qty</option>
+                                              <option value="Rate / Unit">I: Rate</option>
+                                              <option value="Qty">H: Qty</option>
                                               <option value="Override Rate">K: O.Rate</option>
                                               <option value="Override Total">L: O.Total</option>
                                               {allCols.filter(c => c.name !== col.name).map((c) => {
