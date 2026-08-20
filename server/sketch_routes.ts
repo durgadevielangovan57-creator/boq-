@@ -4,6 +4,7 @@ import { authMiddleware, requireRole } from "./middleware";
 
 import { sendSketchPlanEmail } from "./email";
 import { convertSketchToBoqItems } from "./lib/sketch_converter";
+import bomSketchSync from "./lib/bom_sketch_sync";
 import { createClient } from "@supabase/supabase-js";
 import ws from "ws";
 
@@ -424,6 +425,17 @@ export async function registerSketchRoutes(app: Express) {
       );
 
       const plan = planRes.rows[0];
+
+      try {
+        const linkRes = await query("SELECT bom_version_id FROM bom_sketch_links WHERE sketch_plan_id = $1 AND is_active = TRUE LIMIT 1", [id]);
+        if (linkRes.rows.length > 0) {
+          plan.linked = true;
+          plan.linked_bom_version_id = linkRes.rows[0].bom_version_id;
+        }
+      } catch(e) {
+        console.warn("[sketch-plans] Could not fetch link status", e);
+      }
+
       res.json({
         plan: {
           ...plan,
@@ -752,6 +764,9 @@ export async function registerSketchRoutes(app: Express) {
         WHERE spi.plan_id = $1 ORDER BY spi.sort_order ASC, spi.created_at ASC, spi.id ASC`, [id]);
       const imagesRes = await client.query("SELECT id, item_id, image_url, image_name FROM sketch_plan_images WHERE plan_id = $1", [id]);
       const attachmentsRes = await client.query("SELECT id, file_url, file_name, file_type FROM sketch_plan_attachments WHERE plan_id = $1", [id]);
+
+      // Sync to BOQ if linked (non-blocking)
+      bomSketchSync.syncSketchPlanToBoq(id).catch(err => console.error("Sync to BOQ failed:", err));
 
       res.json({
         message: "Sketch plan updated successfully",

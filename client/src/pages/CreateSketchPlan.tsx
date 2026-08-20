@@ -1585,6 +1585,7 @@ export default function CreateSketchPlan() {
   const [targetVersions, setTargetVersions] = useState<any[]>([]);
   const [loadingVersions, setLoadingVersions] = useState(false);
   const [processingDirectToBoq, setProcessingDirectToBoq] = useState(false);
+  const [keepLinked, setKeepLinked] = useState(true);
 
   // New state
   const [projectOpen, setProjectOpen] = useState(false);
@@ -1658,6 +1659,8 @@ export default function CreateSketchPlan() {
 
   // Lock & Approval State
   const [isLocked, setIsLocked] = useState(false);
+  const [isLinked, setIsLinked] = useState(false);
+  const [linkedBomVersionId, setLinkedBomVersionId] = useState<string|null>(null);
   const [requestStatus, setRequestStatus] = useState<string>("none");
   const [requestReason, setRequestReason] = useState("");
   const [showUnlockDialog, setShowUnlockDialog] = useState(false);
@@ -2217,6 +2220,8 @@ export default function CreateSketchPlan() {
           if (p.plan_date) setPlanDate(new Date(p.plan_date).toISOString().split("T")[0]);
 
           setIsLocked(!!p.is_locked);
+          setIsLinked(!!p.linked);
+          setLinkedBomVersionId(p.linked_bom_version_id || null);
           setRequestStatus(p.request_status || "none");
           setRequestReason(p.request_reason || "");
 
@@ -2368,7 +2373,8 @@ export default function CreateSketchPlan() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           projectId: selectedTargetProjectId,
-          versionId: selectedTargetVersionId === "new" ? null : selectedTargetVersionId
+          versionId: selectedTargetVersionId === "new" ? null : selectedTargetVersionId,
+          link: keepLinked
         })
       });
 
@@ -3829,6 +3835,11 @@ export default function CreateSketchPlan() {
 
                 {isEditing && (
                   <div className="flex items-center gap-2 border-l pl-2 ml-1">
+                    {isLinked && (
+                      <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border-none gap-1 py-1 h-9 shadow-none uppercase text-[10px] font-bold">
+                        <Zap className="w-3.5 h-3.5 fill-amber-300 stroke-amber-500" /> Linked to BOM
+                      </Badge>
+                    )}
                     {isLocked ? (
                       <div className="flex items-center gap-2">
                         <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 gap-1 py-1 h-9">
@@ -5271,6 +5282,13 @@ export default function CreateSketchPlan() {
                   Note: Items will be added to the existing version.
                 </p>
               )}
+            </div>
+
+            <div className="flex items-center space-x-2 pt-2 pb-1 border-t border-slate-100">
+              <Checkbox id="link-sync" checked={keepLinked} onCheckedChange={(checked) => setKeepLinked(!!checked)} />
+              <label htmlFor="link-sync" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 cursor-pointer">
+                Keep BOM in sync with this sketch plan
+              </label>
             </div>
 
             <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-100">

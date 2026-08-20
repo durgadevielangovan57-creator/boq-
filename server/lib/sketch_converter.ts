@@ -15,8 +15,8 @@ export async function convertSketchToBoqItems(sketchId: string) {
   console.log(`[convertSketchToBoqItems] Found ${sketchItemsResult.rows.length} items in DB for sketchId: ${sketchId}`);
 
   if (sketchItemsResult.rows.length === 0) {
-    console.warn(`[convertSketchToBoqItems] No items found for sketchId: ${sketchId}. This might happen if the plan hasn't been saved yet.`);
-    throw new Error("Sketch plan has no items in the database. Please save your changes first.");
+    console.warn(`[convertSketchToBoqItems] No items found for sketchId: ${sketchId}. Returning empty array.`);
+    return [];
   }
 
   // 2. Pre-fetch materials for rate/HSN lookup on manual/unmatched items
@@ -42,10 +42,7 @@ export async function convertSketchToBoqItems(sketchId: string) {
     const sketchCategory = sItem.category || "";
     const sketchMaterialId = sItem.material_id ? String(sItem.material_id) : null;
 
-    const dims = [sItem.length, sItem.width, sItem.height]
-      .filter((v: any) => v && v !== "0" && v !== "")
-      .join(" x ");
-    const desc = `${sItem.description || ""} ${dims ? `(Dims: ${dims} ${sItem.dimension_unit || ""})` : ""}`.trim();
+    const desc = (sItem.description || "").trim();
 
     let tableData: any = {
       product_name: productName,
@@ -58,6 +55,7 @@ export async function convertSketchToBoqItems(sketchId: string) {
       step11_items: [],
       materialLines: [],
       finalize_description: desc || productName,
+      remarks: sItem.description || "",
       created_at: new Date().toISOString()
     };
 
@@ -103,11 +101,11 @@ export async function convertSketchToBoqItems(sketchId: string) {
         tableData.materialLines = linesResult.rows.map((line: any) => {
           const rawBaseQty = line.base_qty != null ? line.base_qty : (line.qty != null ? line.qty : null);
           const baseQty = rawBaseQty != null ? Number(rawBaseQty) : 0;
-          
+
           // Live rate lookup
           const liveMat = materialsByIdMap.get(String(line.material_id));
           const supplyRate = liveMat ? Number(liveMat.rate || 0) : Number(line.supply_rate || line.rate || 0);
-          
+
           return {
             id: line.material_id,
             name: line.material_name,

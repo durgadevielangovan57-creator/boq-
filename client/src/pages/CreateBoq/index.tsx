@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, Zap } from "lucide-react";
 import { fuzzySearch, cn } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -78,8 +78,28 @@ export default function CreateBom() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [boqItems, setBoqItems] = useState<BOMItem[]>([]);
   const [versions, setVersions] = useState<BOMVersion[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => {
+    return sessionStorage.getItem('bom_selectedProjectId') || null;
+  });
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(() => {
+    return sessionStorage.getItem('bom_selectedVersionId') || null;
+  });
+
+  useEffect(() => {
+    if (selectedProjectId) {
+      sessionStorage.setItem('bom_selectedProjectId', selectedProjectId);
+    } else {
+      sessionStorage.removeItem('bom_selectedProjectId');
+    }
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (selectedVersionId) {
+      sessionStorage.setItem('bom_selectedVersionId', selectedVersionId);
+    } else {
+      sessionStorage.removeItem('bom_selectedVersionId');
+    }
+  }, [selectedVersionId]);
   const selectedProject = projects.find(p => p.id === selectedProjectId);
   const selectedVersion = versions.find(v => v.id === selectedVersionId);
   const [history, setHistory] = useState<BOMHistory[]>([]);
@@ -572,9 +592,8 @@ export default function CreateBom() {
           return idMatch || nameMatch;
         });
 
-        const dims = [item.length, item.width, item.height].filter(Boolean).filter(d => d !== "0" && d !== "").join(' x ');
         const itemDesc = item.item_description || item.description || '';
-        const desc = `${itemDesc} ${dims ? `(Dims: ${dims} ${item.dimension_unit || ''})` : ''}`.trim();
+        const desc = (itemDesc).trim();
         // Resolve qty from sketch template item - try all possible field names
         const rawQty = item.qty ?? item.quantity ?? item.qty_required ?? item.requiredQty ?? item.targetRequiredQty;
         const qty = (rawQty !== null && rawQty !== undefined && Number(rawQty) > 0) ? Number(rawQty) : 1;
@@ -667,6 +686,7 @@ export default function CreateBom() {
                 materialLines,
                 step11_items: [],
                 finalize_description: resolvedConfig?.description || desc || matchedProd.name,
+                remarks: desc || "",
                 created_at: new Date().toISOString()
               }
             });
@@ -714,6 +734,7 @@ export default function CreateBom() {
             category: area,
             category_name: area,
             finalize_description: desc,
+            remarks: desc || "",
             finalize_qty: qty,
             targetRequiredQty: qty,
             finalize_rate: rate,
@@ -942,23 +963,29 @@ export default function CreateBom() {
   const loadBoqItemsAndEdits = useCallback(async () => {
     if (!selectedVersionId) return;
     try {
-      // Fetch all materials to compare rates
-      const materialsRes = await apiFetch("/api/materials");
-      if (materialsRes.ok) {
+      // Fetch everything in parallel to reduce load time
+      const [materialsRes, res, pr] = await Promise.all([
+        apiFetch("/api/materials").catch(e => { console.warn(e); return null; }),
+        apiFetch(`/api/boq-items/version/${encodeURIComponent(selectedVersionId)}`, { headers: {} }).catch(e => { console.warn(e); return null; }),
+        apiFetch("/api/products").catch(e => { console.warn(e); return null; })
+      ]);
+
+      let currentMaterialsById: Record<string, any> = {};
+      if (materialsRes && materialsRes.ok) {
         const materialsData = await materialsRes.json();
-        setMaterialsById(Object.fromEntries((materialsData.materials || []).map((m: any) => [m.id, m])));
+        currentMaterialsById = Object.fromEntries((materialsData.materials || []).map((m: any) => [m.id, m]));
+        setMaterialsById(currentMaterialsById);
       } else {
         console.warn("Failed to load materials for rate comparison.");
       }
 
-      const res = await apiFetch(`/api/boq-items/version/${encodeURIComponent(selectedVersionId)}`, { headers: {} });
-      if (!res.ok) { toast({ title: "Error", description: `Failed to load items (${res.status})`, variant: "destructive" }); return; }
+      if (!res || !res.ok) { toast({ title: "Error", description: `Failed to load items (${res?.status || 'network error'})`, variant: "destructive" }); return; }
       const data = await safeJson(res as unknown as Response);
       const items: BOMItem[] = data.items || [];
+      
       // Backfill HSN/SAC and Shop Names
       try {
-        const pr = await apiFetch("/api/products");
-        if (pr.ok) {
+        if (pr && pr.ok) {
           const pd = await pr.json();
           const prodById: Record<string, any> = Object.fromEntries((pd.products || []).map((p: any) => [p.id, p]));
           items.forEach(item => {
@@ -973,8 +1000,8 @@ export default function CreateBom() {
                   if (prod.sac_code) { td.sac_code = prod.sac_code; needsSave = true; }
                   if (prod.tax_code_value) { td.hsn_sac_code = prod.tax_code_value; td.hsn_sac_type = prod.tax_code_type || null; needsSave = true; }
                 }
-              } else if (td.material_id && materialsById[td.material_id]) {
-                const mat = materialsById[td.material_id];
+              } else if (td.material_id && currentMaterialsById[td.material_id]) {
+                const mat = currentMaterialsById[td.material_id];
                 if (mat.hsn_code || mat.template_hsn_code) { td.hsn_code = mat.hsn_code || mat.template_hsn_code; needsSave = true; }
                 if (mat.sac_code || mat.template_sac_code) { td.sac_code = mat.sac_code || mat.template_sac_code; needsSave = true; }
                 if (mat.tax_code_value || mat.hsn_sac_code) {
@@ -989,8 +1016,8 @@ export default function CreateBom() {
               td.step11_items.forEach((s11: any) => {
                 if (!s11.shop_name || s11.shop_name === "-") {
                   const matId = s11.material_id || s11.id;
-                  if (matId && materialsById[matId]) {
-                    const mat = materialsById[matId];
+                  if (matId && currentMaterialsById[matId]) {
+                    const mat = currentMaterialsById[matId];
                     if (mat.shop_name && mat.shop_name !== "-") {
                       s11.shop_name = mat.shop_name;
                       needsSave = true;
@@ -3174,7 +3201,10 @@ export default function CreateBom() {
                                       >
                                         <div className="flex items-center justify-between w-full gap-2">
                                           <span className={isFinal ? "text-green-700 font-semibold" : undefined}>V{v.version_number} ({VERSION_LABEL[v.status] ?? v.status})</span>
-                                          {isFinal && <span className="bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold shrink-0 flex items-center">Final</span>}
+                                          <div className="flex items-center gap-1 shrink-0">
+                                            {v.linked && <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold flex items-center gap-0.5"><Zap className="w-2.5 h-2.5 fill-amber-300 stroke-amber-500" /> Linked</span>}
+                                            {isFinal && <span className="bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold flex items-center">Final</span>}
+                                          </div>
                                         </div>
                                       </SelectItem>
                                     );
@@ -3939,6 +3969,15 @@ export default function CreateBom() {
               {selectedProjectId && selectedVersionId && (
                 <Card>
                   <CardContent className="space-y-3 pt-6">
+                    {selectedVersion?.linked && (
+                      <div className="bg-emerald-50 border border-emerald-200 rounded-md p-3 mb-4 flex items-start gap-3">
+                        <Zap className="w-5 h-5 text-emerald-600 fill-amber-300 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <h4 className="text-sm font-bold text-emerald-900">Linked to Sketch Plan</h4>
+                          <p className="text-xs text-emerald-700">This BOM version is synced with a Sketch Plan. Items generated from the sketch plan are managed there.</p>
+                        </div>
+                      </div>
+                    )}
                     {selectedVersion && <VersionStatusBanner version={selectedVersion} />}
                     <PriceUpdateBanner
                       mismatches={activeMismatches}

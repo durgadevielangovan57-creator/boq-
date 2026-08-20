@@ -25,6 +25,7 @@ import { logActivity } from "./audit";
 import { registerSketchRoutes } from "./sketch_routes";
 import { convertSketchToBoqItems } from "./lib/sketch_converter";
 import { WebSocketServer } from 'ws';
+import bomSketchSync from "./lib/bom_sketch_sync";
 
 
 export async function registerRoutes(
@@ -4416,29 +4417,7 @@ export async function registerRoutes(
             UNION ALL
             SELECT 1 FROM product_approvals WHERE product_id = p.id AND status IN ('approved', 'edit_requested', 'draft')
           ) AS is_approved,
-          EXISTS (
-            SELECT 1 FROM (
-              SELECT si.material_id::text, COALESCE(si.supply_rate, si.rate) AS config_rate, NULL::text as status
-              FROM step11_products sp
-              JOIN step11_product_items si ON si.step11_product_id = sp.id
-              WHERE sp.product_id = p.id
-              UNION ALL
-              SELECT ci.material_id::text, COALESCE(ci.supply_rate, ci.rate) AS config_rate, NULL::text as status
-              FROM product_step3_config pc
-              JOIN product_step3_config_items ci ON ci.step3_config_id = pc.id
-              WHERE pc.product_id = p.id::varchar
-              UNION ALL
-              SELECT * FROM (
-                SELECT DISTINCT ON (pa.config_name) ai.material_id::text, COALESCE(ai.supply_rate, ai.rate) AS config_rate, pa.status::text
-                FROM product_approvals pa
-                JOIN product_approval_items ai ON ai.approval_id = pa.id
-                WHERE pa.product_id::text = p.id::text
-                ORDER BY pa.config_name, pa.created_at DESC
-              ) sub_pa
-            ) cfg
-            JOIN materials m ON m.id::text = cfg.material_id::text
-            WHERE (cfg.status IS NULL OR cfg.status = 'pending') AND ABS(cfg.config_rate - m.rate) > 0.01 AND m.approved IS TRUE
-          ) AS has_price_updates
+          (price_updates.product_id IS NOT NULL) AS has_price_updates
         FROM products p
         LEFT JOIN (
           SELECT DISTINCT ON (LOWER(TRIM(name)), LOWER(TRIM(category))) name, category
@@ -4446,6 +4425,29 @@ export async function registerRoutes(
           ORDER BY LOWER(TRIM(name)), LOWER(TRIM(category)), created_at DESC
         ) s ON LOWER(TRIM(p.subcategory)) = LOWER(TRIM(s.name)) AND (p.category IS NULL OR LOWER(TRIM(p.category)) = LOWER(TRIM(s.category)))
         LEFT JOIN material_categories c ON LOWER(TRIM(s.category)) = LOWER(TRIM(c.name))
+        LEFT JOIN (
+           SELECT cfg.product_id::text as product_id
+           FROM (
+              SELECT sp.product_id::text, si.material_id::text, COALESCE(si.supply_rate, si.rate) AS config_rate, NULL::text as status
+              FROM step11_products sp
+              JOIN step11_product_items si ON si.step11_product_id = sp.id
+              UNION ALL
+              SELECT pc.product_id::text, ci.material_id::text, COALESCE(ci.supply_rate, ci.rate) AS config_rate, NULL::text as status
+              FROM product_step3_config pc
+              JOIN product_step3_config_items ci ON ci.step3_config_id = pc.id
+              UNION ALL
+              SELECT pa.product_id::text, ai.material_id::text, COALESCE(ai.supply_rate, ai.rate) AS config_rate, pa.status::text
+              FROM (
+                SELECT DISTINCT ON (product_id, config_name) product_id, id, status
+                FROM product_approvals
+                ORDER BY product_id, config_name, created_at DESC
+              ) pa
+              JOIN product_approval_items ai ON ai.approval_id = pa.id
+           ) cfg
+           JOIN materials m ON m.id::text = cfg.material_id
+           WHERE (cfg.status IS NULL OR cfg.status = 'pending') AND ABS(cfg.config_rate - m.rate) > 0.01 AND m.approved IS TRUE
+           GROUP BY cfg.product_id
+        ) price_updates ON price_updates.product_id = p.id::text
       `;
 
       if (approvedOnly === 'true') {
@@ -5651,21 +5653,24 @@ export async function registerRoutes(
         // Ensure is_disabled column exists
 
         const { type, excludeApproved } = req.query;
-        let q = `SELECT id, project_id, project_name, project_client, project_location, version_number, status, type, is_locked, is_last_final, is_disabled, is_boq_submission, last_template_snapshot, created_at, updated_at, category_order, source_version_id 
-                 FROM boq_versions 
-                 WHERE project_id = $1`;
+        let q = `SELECT v.id, v.project_id, v.project_name, v.project_client, v.project_location, v.version_number, v.status, v.type, v.is_locked, v.is_last_final, v.is_disabled, v.is_boq_submission, v.last_template_snapshot, v.created_at, v.updated_at, v.category_order, v.source_version_id,
+                 (CASE WHEN bsl.id IS NOT NULL THEN TRUE ELSE FALSE END) as linked,
+                 bsl.sketch_plan_id as linked_sketch_plan_id
+                 FROM boq_versions v
+                 LEFT JOIN bom_sketch_links bsl ON v.id = bsl.bom_version_id AND bsl.is_active = TRUE
+                 WHERE v.project_id = $1`;
         const params: any[] = [projectId];
 
         if (type) {
-          q += ` AND type = $${params.length + 1}`;
+          q += ` AND v.type = $${params.length + 1}`;
           params.push(type as string);
         }
 
         if (excludeApproved === 'true') {
-          q += ` AND status != 'approved'`;
+          q += ` AND v.status != 'approved'`;
         }
 
-        q += ` ORDER BY version_number DESC`;
+        q += ` ORDER BY v.version_number DESC`;
 
         const result = await query(q, params);
 
@@ -7127,7 +7132,18 @@ export async function registerRoutes(
           return res.status(404).json({ message: "Version not found" });
         }
 
-        res.json(result.rows[0]);
+        const version = result.rows[0];
+        try {
+          const linkRes = await query("SELECT sketch_plan_id FROM bom_sketch_links WHERE bom_version_id = $1 AND is_active = TRUE LIMIT 1", [versionId]);
+          if (linkRes.rows.length > 0) {
+            version.linked = true;
+            version.linked_sketch_plan_id = linkRes.rows[0].sketch_plan_id;
+          }
+        } catch (e) {
+          console.warn("[boq-versions] Could not check link status", e);
+        }
+
+        res.json(version);
       } catch (err) {
         console.error("GET /api/boq-versions/:versionId error", err);
         res.status(500).json({ message: "Failed to fetch version" });
@@ -7564,7 +7580,8 @@ export async function registerRoutes(
     async (req: Request, res: Response) => {
       try {
         const { id: sketchId } = req.params;
-        const { projectId, versionId } = req.body;
+        const { projectId, versionId, link } = req.body;
+        const userId = (req as any).user?.id;
 
         if (!projectId) {
           return res.status(400).json({ message: "Project ID is required" });
@@ -7605,6 +7622,11 @@ export async function registerRoutes(
 
         console.log(`[load-to-boq] Starting recalculateProjectValue for project ${projectId}, version ${targetVersionId}`);
         await recalculateProjectValue(projectId, targetVersionId);
+
+        // Optional linking
+        if (link) {
+          await bomSketchSync.linkVersionToSketchPlan(targetVersionId, sketchId, userId);
+        }
 
         console.log(`[load-to-boq] Successfully loaded ${boqItems.length} items to BOQ`);
         res.json({ message: `Successfully loaded ${boqItems.length} items to BOQ`, count: boqItems.length, versionId: targetVersionId });
@@ -7711,6 +7733,9 @@ export async function registerRoutes(
         } catch (e) {
           console.warn("Could not verify inserted BOQ item:", e);
         }
+
+        // Sync to Sketch if linked (non-blocking)
+        bomSketchSync.syncBoqItemToSketch(itemId, table_data).catch(err => console.error("Sync to sketch failed:", err));
 
         const responseData = {
           id: itemId,
@@ -8271,6 +8296,9 @@ export async function registerRoutes(
         }
 
         res.json({ message: "BOM item updated successfully" });
+
+        // Sync to Sketch if linked (non-blocking)
+        bomSketchSync.syncBoqItemToSketch(id, table_data).catch(err => console.error("Sync to sketch failed:", err));
       } catch (err) {
         console.error("PUT /api/boq-items/:id error:", err);
         res.status(500).json({ message: "Failed to update BOM item" });
@@ -8377,6 +8405,9 @@ export async function registerRoutes(
         if (itemRes.rows.length > 0) {
           await recalculateProjectValue(itemRes.rows[0].project_id, itemRes.rows[0].version_id);
         }
+
+        // Sync to Sketch if linked (non-blocking)
+        bomSketchSync.syncBoqItemToSketch(itemId, table_data).catch(err => console.error("Sync to sketch failed:", err));
 
         res.json({ message: "BOQ item updated successfully" });
       } catch (err) {

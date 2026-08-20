@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, FileText } from "lucide-react";
 import { fuzzySearch, cn } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -81,6 +81,8 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [amendRatesActive, setAmendRatesActive] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
+  const [localRemarks, setLocalRemarks] = useState(tableData.remarks || "");
 
   const performDelete = async (action: "archive" | "trash", reason?: string) => {
     try {
@@ -101,7 +103,8 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
 
   useEffect(() => {
     setLocalTarget(tableData.targetRequiredQty || 0);
-  }, [tableData.targetRequiredQty]);
+    setLocalRemarks(tableData.remarks || "");
+  }, [tableData.targetRequiredQty, tableData.remarks]);
 
   const step11Items = Array.isArray(tableData.step11_items) ? tableData.step11_items : [];
   const productName = tableData.product_name || boqItem.estimator;
@@ -433,11 +436,39 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
             </div>
           )}
           {tableData.is_finalized && <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold text-[10px]">Finalized</span>}
+          <Button variant="ghost" size="sm" className={`h-7 w-7 p-0 ${showNotes ? 'bg-amber-100 text-amber-700' : 'text-slate-400 hover:text-amber-600'}`} title="Sketch Notes" onClick={(e) => { e.stopPropagation(); setShowNotes(!showNotes); }}>
+            <FileText className="h-4 w-4" />
+          </Button>
           <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title={isExpanded ? "Collapse" : "Expand"} onClick={toggle}>
             {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </Button>
         </div>
       </div>
+
+      {/* Sketch Notes Section */}
+      {showNotes && (
+        <div className="bg-amber-50/50 border-b border-amber-100 p-3 flex flex-col gap-2 shadow-inner">
+           <div className="text-[11px] font-bold text-amber-800 flex items-center gap-1 uppercase tracking-wide">
+             <FileText className="w-3 h-3"/> Sketch Notes
+           </div>
+           <textarea 
+             className="text-sm bg-white border border-amber-200 rounded-md p-2.5 focus:outline-none focus:ring-2 focus:ring-amber-400 w-full min-h-[60px] text-slate-700 placeholder:text-amber-900/30 shadow-sm transition-all"
+             placeholder="Enter notes or instructions for this item. This will sync to Sketch a Plan."
+             value={localRemarks}
+             onClick={(e) => e.stopPropagation()}
+             onChange={(e) => setLocalRemarks(e.target.value)}
+             onBlur={async () => {
+               if (localRemarks === (tableData.remarks || "")) return;
+               updateEditedField(boqItem.id, "remarks", localRemarks);
+               try {
+                 const updatedTd = { ...tableData, remarks: localRemarks };
+                 const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
+                 if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
+               } catch (err) { console.error("Failed to save sketch notes", err); }
+             }}
+           />
+        </div>
+      )}
 
       {/* Content Area */}
       {!isCompactView && (
@@ -560,9 +591,10 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                 }}
                 onMouseLeave={() => setShowDescTooltip(false)}
               >
-                <Input
+                <textarea
+                  rows={1}
                   placeholder="Enter product description..."
-                  className="h-8 text-xs w-full font-bold text-slate-700 bg-slate-50 border-slate-200 hover:bg-white focus:bg-white focus:ring-1 ring-blue-100"
+                  className="min-h-[32px] py-1.5 px-3 rounded-md border text-xs w-full font-bold text-slate-700 bg-slate-50 border-slate-200 hover:bg-white focus:bg-white focus:ring-1 ring-blue-100 resize-y"
                   defaultValue={tableData.finalize_description || ""}
                   disabled={isVersionSubmitted}
                   onFocus={checkBudgetEarly}
