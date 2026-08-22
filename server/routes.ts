@@ -20,7 +20,7 @@ import { comparePasswords, generateToken, hashPassword } from "./auth";
 import { authMiddleware, requireRole, requireRoleOrPermission } from "./middleware";
 import { randomUUID } from "crypto";
 import { query } from "./db/client";
-import { sendSketchPlanEmail, sendSiteReportEmail, sendProposalStatusEmail, sendMaterialRateChangeEmail, sendCommentMentionEmail, sendPasswordUpdatedEmail, sendMaterialSubmissionRejectedEmail } from "./email";
+import { sendSketchPlanEmail, sendSiteReportEmail, sendProposalStatusEmail, sendMaterialRateChangeEmail, sendCommentMentionEmail, sendPasswordUpdatedEmail, sendMaterialSubmissionRejectedEmail, sendVersionSubmittedEmail, sendVersionApprovedEmail } from "./email";
 import { logActivity } from "./audit";
 import { registerSketchRoutes } from "./sketch_routes";
 import { convertSketchToBoqItems } from "./lib/sketch_converter";
@@ -2471,6 +2471,7 @@ export async function registerRoutes(
       let queryStr = `SELECT m.*, s.name as shop_name, 
                 mt.tax_code_type, mt.tax_code_value,
                 mt.hsn_code as template_hsn_code, mt.sac_code as template_sac_code,
+                mt.image as template_image,
                 m.brandname as "brandName", m.modelnumber as "modelNumber"
          FROM materials m 
          LEFT JOIN shops s ON m.shop_id = s.id 
@@ -2491,7 +2492,15 @@ export async function registerRoutes(
 
       const archivedIds = await archiveService.getArchivedItemIds('materials');
       const trashedIds = await archiveService.getTrashedItemIds('materials');
-      const filtered = result.rows.filter(r => !archivedIds.includes(r.id) && !trashedIds.includes(r.id));
+      const filtered = result.rows
+        .filter(r => !archivedIds.includes(r.id) && !trashedIds.includes(r.id))
+        .map((r: any) => {
+          // Fall back to the material template's image if this specific
+          // shop material row doesn't have its own image set. Does not
+          // overwrite an existing material-level image.
+          if (!r.image && r.template_image) r.image = r.template_image;
+          return r;
+        });
 
       res.json({ materials: filtered });
     } catch (err) {
@@ -2851,7 +2860,8 @@ export async function registerRoutes(
       const result = await query(
         `SELECT m.*, s.name as shop_name, 
                 mt.tax_code_type, mt.tax_code_value,
-                mt.hsn_code as template_hsn_code, mt.sac_code as template_sac_code 
+                mt.hsn_code as template_hsn_code, mt.sac_code as template_sac_code,
+                mt.image as template_image
          FROM materials m 
          LEFT JOIN shops s ON m.shop_id = s.id 
          LEFT JOIN material_templates mt ON m.template_id = mt.id 
@@ -2860,7 +2870,11 @@ export async function registerRoutes(
       );
       if (result.rowCount === 0)
         return res.status(404).json({ message: "not found" });
-      res.json({ material: result.rows[0] });
+      const material = result.rows[0];
+      // Fall back to the material template's image if this specific shop
+      // material row doesn't have its own image set.
+      if (!material.image && material.template_image) material.image = material.template_image;
+      res.json({ material });
     } catch (err) {
       console.error(err);
       res.status(500).json({ message: "error" });
@@ -6768,6 +6782,51 @@ export async function registerRoutes(
           } catch (hErr) {
             console.warn("Failed to log status history:", hErr);
           }
+
+          // --- Notify admins when a version is submitted for approval (fire-and-forget) ---
+          if (status === "pending_approval" || status === "submitted") {
+            (async () => {
+              try {
+                const user = (req as any).user;
+                const vRes = await query(
+                  `SELECT bv.version_number, bv.type, bp.name as project_name
+                   FROM boq_versions bv LEFT JOIN boq_projects bp ON bv.project_id = bp.id
+                   WHERE bv.id = $1`,
+                  [versionId]
+                );
+                const v = vRes.rows[0];
+                if (!v) return;
+
+                const adminRes = await query(
+                  `SELECT username FROM users WHERE role = 'admin' AND approved = 'approved'`
+                );
+                const adminEmails: string[] = adminRes.rows
+                  .map((r: any) => r.username)
+                  .filter((email: string) => email && email.includes("@"))
+                  // Don't notify the person who just submitted it themselves
+                  // (relevant when an admin submits their own BOM/BOQ).
+                  .filter((email: string) => email.toLowerCase() !== (user?.username || "").toLowerCase());
+
+                const envAdminEmail = process.env.ADMIN_EMAIL;
+                if (envAdminEmail && !adminEmails.includes(envAdminEmail)) {
+                  adminEmails.push(envAdminEmail);
+                }
+
+                if (adminEmails.length > 0) {
+                  await sendVersionSubmittedEmail(adminEmails, {
+                    submitterName: user?.fullName || user?.username || "Unknown User",
+                    projectName: v.project_name || "Unknown Project",
+                    versionNumber: v.version_number,
+                    versionType: v.type === "boq" ? "boq" : "bom",
+                  });
+                } else {
+                  console.warn("[EMAIL] No valid admin emails found for version submitted notification. Set ADMIN_EMAIL in .env or ensure admin usernames are email addresses.");
+                }
+              } catch (emailErr) {
+                console.error("[EMAIL] Failed to send version submitted notification:", emailErr);
+              }
+            })();
+          }
         }
 
         res.json({ message: "Version updated successfully" });
@@ -6907,6 +6966,68 @@ export async function registerRoutes(
           console.warn("Failed to log approval history:", hErr);
         }
         res.json({ message: "BOM version approved successfully" });
+
+        // --- Notify submitter (and, for BOM, the finance team) on approval (fire-and-forget) ---
+        (async () => {
+          try {
+            const approver = (req as any).user;
+            const vRes = await query(
+              `SELECT bv.version_number, bv.type, bp.name as project_name
+               FROM boq_versions bv LEFT JOIN boq_projects bp ON bv.project_id = bp.id
+               WHERE bv.id = $1`,
+              [id]
+            );
+            const v = vRes.rows[0];
+            if (!v) return;
+            const isBoq = v.type === "boq";
+
+            // Find whoever last submitted this version (most recent
+            // 'submitted'/'pending_approval' entry in boq_history).
+            const submitterRes = await query(
+              `SELECT u.username FROM boq_history bh
+               LEFT JOIN users u ON u.id = bh.user_id
+               WHERE bh.version_id = $1 AND bh.action IN ('submitted', 'pending_approval')
+               ORDER BY bh.created_at DESC LIMIT 1`,
+              [id]
+            );
+            const submitterEmail: string | null = submitterRes.rows[0]?.username || null;
+
+            const recipientEmails = new Set<string>();
+            if (submitterEmail && submitterEmail.includes("@")) {
+              recipientEmails.add(submitterEmail);
+            }
+
+            if (!isBoq) {
+              // BOM approvals also notify the whole finance team.
+              const financeRes = await query(
+                `SELECT username FROM users WHERE role = 'finance_team' AND approved = 'approved'`
+              );
+              financeRes.rows.forEach((r: any) => {
+                if (r.username && r.username.includes("@")) recipientEmails.add(r.username);
+              });
+            }
+
+            // Don't notify the approver about their own action (relevant
+            // when an admin approves a version they submitted themselves).
+            const approverEmailLower = (approver?.username || "").toLowerCase();
+            if (approverEmailLower) {
+              Array.from(recipientEmails).forEach((e) => {
+                if (e.toLowerCase() === approverEmailLower) recipientEmails.delete(e);
+              });
+            }
+
+            if (recipientEmails.size > 0) {
+              await sendVersionApprovedEmail(Array.from(recipientEmails), {
+                projectName: v.project_name || "Unknown Project",
+                versionNumber: v.version_number,
+                versionType: isBoq ? "boq" : "bom",
+                approvedBy: approver?.fullName || approver?.username,
+              });
+            }
+          } catch (emailErr) {
+            console.error("[EMAIL] Failed to send version approved notification:", emailErr);
+          }
+        })();
       } catch (err) {
         console.error("POST /api/bom-approvals/:id/approve error:", err);
         res.status(500).json({ message: "Failed to approve BOM version" });

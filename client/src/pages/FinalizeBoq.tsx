@@ -2003,34 +2003,72 @@ export default function FinalizeBoq() {
           }
 
           try {
-            const productsResp = await apiFetch("/api/products");
+            const [productsResp, materialsResp] = await Promise.all([
+              apiFetch("/api/products"),
+              apiFetch("/api/materials").catch(() => null),
+            ]);
+            const productsById: { [id: string]: any } = {};
             if (productsResp.ok) {
               const productsData = await productsResp.json();
               const productsList: any[] = productsData.products || [];
-              const productsById: { [id: string]: any } = {};
               productsList.forEach((p: any) => { productsById[p.id] = p; });
+            }
+            const materialsById: { [id: string]: any } = {};
+            if (materialsResp && materialsResp.ok) {
+              const materialsData = await materialsResp.json();
+              const materialsList: any[] = materialsData.materials || [];
+              materialsList.forEach((m: any) => { materialsById[m.id] = m; });
+            }
 
-              for (const item of items) {
-                let td = item.table_data || {};
-                if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
-                if (td.product_id) {
-                  const prod = productsById[td.product_id];
-                  if (prod) {
-                    // Update missing HSN/SAC
-                    if (!td.hsn_code && !td.sac_code) {
-                      if (prod.hsn_code) td.hsn_code = prod.hsn_code;
-                      if (prod.sac_code) td.sac_code = prod.sac_code;
-                      if (prod.tax_code_value) {
-                        td.hsn_sac_code = prod.tax_code_value;
-                        td.hsn_sac_type = prod.tax_code_type || null;
-                      }
+            for (const item of items) {
+              let td = item.table_data || {};
+              if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
+              if (td.product_id) {
+                const prod = productsById[td.product_id];
+                if (prod) {
+                  // Update missing HSN/SAC
+                  if (!td.hsn_code && !td.sac_code) {
+                    if (prod.hsn_code) td.hsn_code = prod.hsn_code;
+                    if (prod.sac_code) td.sac_code = prod.sac_code;
+                    if (prod.tax_code_value) {
+                      td.hsn_sac_code = prod.tax_code_value;
+                      td.hsn_sac_type = prod.tax_code_type || null;
                     }
-                    // Always try to attach image if it exists in the catalog but not in table_data
-                    if (prod.image && !td.image) {
-                      td.image = prod.image;
-                    }
-                    item.table_data = td;
                   }
+                  // Always try to attach image if it exists in the catalog but not in table_data
+                  if (prod.image && !td.image) {
+                    td.image = prod.image;
+                  }
+                  item.table_data = td;
+                }
+              } else if (td.material_id) {
+                // Same auto-fill, but for items linked to a Material Template
+                // instead of a catalog Product.
+                const mat = materialsById[td.material_id];
+                if (mat) {
+                  if (!td.hsn_code && !td.sac_code) {
+                    if (mat.hsn_code || mat.template_hsn_code) td.hsn_code = mat.hsn_code || mat.template_hsn_code;
+                    if (mat.sac_code || mat.template_sac_code) td.sac_code = mat.sac_code || mat.template_sac_code;
+                    if (mat.tax_code_value || mat.hsn_sac_code) {
+                      td.hsn_sac_code = mat.tax_code_value || mat.hsn_sac_code;
+                      td.hsn_sac_type = mat.tax_code_type || mat.hsn_sac_type || null;
+                    }
+                  }
+                  if (mat.image && !td.image) {
+                    td.image = mat.image;
+                  }
+                  item.table_data = td;
+                }
+              } else if (!td.image && Array.isArray(td.step11_items) && td.step11_items.length > 0) {
+                // Items added via the "Select Material" picker don't carry a
+                // top-level material_id — the material reference lives on
+                // the first step11 line instead.
+                const firstLine = td.step11_items[0];
+                const lineMatId = firstLine?.material_id || firstLine?.id;
+                const mat = lineMatId ? materialsById[lineMatId] : null;
+                if (mat && mat.image) {
+                  td.image = mat.image;
+                  item.table_data = td;
                 }
               }
             }

@@ -451,6 +451,16 @@ export async function sendMaterialRateChangeEmail(
     return;
   }
 
+  // Filter out dummy domains that will cause Resend to reject the entire batch
+  const validAdminEmails = adminEmails.filter(
+    email => !email.toLowerCase().endsWith('@example.com') && !email.toLowerCase().endsWith('@test.com')
+  );
+
+  if (validAdminEmails.length === 0) {
+    console.warn("[EMAIL] No valid admin emails remaining after filtering dummy domains.");
+    return;
+  }
+
   const {
     materialName,
     materialCode,
@@ -576,16 +586,25 @@ export async function sendMaterialRateChangeEmail(
   `;
 
   try {
+    console.log("[EMAIL DEBUG] Attempting to send material rate change email...");
+    console.log("[EMAIL DEBUG] TO:", validAdminEmails);
     const response = await resend.emails.send({
       from: fromEmail,
-      to: adminEmails,
+      to: validAdminEmails,
       subject: `🔔 Rate Alert: ${materialName} — ₹${oldRateNum.toFixed(2)} → ₹${newRateNum.toFixed(2)} (${isIncrease ? "+" : "-"}${Math.abs(diff).toFixed(2)})`,
       html: emailHtml,
     });
-    console.log("[EMAIL] Material rate change notification sent to admins:", adminEmails);
+    
+    console.log("[EMAIL DEBUG] Full Resend response:", JSON.stringify(response, null, 2));
+    
+    if ((response as any)?.error) {
+      console.error("[EMAIL ERROR] Resend returned error for material rate change:", (response as any).error);
+    } else {
+      console.log("[EMAIL] Material rate change notification sent to admins:", adminEmails);
+    }
     return response;
   } catch (error) {
-    console.error("[EMAIL ERROR] sendMaterialRateChangeEmail:", error);
+    console.error("[EMAIL ERROR] sendMaterialRateChangeEmail Exception:", error);
     // Don't throw — email failure should not block the rate update
   }
 }
@@ -842,5 +861,180 @@ export async function sendPasswordUpdatedEmail(
   } catch (error) {
     console.error("[EMAIL ERROR] sendPasswordUpdatedEmail:", error);
     // Don't throw to prevent breaking the password update flow
+  }
+}
+
+/**
+ * Send notification when a BOM/BOQ version is submitted for approval.
+ * Sent to admins so they know a new version is waiting for their review.
+ */
+export async function sendVersionSubmittedEmail(
+  toEmails: string[],
+  info: {
+    submitterName: string;
+    projectName: string;
+    versionNumber: number | string;
+    versionType: "bom" | "boq";
+  }
+) {
+  if (!resend) {
+    console.warn("[EMAIL] Resend not configured — skipping version submitted notification");
+    return;
+  }
+  if (!toEmails || toEmails.length === 0) {
+    console.warn("[EMAIL] No recipient emails for version submitted notification");
+    return;
+  }
+
+  // Filter out dummy domains
+  const validToEmails = toEmails.filter(
+    email => !email.toLowerCase().endsWith('@example.com') && !email.toLowerCase().endsWith('@test.com')
+  );
+
+  if (validToEmails.length === 0) {
+    console.warn("[EMAIL] No valid emails remaining for version submitted notification after filtering dummy domains.");
+    return;
+  }
+
+  const { submitterName, projectName, versionNumber, versionType } = info;
+  const typeLabel = versionType === "boq" ? "BOQ" : "BOM";
+
+  const emailHtml = `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 0; background-color: #f8fafc;">
+      <div style="background: linear-gradient(135deg, #1e40af 0%, #2563eb 100%); padding: 24px 28px; border-radius: 8px 8px 0 0; text-align: center;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 700;">📥 New ${typeLabel} Submitted for Approval</h1>
+        <p style="color: #bfdbfe; margin: 6px 0 0 0; font-size: 13px;">BOQ Management System — Approval Notification</p>
+      </div>
+      <div style="background-color: #ffffff; padding: 28px; border: 1px solid #e2e8f0;">
+        <p style="font-size: 15px; color: #1e293b;">Hi,</p>
+        <p style="font-size: 14px; color: #475569; line-height: 1.6;">
+          <strong>${submitterName}</strong> has submitted a ${typeLabel} version for approval. Please review it at your earliest convenience.
+        </p>
+        <div style="background-color: #f8fafc; border-radius: 8px; padding: 16px 18px; margin: 20px 0; border: 1px solid #e2e8f0;">
+          <table style="width: 100%; font-size: 13px;">
+            <tr><td style="padding: 4px 0; color: #64748b; font-weight: 600; width: 40%;">Project</td><td style="color: #0f172a;">${projectName}</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b; font-weight: 600;">Version</td><td style="color: #0f172a;">v${versionNumber} (${typeLabel})</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b; font-weight: 600;">Submitted By</td><td style="color: #0f172a;">${submitterName}</td></tr>
+          </table>
+        </div>
+        <p style="font-size: 13px; color: #64748b; margin-top: 20px; line-height: 1.5;">
+          Please log in to the BOQ Management System to review and approve/reject this submission.
+        </p>
+      </div>
+      <div style="background-color: #f1f5f9; padding: 16px 28px; border-radius: 0 0 8px 8px; text-align: center; border: 1px solid #e2e8f0; border-top: none;">
+        <p style="margin: 0; font-size: 12px; color: #94a3b8;">Automated notification from <strong>BOQ Management System</strong>. &copy; ${new Date().getFullYear()} Concept Trunk Interiors.</p>
+      </div>
+    </div>
+  `;
+
+  try {
+    console.log("[EMAIL DEBUG] Attempting to send version submitted email...");
+    console.log("[EMAIL DEBUG] FROM:", fromEmail);
+    console.log("[EMAIL DEBUG] TO:", validToEmails);
+    console.log("[EMAIL DEBUG] API KEY loaded:", resendApiKey ? `yes (${resendApiKey.substring(0, 8)}...)` : "NO");
+    const response = await resend.emails.send({
+      from: fromEmail,
+      to: validToEmails,
+      subject: `📥 New ${typeLabel} Submitted for Approval: ${projectName} (v${versionNumber})`,
+      html: emailHtml,
+    });
+    console.log("[EMAIL DEBUG] Full Resend response:", JSON.stringify(response, null, 2));
+    if ((response as any)?.error) {
+      console.error("[EMAIL ERROR] Resend returned error for version submitted:", (response as any).error);
+    } else {
+      console.log("[EMAIL] Version submitted notification sent to:", toEmails);
+    }
+    return response;
+  } catch (error) {
+    console.error("[EMAIL ERROR] sendVersionSubmittedEmail:", error);
+    // Don't throw — email failure should not block the submission flow
+  }
+}
+
+/**
+ * Send notification when a BOM/BOQ version has been approved.
+ * Sent to the submitter (and, for BOM approvals, the finance team) so they
+ * know the version is ready for the next step.
+ */
+export async function sendVersionApprovedEmail(
+  toEmails: string[],
+  info: {
+    projectName: string;
+    versionNumber: number | string;
+    versionType: "bom" | "boq";
+    approvedBy?: string;
+  }
+) {
+  if (!resend) {
+    console.warn("[EMAIL] Resend not configured — skipping version approved notification");
+    return;
+  }
+  if (!toEmails || toEmails.length === 0) {
+    console.warn("[EMAIL] No recipient emails for version approved notification");
+    return;
+  }
+
+  // Filter out dummy domains
+  const validToEmails = toEmails.filter(
+    email => !email.toLowerCase().endsWith('@example.com') && !email.toLowerCase().endsWith('@test.com')
+  );
+
+  if (validToEmails.length === 0) {
+    console.warn("[EMAIL] No valid emails remaining for version approved notification after filtering dummy domains.");
+    return;
+  }
+
+  const { projectName, versionNumber, versionType, approvedBy } = info;
+  const typeLabel = versionType === "boq" ? "BOQ" : "BOM";
+
+  const emailHtml = `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; padding: 0; background-color: #f8fafc;">
+      <div style="background: linear-gradient(135deg, #065f46 0%, #10b981 100%); padding: 24px 28px; border-radius: 8px 8px 0 0; text-align: center;">
+        <h1 style="color: #ffffff; margin: 0; font-size: 20px; font-weight: 700;">✅ ${typeLabel} Approved</h1>
+        <p style="color: #d1fae5; margin: 6px 0 0 0; font-size: 13px;">BOQ Management System — Approval Notification</p>
+      </div>
+      <div style="background-color: #ffffff; padding: 28px; border: 1px solid #e2e8f0;">
+        <p style="font-size: 15px; color: #1e293b;">Hi,</p>
+        <p style="font-size: 14px; color: #475569; line-height: 1.6;">
+          The ${typeLabel} version below has been <strong style="color: #10b981;">approved</strong>${approvedBy ? ` by ${approvedBy}` : ""}.
+        </p>
+        <div style="background-color: #f8fafc; border-radius: 8px; padding: 16px 18px; margin: 20px 0; border: 1px solid #e2e8f0;">
+          <table style="width: 100%; font-size: 13px;">
+            <tr><td style="padding: 4px 0; color: #64748b; font-weight: 600; width: 40%;">Project</td><td style="color: #0f172a;">${projectName}</td></tr>
+            <tr><td style="padding: 4px 0; color: #64748b; font-weight: 600;">Version</td><td style="color: #0f172a;">v${versionNumber} (${typeLabel})</td></tr>
+            ${approvedBy ? `<tr><td style="padding: 4px 0; color: #64748b; font-weight: 600;">Approved By</td><td style="color: #0f172a;">${approvedBy}</td></tr>` : ""}
+          </table>
+        </div>
+        <p style="font-size: 13px; color: #64748b; margin-top: 20px; line-height: 1.5;">
+          You can log in to the BOQ Management System to view the approved version and proceed with next steps.
+        </p>
+      </div>
+      <div style="background-color: #f1f5f9; padding: 16px 28px; border-radius: 0 0 8px 8px; text-align: center; border: 1px solid #e2e8f0; border-top: none;">
+        <p style="margin: 0; font-size: 12px; color: #94a3b8;">Automated notification from <strong>BOQ Management System</strong>. &copy; ${new Date().getFullYear()} Concept Trunk Interiors.</p>
+      </div>
+    </div>
+  `;
+
+  try {
+    console.log("[EMAIL DEBUG] Attempting to send version approved email...");
+    console.log("[EMAIL DEBUG] FROM:", fromEmail);
+    console.log("[EMAIL DEBUG] TO:", validToEmails);
+    console.log("[EMAIL DEBUG] API KEY loaded:", resendApiKey ? `yes (${resendApiKey.substring(0, 8)}...)` : "NO");
+    const response = await resend.emails.send({
+      from: fromEmail,
+      to: validToEmails,
+      subject: `✅ ${typeLabel} Approved: ${projectName} (v${versionNumber})`,
+      html: emailHtml,
+    });
+    console.log("[EMAIL DEBUG] Full Resend response:", JSON.stringify(response, null, 2));
+    if ((response as any)?.error) {
+      console.error("[EMAIL ERROR] Resend returned error for version approved:", (response as any).error);
+    } else {
+      console.log("[EMAIL] Version approved notification sent to:", toEmails);
+    }
+    return response;
+  } catch (error) {
+    console.error("[EMAIL ERROR] sendVersionApprovedEmail:", error);
+    // Don't throw — email failure should not block the approval flow
   }
 }
