@@ -205,6 +205,18 @@ export async function convertSketchToBoqItems(sketchId: string) {
     }
 
     tableData.isEngineBased = false;
+    // IMPORTANT: This is a plain/manual item (not a product). The default tableData
+    // object above pre-fills materialLines: [] and targetRequiredQty: sketchQty for
+    // every sketch row, but those two fields together are exactly what every
+    // isEngineBased/"is this a product" check across the app (BoqItemCard, GeneratePO,
+    // FinalizeBoq, VersionCompareModal, BomApprovals, etc.) looks for. Leaving them set
+    // here made plain sketch-converted items get misdetected as engine-based products,
+    // which is why the "Project Target" (project area) field was incorrectly showing up
+    // for items added via "Generate BOM from Sketch". Since this item never got a
+    // configBasis (only real products do, see STEP A/B above), it must not carry these
+    // two fields either — matching how manually-added items look everywhere else in the app.
+    delete tableData.materialLines;
+    delete tableData.targetRequiredQty;
     tableData.material_id = sketchMaterialId;
     tableData.hsn_code = hsn;
     tableData.sac_code = sac;

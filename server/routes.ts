@@ -6454,6 +6454,12 @@ export async function registerRoutes(
               // just like the manual/step11_items branch below already does via spread.
               if (f.rate_amendment_status !== undefined) tableData.materialLines[itemIdx].rate_amendment_status = f.rate_amendment_status;
               if (f.original_rate !== undefined) tableData.materialLines[itemIdx].original_rate = f.original_rate;
+              // "indicate" (the red-flag checkbox on a row) was missing from this allow-list.
+              // The manual/step11_items branch below saves it fine (it spreads all fields),
+              // but engine-based material lines only copy specific whitelisted fields, so
+              // checking "Indicate" on an engine item was silently never persisted — the
+              // very next autosave refresh would then snap the checkbox back to unchecked.
+              if (f.indicate !== undefined) tableData.materialLines[itemIdx].indicate = f.indicate;
               editsAppliedToThisItem++;
             }
           }

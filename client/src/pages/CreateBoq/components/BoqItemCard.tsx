@@ -356,16 +356,25 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   const images = parseImages(tableData.image);
   const displayImage = images.length > 0 ? images[0] : null;
 
+  // Whether ANY individual item/row inside this product is marked as "Indicate".
+  // Purely a visual cue: when the card is collapsed you can't see the red row
+  // inside, so we also tint the card border/header if a child row is indicated,
+  // even if the whole-product "Indicate" checkbox itself is unchecked. This does
+  // NOT change what "indicate" means for the product record — isProductIndicate
+  // (and its checkbox below) still reflects only the actual product-level value.
+  const hasIndicatedItem = displayLines.some((it: any) => !!it.indicate);
+  const showIndicateStyling = isProductIndicate || hasIndicatedItem;
+
   return (
     <div
-      className={`border rounded-lg overflow-hidden transition-all ${isCardDragOver ? 'ring-2 ring-blue-400 bg-blue-50/30' : ''} ${isProductIndicate ? 'border-rose-300 ring-1 ring-rose-200' : ''}`}
+      className={`border rounded-lg overflow-hidden transition-all ${isCardDragOver ? 'ring-2 ring-blue-400 bg-blue-50/30' : ''} ${showIndicateStyling ? 'border-rose-300 ring-1 ring-rose-200' : ''}`}
       draggable={!isVersionSubmitted}
       onDragStart={onCardDragStart}
       onDragOver={onCardDragOver}
       onDrop={onCardDrop}
     >
       {/* Header Row */}
-      <div className={`${isProductIndicate ? 'bg-rose-100/50 border-rose-200' : 'bg-gray-100 border-gray-200'} px-4 py-2 flex flex-wrap justify-between items-center border-b gap-x-4 gap-y-2`}>
+      <div className={`${showIndicateStyling ? 'bg-rose-100/50 border-rose-200' : 'bg-gray-100 border-gray-200'} px-4 py-2 flex flex-wrap justify-between items-center border-b gap-x-4 gap-y-2`}>
         <div className="flex items-center gap-3 font-bold text-gray-800 flex-1 min-w-0">
           <GripVertical className={`h-4 w-4 flex-shrink-0 ${isVersionSubmitted ? 'text-gray-200' : 'text-gray-400 hover:text-blue-500 cursor-grab'}`} />
           {!isVersionSubmitted && (
@@ -373,7 +382,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
               value={boqIdx}
               onChange={(e) => onProductOrdinalChange?.(parseInt(e.target.value))}
               onClick={(e) => e.stopPropagation()}
-              className={`text-xs p-0.5 border border-slate-200 rounded outline-none cursor-pointer text-slate-700 ${isProductIndicate ? 'bg-rose-50 border-rose-200' : 'bg-white'}`}
+              className={`text-xs p-0.5 border border-slate-200 rounded outline-none cursor-pointer text-slate-700 ${showIndicateStyling ? 'bg-rose-50 border-rose-200' : 'bg-white'}`}
             >
               {Array.from({ length: totalProducts || 1 }).map((_, i) => (
                 <option key={i} value={i}>{i + 1}</option>
@@ -448,25 +457,25 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
       {/* Sketch Notes Section */}
       {showNotes && (
         <div className="bg-amber-50/50 border-b border-amber-100 p-3 flex flex-col gap-2 shadow-inner">
-           <div className="text-[11px] font-bold text-amber-800 flex items-center gap-1 uppercase tracking-wide">
-             <FileText className="w-3 h-3"/> Sketch Notes
-           </div>
-           <textarea 
-             className="text-sm bg-white border border-amber-200 rounded-md p-2.5 focus:outline-none focus:ring-2 focus:ring-amber-400 w-full min-h-[60px] text-slate-700 placeholder:text-amber-900/30 shadow-sm transition-all"
-             placeholder="Enter notes or instructions for this item. This will sync to Sketch a Plan."
-             value={localRemarks}
-             onClick={(e) => e.stopPropagation()}
-             onChange={(e) => setLocalRemarks(e.target.value)}
-             onBlur={async () => {
-               if (localRemarks === (tableData.remarks || "")) return;
-               updateEditedField(boqItem.id, "remarks", localRemarks);
-               try {
-                 const updatedTd = { ...tableData, remarks: localRemarks };
-                 const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
-                 if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
-               } catch (err) { console.error("Failed to save sketch notes", err); }
-             }}
-           />
+          <div className="text-[11px] font-bold text-amber-800 flex items-center gap-1 uppercase tracking-wide">
+            <FileText className="w-3 h-3" /> Sketch Notes
+          </div>
+          <textarea
+            className="text-sm bg-white border border-amber-200 rounded-md p-2.5 focus:outline-none focus:ring-2 focus:ring-amber-400 w-full min-h-[60px] text-slate-700 placeholder:text-amber-900/30 shadow-sm transition-all"
+            placeholder="Enter notes or instructions for this item. This will sync to Sketch a Plan."
+            value={localRemarks}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => setLocalRemarks(e.target.value)}
+            onBlur={async () => {
+              if (localRemarks === (tableData.remarks || "")) return;
+              updateEditedField(boqItem.id, "remarks", localRemarks);
+              try {
+                const updatedTd = { ...tableData, remarks: localRemarks };
+                const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
+                if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
+              } catch (err) { console.error("Failed to save sketch notes", err); }
+            }}
+          />
         </div>
       )}
 

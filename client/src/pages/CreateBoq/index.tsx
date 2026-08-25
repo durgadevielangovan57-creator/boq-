@@ -372,6 +372,30 @@ export default function CreateBom() {
     }
   };
 
+  // Bulk version of handleRateAction — reuses the same single-item approve/reject
+  // endpoint for each id (no new backend behavior), just lets the admin act on
+  // several rate-change requests selected via the new checkboxes at once.
+  const handleBulkRateAction = async (ids: string[], action: 'approve' | 'reject') => {
+    if (ids.length === 0) return;
+    setRateActionLoading('bulk');
+    let failCount = 0;
+    for (const id of ids) {
+      try {
+        const res = await apiFetch(`/api/bom-rate-changes/${id}/${action}`, { method: 'POST' });
+        if (!res.ok) failCount++;
+      } catch {
+        failCount++;
+      }
+    }
+    setRateActionLoading(null);
+    if (failCount === 0) {
+      toast({ title: "Success", description: `${ids.length} rate change${ids.length > 1 ? 's' : ''} ${action}d successfully` });
+    } else {
+      toast({ title: "Partial Failure", description: `${ids.length - failCount} of ${ids.length} succeeded. ${failCount} failed — please retry those.`, variant: "destructive" });
+    }
+    fetchApprovals(); // Refresh the list
+  };
+
   const handleApprovalAction = async (id: string, action: 'approve' | 'reject' | 'approve-edit' | 'reject-edit') => {
     let reason = "";
     if (action === 'reject' || action === 'reject-edit') {
@@ -1634,6 +1658,23 @@ export default function CreateBom() {
   }, [editedFields, boqItems]);
 
   const hasPendingRateAmendments = rateAmendmentSummary.hasDraft || rateAmendmentSummary.hasPending;
+
+  // ── Auto-refresh while a rate amendment is awaiting admin approval ─────────
+  // Previously this page never re-fetched boqItems on its own after a rate change
+  // request was sent to the admin. So if the admin approved/rejected it (possibly
+  // in a different session), this page kept showing "pending" — which blocks
+  // "Submit for Approval" — until something unrelated happened to trigger a reload.
+  // That's what made it look like the same rate had to be submitted and approved
+  // 3-4 times before "Submit for Approval" finally showed up: it wasn't actually
+  // being re-approved each time, this page just hadn't picked up the earlier
+  // approval yet. This lightweight poll only runs while there's an actual pending
+  // amendment, and just re-fetches items the same way loadBoqItemsAndEdits always
+  // has, so it detects the admin's decision automatically without a manual reload.
+  useEffect(() => {
+    if (!rateAmendmentSummary.hasPending) return;
+    const interval = setInterval(() => { loadBoqItemsAndEdits(); }, 15000);
+    return () => clearInterval(interval);
+  }, [rateAmendmentSummary.hasPending, loadBoqItemsAndEdits]);
 
   const handleSubmitRateAmendRequests = async () => {
     const items = rateAmendmentSummary.draftItems;
@@ -4070,6 +4111,7 @@ export default function CreateBom() {
                     onPreview={(a) => { setApprovalsModalOpen(false); handlePreviewApproval(a); }}
                     onAction={handleApprovalAction}
                     onRateAction={handleRateAction}
+                    onBulkRateAction={handleBulkRateAction}
                     actionLoading={approvalActionLoading || rateActionLoading}
                   />
                 </div>

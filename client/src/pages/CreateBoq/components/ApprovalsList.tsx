@@ -47,6 +47,7 @@ export function ApprovalsList({
   onPreview,
   onAction,
   onRateAction,
+  onBulkRateAction,
   actionLoading
 }: {
   approvals: any[],
@@ -54,16 +55,40 @@ export function ApprovalsList({
   onPreview: (a: any) => void,
   onAction: (id: string, action: 'approve' | 'reject' | 'approve-edit' | 'reject-edit') => void,
   onRateAction?: (id: string, action: 'approve' | 'reject') => void,
+  onBulkRateAction?: (ids: string[], action: 'approve' | 'reject') => void | Promise<void>,
   actionLoading: string | null
 }) {
   const [listType, setListType] = React.useState("bom");
+
+  // ── Rate Changes: multi-select + sort (does not affect BOM/Edit/History tabs) ──
+  const [selectedRateIds, setSelectedRateIds] = React.useState<Set<string>>(new Set());
+  const [rateSortBy, setRateSortBy] = React.useState<"date_desc" | "date_asc" | "rate_desc" | "rate_asc">("date_desc");
 
   const pending = approvals.filter(a => a.status === 'pending_approval' || a.status === 'submitted');
   const editRequests = approvals.filter(a => a.status === 'edit_requested');
   const rateRequests = rateChangeRequests.filter(r => r.status === 'pending');
   const others = approvals.filter(a => a.status !== 'pending_approval' && a.status !== 'submitted' && a.status !== 'edit_requested');
 
-  const currentList = listType === "bom" ? pending : listType === "edit" ? editRequests : listType === "rates" ? rateRequests : others;
+  const sortedRateRequests = React.useMemo(() => {
+    const list = [...rateRequests];
+    list.sort((a, b) => {
+      switch (rateSortBy) {
+        case "date_asc": return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        case "rate_desc": return Number(b.requested_rate) - Number(a.requested_rate);
+        case "rate_asc": return Number(a.requested_rate) - Number(b.requested_rate);
+        case "date_desc":
+        default: return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
+    });
+    return list;
+  }, [rateRequests, rateSortBy]);
+
+  // Selection can go stale once the underlying rate-change list changes (e.g. after
+  // an approve/reject refresh, or switching tabs) — clear it so we never try to act
+  // on ids that no longer exist / are no longer pending.
+  React.useEffect(() => { setSelectedRateIds(new Set()); }, [rateChangeRequests, listType]);
+
+  const currentList = listType === "bom" ? pending : listType === "edit" ? editRequests : listType === "rates" ? sortedRateRequests : others;
 
   return (
     <div className="space-y-4">
@@ -101,6 +126,55 @@ export function ApprovalsList({
         </Tabs>
       </div>
 
+      {listType === "rates" && rateRequests.length > 0 && (
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div>
+            {selectedRateIds.size > 0 && (
+              <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5">
+                <span className="text-xs font-bold text-blue-700">{selectedRateIds.size} selected</span>
+                <Button
+                  size="sm"
+                  className="h-7 text-xs font-bold bg-green-600 hover:bg-green-700 text-white shadow-sm px-3"
+                  disabled={!!actionLoading}
+                  onClick={async () => {
+                    await onBulkRateAction?.(Array.from(selectedRateIds), 'approve');
+                    setSelectedRateIds(new Set());
+                  }}
+                >
+                  {actionLoading === 'bulk' ? <Loader2 className="h-3 w-3 animate-spin" /> : "Approve Selected"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="h-7 text-xs font-bold bg-red-500 hover:bg-red-600 text-white shadow-sm px-3 border-none"
+                  disabled={!!actionLoading}
+                  onClick={async () => {
+                    await onBulkRateAction?.(Array.from(selectedRateIds), 'reject');
+                    setSelectedRateIds(new Set());
+                  }}
+                >
+                  {actionLoading === 'bulk' ? <Loader2 className="h-3 w-3 animate-spin" /> : "Reject Selected"}
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs text-slate-500 hover:text-slate-700" onClick={() => setSelectedRateIds(new Set())}>
+                  Clear
+                </Button>
+              </div>
+            )}
+          </div>
+          <select
+            value={rateSortBy}
+            onChange={(e) => setRateSortBy(e.target.value as any)}
+            className="text-xs font-bold border border-slate-200 rounded-lg px-3 py-1.5 bg-white text-slate-600 outline-none cursor-pointer hover:border-slate-300"
+            title="Sort rate change requests"
+          >
+            <option value="date_desc">Newest First</option>
+            <option value="date_asc">Oldest First</option>
+            <option value="rate_desc">Highest Requested Rate</option>
+            <option value="rate_asc">Lowest Requested Rate</option>
+          </select>
+        </div>
+      )}
+
       <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm ring-1 ring-slate-900/5">
         <Table>
           <TableHeader className="bg-slate-50/80">
@@ -109,7 +183,22 @@ export function ApprovalsList({
                 <div className="flex items-center justify-center"><ChevronDown className="h-3 w-3" /></div>
               </TableHead>
               <TableHead className="w-10 px-0">
-                <div className="w-4 h-4 border border-slate-300 rounded bg-slate-50/50"></div>
+                {listType === "rates" && sortedRateRequests.length > 0 ? (
+                  <div className="flex items-center justify-center">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 rounded border-slate-300 cursor-pointer accent-blue-600"
+                      title="Select all"
+                      checked={selectedRateIds.size > 0 && selectedRateIds.size === sortedRateRequests.length}
+                      ref={(el) => { if (el) el.indeterminate = selectedRateIds.size > 0 && selectedRateIds.size < sortedRateRequests.length; }}
+                      onChange={(e) => {
+                        setSelectedRateIds(e.target.checked ? new Set(sortedRateRequests.map((r: any) => r.id)) : new Set());
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <div className="w-4 h-4 border border-slate-300 rounded bg-slate-50/50"></div>
+                )}
               </TableHead>
               <TableHead className="text-[11px] font-bold uppercase tracking-wider text-slate-500 py-4">Project</TableHead>
               <TableHead className="text-[11px] font-bold uppercase tracking-wider text-slate-500">{listType === 'rates' ? 'Item Details' : 'Client'}</TableHead>
@@ -142,7 +231,20 @@ export function ApprovalsList({
                   <TableRow key={r.id} className="hover:bg-slate-50/50 transition-colors border-b-slate-100">
                     <TableCell className="w-12 py-4"></TableCell>
                     <TableCell className="w-10 px-0">
-                      <div className="w-4 h-4 border border-slate-200 rounded hover:border-blue-400 transition-colors"></div>
+                      <div className="flex items-center justify-center">
+                        <input
+                          type="checkbox"
+                          className="w-4 h-4 rounded border-slate-300 cursor-pointer accent-blue-600"
+                          checked={selectedRateIds.has(r.id)}
+                          onChange={(e) => {
+                            setSelectedRateIds(prev => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(r.id); else next.delete(r.id);
+                              return next;
+                            });
+                          }}
+                        />
+                      </div>
                     </TableCell>
                     <TableCell className="font-bold text-slate-900 text-sm py-4">{r.project_name || "Unknown Project"}</TableCell>
                     <TableCell>
@@ -151,7 +253,7 @@ export function ApprovalsList({
                         <span className="text-xs text-slate-500 italic">{r.material_name}</span>
                       </div>
                     </TableCell>
-                    <TableCell className="text-center font-bold text-slate-500 text-xs">V{r.version_number ?? r.version_id.substring(0,6)}</TableCell>
+                    <TableCell className="text-center font-bold text-slate-500 text-xs">V{r.version_number ?? r.version_id.substring(0, 6)}</TableCell>
                     <TableCell className="text-center py-4">
                       <Badge variant="outline" className="bg-orange-50 text-orange-600 border-orange-100 font-bold px-2 py-0 text-[10px] h-5">Rate Amend</Badge>
                     </TableCell>
@@ -188,85 +290,85 @@ export function ApprovalsList({
                   </TableRow>
                 ))
               ) : (
-              currentList.map((a) => (
-                <TableRow key={a.id} className="hover:bg-slate-50/50 transition-colors border-b-slate-100">
-                  <TableCell className="w-12 py-4">
-                    <button
-                      className="flex items-center justify-center w-full text-slate-400 hover:text-blue-600 transition-colors"
-                      onClick={() => onPreview(a)}
-                      title="Expand View"
-                    >
-                      <ChevronDown className="h-4 w-4" />
-                    </button>
-                  </TableCell>
-                  <TableCell className="w-10 px-0">
-                    <div className="w-4 h-4 border border-slate-200 rounded hover:border-blue-400 transition-colors"></div>
-                  </TableCell>
-                  <TableCell className="font-bold text-slate-900 text-sm py-4">{a.project_name}</TableCell>
-                  <TableCell className="text-sm text-slate-600 italic font-medium">{a.project_client}</TableCell>
-                  <TableCell className="text-center font-bold text-slate-500 text-xs">V{a.version_number}</TableCell>
-                  <TableCell className="text-center py-4">
-                    <Badge variant="outline" className="bg-blue-50 text-blue-600 border-blue-100 font-bold px-2 py-0 text-[10px] h-5">BOM</Badge>
-                  </TableCell>
-                  <TableCell className="text-center py-4">
-                    {a.status === 'edit_requested' ? (
-                      <Badge className="bg-amber-50 text-amber-600 border-amber-100 font-bold text-[10px] h-6 px-3">Edit Requested</Badge>
-                    ) : a.status === 'approved' ? (
-                      <Badge className="bg-emerald-50 text-emerald-600 border-emerald-100 font-bold text-[10px] h-6 px-3">Approved</Badge>
-                    ) : a.status === 'rejected' ? (
-                      <Badge className="bg-rose-50 text-rose-600 border-rose-100 font-bold text-[10px] h-6 px-3">Rejected</Badge>
-                    ) : (
-                      <Badge className="bg-orange-50 text-orange-600 border-orange-100 font-bold text-[10px] h-6 px-3">Pending</Badge>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-[11px] font-medium text-slate-500 whitespace-nowrap">
-                    {new Date(a.created_at).toLocaleDateString()}
-                  </TableCell>
-                  <TableCell className="text-right pr-8 py-4">
-                    <div className="flex items-center justify-end gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-8 text-xs font-bold border-blue-200 text-blue-600 hover:bg-blue-50 hover:border-blue-300"
+                currentList.map((a) => (
+                  <TableRow key={a.id} className="hover:bg-slate-50/50 transition-colors border-b-slate-100">
+                    <TableCell className="w-12 py-4">
+                      <button
+                        className="flex items-center justify-center w-full text-slate-400 hover:text-blue-600 transition-colors"
                         onClick={() => onPreview(a)}
+                        title="Expand View"
                       >
-                        <Edit className="h-3 w-3 mr-1.5" /> Edit BOM
-                      </Button>
-
-                      {(a.status === 'pending_approval' || a.status === 'submitted' || a.status === 'edit_requested') && (
-                        <>
-                          <Button
-                            size="sm"
-                            className="h-8 text-xs font-bold bg-green-600 hover:bg-green-700 text-white shadow-sm px-4"
-                            onClick={() => onAction(a.id, a.status === 'edit_requested' ? 'approve-edit' : 'approve')}
-                            disabled={!!actionLoading}
-                          >
-                            {actionLoading === a.id ? <Loader2 className="h-3 w-3 animate-spin" /> : "Approve"}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            className="h-8 text-xs font-bold bg-red-500 hover:bg-red-600 text-white shadow-sm px-4 border-none"
-                            onClick={() => onAction(a.id, a.status === 'edit_requested' ? 'reject-edit' : 'reject')}
-                            disabled={!!actionLoading}
-                          >
-                            {actionLoading === a.id ? <Loader2 className="h-3 w-3 animate-spin" /> : "Reject"}
-                          </Button>
-                        </>
+                        <ChevronDown className="h-4 w-4" />
+                      </button>
+                    </TableCell>
+                    <TableCell className="w-10 px-0">
+                      <div className="w-4 h-4 border border-slate-200 rounded hover:border-blue-400 transition-colors"></div>
+                    </TableCell>
+                    <TableCell className="font-bold text-slate-900 text-sm py-4">{a.project_name}</TableCell>
+                    <TableCell className="text-sm text-slate-600 italic font-medium">{a.project_client}</TableCell>
+                    <TableCell className="text-center font-bold text-slate-500 text-xs">V{a.version_number}</TableCell>
+                    <TableCell className="text-center py-4">
+                      <Badge variant="outline" className="bg-blue-50 text-blue-600 border-blue-100 font-bold px-2 py-0 text-[10px] h-5">BOM</Badge>
+                    </TableCell>
+                    <TableCell className="text-center py-4">
+                      {a.status === 'edit_requested' ? (
+                        <Badge className="bg-amber-50 text-amber-600 border-amber-100 font-bold text-[10px] h-6 px-3">Edit Requested</Badge>
+                      ) : a.status === 'approved' ? (
+                        <Badge className="bg-emerald-50 text-emerald-600 border-emerald-100 font-bold text-[10px] h-6 px-3">Approved</Badge>
+                      ) : a.status === 'rejected' ? (
+                        <Badge className="bg-rose-50 text-rose-600 border-rose-100 font-bold text-[10px] h-6 px-3">Rejected</Badge>
+                      ) : (
+                        <Badge className="bg-orange-50 text-orange-600 border-orange-100 font-bold text-[10px] h-6 px-3">Pending</Badge>
                       )}
+                    </TableCell>
+                    <TableCell className="text-[11px] font-medium text-slate-500 whitespace-nowrap">
+                      {new Date(a.created_at).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell className="text-right pr-8 py-4">
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 text-xs font-bold border-blue-200 text-blue-600 hover:bg-blue-50 hover:border-blue-300"
+                          onClick={() => onPreview(a)}
+                        >
+                          <Edit className="h-3 w-3 mr-1.5" /> Edit BOM
+                        </Button>
 
-                      {/* Add Clear button for approved/rejected if needed, similar to screenshot */}
-                      {(a.status === 'approved' || a.status === 'rejected') && (
-                        <Button size="sm" variant="ghost" className="h-8 text-xs text-slate-400 hover:text-slate-600">Clear</Button>
-                      )}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              )))
+                        {(a.status === 'pending_approval' || a.status === 'submitted' || a.status === 'edit_requested') && (
+                          <>
+                            <Button
+                              size="sm"
+                              className="h-8 text-xs font-bold bg-green-600 hover:bg-green-700 text-white shadow-sm px-4"
+                              onClick={() => onAction(a.id, a.status === 'edit_requested' ? 'approve-edit' : 'approve')}
+                              disabled={!!actionLoading}
+                            >
+                              {actionLoading === a.id ? <Loader2 className="h-3 w-3 animate-spin" /> : "Approve"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              className="h-8 text-xs font-bold bg-red-500 hover:bg-red-600 text-white shadow-sm px-4 border-none"
+                              onClick={() => onAction(a.id, a.status === 'edit_requested' ? 'reject-edit' : 'reject')}
+                              disabled={!!actionLoading}
+                            >
+                              {actionLoading === a.id ? <Loader2 className="h-3 w-3 animate-spin" /> : "Reject"}
+                            </Button>
+                          </>
+                        )}
+
+                        {/* Add Clear button for approved/rejected if needed, similar to screenshot */}
+                        {(a.status === 'approved' || a.status === 'rejected') && (
+                          <Button size="sm" variant="ghost" className="h-8 text-xs text-slate-400 hover:text-slate-600">Clear</Button>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )))
             )}
           </TableBody>
         </Table>
       </div>
     </div>
   );
-}
+}
