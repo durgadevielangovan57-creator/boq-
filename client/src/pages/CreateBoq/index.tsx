@@ -982,7 +982,7 @@ export default function CreateBom() {
       if (!res || !res.ok) { toast({ title: "Error", description: `Failed to load items (${res?.status || 'network error'})`, variant: "destructive" }); return; }
       const data = await safeJson(res as unknown as Response);
       const items: BOMItem[] = data.items || [];
-      
+
       // Backfill HSN/SAC and Shop Names
       try {
         if (pr && pr.ok) {
@@ -1009,6 +1009,29 @@ export default function CreateBom() {
                   td.hsn_sac_type = mat.tax_code_type || mat.hsn_sac_type || null;
                   needsSave = true;
                 }
+              }
+            }
+
+            // Auto-attach image from the catalog/material template if this
+            // item is missing one but the linked product/material now has
+            // an image (e.g. image was added after this item was already
+            // added to the BOM/BOQ). Does not touch/overwrite any existing
+            // image or other field.
+            if (!td.image) {
+              if (td.product_id) {
+                const prod = prodById[td.product_id];
+                if (prod && prod.image) { td.image = prod.image; needsSave = true; }
+              } else if (td.material_id && currentMaterialsById[td.material_id]) {
+                const mat = currentMaterialsById[td.material_id];
+                if (mat.image) { td.image = mat.image; needsSave = true; }
+              } else if (Array.isArray(td.step11_items) && td.step11_items.length > 0) {
+                // Items added via the "Select Material" picker don't carry a
+                // top-level material_id — the material reference lives on
+                // the first step11 line instead.
+                const firstLine = td.step11_items[0];
+                const lineMatId = firstLine?.material_id || firstLine?.id;
+                const mat = lineMatId ? currentMaterialsById[lineMatId] : null;
+                if (mat && mat.image) { td.image = mat.image; needsSave = true; }
               }
             }
 
