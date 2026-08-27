@@ -36,6 +36,31 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+// ─── Shared calculation helpers (mirrors FinalizeBoq.tsx so numbers match exactly) ──
+const applyOperator = (base: number, mult: number, op: string) => {
+  if (op === "%") return base * (mult / 100);
+  if (op === "*") return base * mult;
+  if (op === "/") return mult !== 0 ? base / mult : 0;
+  return base + mult; // "+"
+};
+
+type SrcCtx = {
+  totalVal: number; rate: number; qty: number;
+  overrideRate: number; overrideTotal: number;
+  rowCalc: Record<string, number>;
+  customVals: Record<string, string>;
+};
+
+const resolveSource = (src: string, ctx: SrcCtx): number => {
+  if (src === "Total Value (₹)") return ctx.totalVal;
+  if (src === "Rate / Unit") return ctx.rate;
+  if (src === "Qty") return ctx.qty;
+  if (src === "Override Rate") return ctx.overrideRate;
+  if (src === "Override Total") return ctx.overrideTotal;
+  if (ctx.rowCalc[src] !== undefined) return ctx.rowCalc[src];
+  return parseFloat(ctx.customVals[src] || "0") || 0;
+};
+
 type VersionCompareModalProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -188,6 +213,23 @@ export function VersionCompareModal({
     let rate = itemQty > 0 ? itemTotal / itemQty : itemTotal;
     if (isLumpSum) { itemQty = 1; rate = itemTotal; }
 
+    // Parity with FinalizeBoq's getItemMetrics: standard/fixed rate overrides
+    if (td.use_standard_rate && td.materialLines) {
+      try {
+        const baseQty = Number(td.configBasis?.baseRequiredQty || 1);
+        const resBase = computeBoq(
+          { ...td.configBasis, wastagePctDefault: 0 },
+          td.materialLines.map((l: any) => ({ ...l, applyWastage: false })),
+          baseQty
+        );
+        rate = resBase.grandTotal / baseQty;
+        itemTotal = rate * itemQty;
+      } catch { }
+    } else if (td.use_fixed_rate) {
+      rate = Number(td.fixed_rate || 0);
+      itemTotal = rate * itemQty;
+    }
+
     const displayQty = td.finalize_qty !== undefined && td.finalize_qty !== null
       ? parseFloat(String(td.finalize_qty)) || 0
       : itemQty;
@@ -199,12 +241,17 @@ export function VersionCompareModal({
     const overrideInputVal = parseFloat(String(td.finalize_override_rate || "0")) || 0;
     let overrideRate = 0;
     if (overrideType === "percentage") {
-      overrideRate = finalTotal * overrideInputVal / 100 / effectiveQty;
+      overrideRate = rate * overrideInputVal / 100;
     } else {
       overrideRate = overrideInputVal;
     }
 
-    const overrideTotal = overrideRate * effectiveQty;
+    const overrideMarkupTotal = overrideRate * effectiveQty;
+    // Same rule as FinalizeBoq's calculatedColumnTotals:
+    // % mode adds markup ON TOP of the system total; ₹ mode REPLACES the rate entirely.
+    const overrideTotal = overrideInputVal !== 0
+      ? (overrideType === "percentage" ? (finalTotal + overrideMarkupTotal) : overrideMarkupTotal)
+      : finalTotal;
 
     return {
       Rate: rate,
@@ -212,7 +259,7 @@ export function VersionCompareModal({
       Total: finalTotal,
       "Override Rate": overrideRate,
       "Override Total": overrideTotal,
-      currentRunningTotal: overrideRate > 0 ? overrideTotal : finalTotal
+      currentRunningTotal: overrideTotal
     };
   };
 
@@ -230,28 +277,74 @@ export function VersionCompareModal({
       ? (currentStep11Items[0]?.title || currentStep11Items[0]?.description || derivedProductName)
       : derivedProductName;
 
+    const hsn = td.hsn_code || (td.hsn_sac_type === 'hsn' ? td.hsn_sac_code : "") ||
+      ((!td.hsn_sac_type || String(td.hsn_sac_type).toLowerCase() === 'hsn') ? (td.tax_code_value || td.hsn_sac_code) : "") || "—";
+    const sac = td.sac_code || (td.hsn_sac_type === 'sac' ? td.hsn_sac_code : "") ||
+      ((String(td.hsn_sac_type).toLowerCase() === 'sac') ? (td.tax_code_value || td.hsn_sac_code) : "") || "—";
+    const description = td.subcategory || currentStep11Items[0]?.description || td.category || "";
+
     const itemData: any = {
       productName,
+      description,
+      hsn,
+      sac,
       unit: td.finalize_unit || "nos",
       ...metrics
     };
 
     let accumulator = 0;
     let runningTotal = metrics.currentRunningTotal;
+    const rowCalculatedValues: Record<string, number> = {};
+    const customVals = (td.finalize_column_values && td.finalize_column_values[0]) || {};
 
-    if (Array.isArray(td.finalize_columns) && td.finalize_column_values && td.finalize_column_values[0]) {
+    if (Array.isArray(td.finalize_columns)) {
       td.finalize_columns.forEach((col: any) => {
         if (col.isTotal) {
           runningTotal += accumulator;
           accumulator = 0;
+          rowCalculatedValues[col.name] = runningTotal;
           itemData[col.name] = runningTotal;
         } else {
-          const val = parseFloat(td.finalize_column_values[0][col.name] || "0") || 0;
+          let val = 0;
+          const baseSource = col.baseSource;
+          const operator = col.operator || "%";
+          const multiplierSource = col.multiplierSource || "manual";
+          const manualMultiplier = col.percentageValue || 0;
+
+          if (baseSource && baseSource !== "manual") {
+            // Formula-driven column (e.g. GST calculated as a % of Total Value / Override Total / etc.)
+            // Must be recomputed the same way FinalizeBoq does — reading the raw stored
+            // string here (old behaviour) goes stale/wrong the moment Rate, Qty or the
+            // Override Rate differ from when the value was last saved.
+            const ctx: SrcCtx = {
+              totalVal: metrics.Total,
+              rate: metrics.Rate,
+              qty: metrics.Qty,
+              overrideRate: metrics["Override Rate"],
+              overrideTotal: metrics["Override Total"],
+              rowCalc: rowCalculatedValues,
+              customVals,
+            };
+            const baseVal = resolveSource(baseSource, ctx);
+            const multiplierVal = multiplierSource === "manual" ? manualMultiplier : resolveSource(multiplierSource, ctx);
+            val = applyOperator(baseVal, multiplierVal, operator);
+          } else {
+            // Manual entry column — no formula, just whatever was typed in for this row
+            val = parseFloat(customVals[col.name] || "0") || 0;
+          }
+
+          rowCalculatedValues[col.name] = val;
           itemData[col.name] = val;
           accumulator += val;
         }
       });
     }
+
+    // Final running total after every custom column (GST, Finance, Margin, Negotiation, etc.)
+    // has been folded in — this is the "grand total" for the row, matching whatever the
+    // last isTotal column represents, or falling back to Override Total when no custom
+    // total columns are configured at all.
+    itemData._grandTotal = runningTotal;
 
     return itemData;
   };
@@ -292,7 +385,7 @@ export function VersionCompareModal({
     if (!showComparison || !selectedColumns.includes("Total")) return null;
     let increased = 0, decreased = 0, unchanged = 0, added = 0, removed = 0, modified = 0;
     let baseTotal = 0, compareTotal = 0;
-    
+
     comparisonData.forEach(row => {
       const bTotal = row.base ? (row.base["Total"] || 0) : 0;
       const cTotal = row.compare ? (row.compare["Total"] || 0) : 0;
@@ -301,7 +394,7 @@ export function VersionCompareModal({
 
       if (!row.base) { added++; return; }
       if (!row.compare) { removed++; return; }
-      
+
       const diff = cTotal - bTotal;
       if (Math.abs(diff) < 0.01) unchanged++;
       else {
@@ -310,9 +403,9 @@ export function VersionCompareModal({
         else decreased++;
       }
     });
-    
+
     const costDifference = compareTotal - baseTotal;
-    
+
     return { increased, decreased, unchanged, added, removed, modified, total: comparisonData.length, baseTotal, compareTotal, costDifference };
   }, [comparisonData, showComparison, selectedColumns]);
 
@@ -455,64 +548,273 @@ export function VersionCompareModal({
     }
   };
 
+  // Export-only summary stats — always computed off the final per-row grand total
+  // (after every custom column such as GST/Finance/Margin has been folded in),
+  // independent of whichever columns happen to be checked in the on-screen picker.
+  const exportSummaryStats = useMemo(() => {
+    if (!showComparison) return null;
+    let noChange = 0, modified = 0, removedCount = 0, addedCount = 0;
+    let baseGrand = 0, compGrand = 0;
+    comparisonData.forEach(row => {
+      const b = row.base ? (row.base._grandTotal || 0) : 0;
+      const c = row.compare ? (row.compare._grandTotal || 0) : 0;
+      baseGrand += b;
+      compGrand += c;
+      if (!row.base) { addedCount++; return; }
+      if (!row.compare) { removedCount++; return; }
+      if (Math.abs(c - b) < 0.01) noChange++; else modified++;
+    });
+    const netChange = compGrand - baseGrand;
+    const netChangePct = baseGrand !== 0 ? (netChange / baseGrand) : 0;
+    return { noChange, modified, removedCount, addedCount, baseGrand, compGrand, netChange, netChangePct, total: comparisonData.length };
+  }, [comparisonData, showComparison]);
+
   const handleDownloadExcel = () => {
     try {
       const selProj = projects.find(p => p.id === selectedProjectId);
       const baseVer = versions.find(v => v.id === baseVersionId);
       const compVer = versions.find(v => v.id === selectedVersionId);
-      
-      const wsData: any[][] = [];
-      
-      wsData.push(["Version Comparison Report"]);
-      wsData.push([`Project:`, selProj?.name || "-"]);
-      wsData.push([`Compared Versions:`, `V${baseVer?.version_number} vs V${compVer?.version_number}`]);
-      wsData.push([`Date:`, new Date().toLocaleDateString()]);
-      wsData.push([]);
+      const baseLabel = `V${getBaseVersionNumber()}`;
+      const compLabel = `V${getCompVersionNumber()}`;
+      const stats = exportSummaryStats;
 
-      // Summary
-      if (summaryStats) {
-        wsData.push(["Comparison Summary"]);
-        wsData.push(["Total Items", summaryStats.total]);
-        wsData.push(["Added", summaryStats.added]);
-        wsData.push(["Deleted", summaryStats.removed]);
-        wsData.push(["Modified", summaryStats.modified]);
-        wsData.push(["Previous Version Total", summaryStats.baseTotal]);
-        wsData.push(["Current Version Total", summaryStats.compareTotal]);
-        wsData.push(["Cost Difference", summaryStats.costDifference]);
-        wsData.push([]);
+      if (!stats) {
+        toast({ title: "Nothing to export", description: "Run a comparison first.", variant: "destructive" });
+        return;
       }
 
-      // Headers
-      const head1 = ["Product"];
-      const head2 = [""];
-      selectedColumns.forEach(c => {
-        head1.push(c, "");
-        head2.push(`V${baseVer?.version_number}`, `V${compVer?.version_number}`);
-      });
-      wsData.push(head1);
-      wsData.push(head2);
+      // Metric columns in a sensible fixed order (Qty, Rate, Total, Override Rate/Total),
+      // followed by any custom columns (GST, Finance, Margin, etc.) in their configured order —
+      // rather than whatever order they happen to be toggled on in.
+      const CANON_ORDER = ["Qty", "Rate", "Total", "Override Rate", "Override Total"];
+      const prefixCols = CANON_ORDER.filter(c => selectedColumns.includes(c));
+      const restCols = availableColumns.filter(c => selectedColumns.includes(c) && !CANON_ORDER.includes(c));
+      const metricCols = [...prefixCols, ...restCols];
 
-      // Data
-      comparisonData.forEach(row => {
-        const rowData: any[] = [row.name];
-        selectedColumns.forEach(col => {
-          const isBaseMissing = !row.base;
-          const isCompMissing = !row.compare;
-          const baseVal = row.base ? (row.base[col] || 0) : 0;
-          const compVal = row.compare ? (row.compare[col] || 0) : 0;
-          
-          rowData.push(
-            isBaseMissing ? "Not Added" : baseVal,
-            isCompMissing ? "Removed" : compVal
-          );
-        });
-        wsData.push(rowData);
+      if (metricCols.length === 0) {
+        toast({ title: "Select columns", description: "Please select at least one column to export.", variant: "destructive" });
+        return;
+      }
+
+      const money = '"₹ "#,##0.00';
+      const num = '#,##0.00';
+      const pct = '0.0%';
+
+      const NAVY = "1F3864";
+      const SUBHEAD = "2E5395";
+      const YELLOW = "FFF2CC";
+      const YELLOW_TXT = "7F6000";
+      const RED = "FCE4E4";
+      const RED_TXT = "C00000";
+      const GREEN = "E2F0D9";
+      const GREEN_TXT = "375623";
+      const GREY_TOTAL = "D9E1F2";
+      const BORDER_GREY = "BFBFBF";
+
+      const thinBorder = {
+        top: { style: "thin", color: { rgb: BORDER_GREY } },
+        bottom: { style: "thin", color: { rgb: BORDER_GREY } },
+        left: { style: "thin", color: { rgb: BORDER_GREY } },
+        right: { style: "thin", color: { rgb: BORDER_GREY } },
+      };
+
+      const setCell = (ws: any, r: number, c: number, value: any, style: any = {}, z?: string) => {
+        const addr = XLSX.utils.encode_cell({ r, c });
+        const t = typeof value === "number" ? "n" : "s";
+        ws[addr] = { t, v: value === null || value === undefined ? "" : value };
+        if (z) ws[addr].z = z;
+        ws[addr].s = style;
+      };
+
+      // ================= SHEET 1: SUMMARY =================
+      const summaryWs: any = {};
+      const preparedDate = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+      setCell(summaryWs, 1, 1, `${selProj?.name || "Project"} - BOQ Comparison (${baseLabel} vs ${compLabel})`,
+        { font: { bold: true, sz: 16, color: { rgb: NAVY } } });
+      setCell(summaryWs, 2, 1, `Client: ${selProj?.client || "-"}  |  Prepared: ${preparedDate}  |  Basis: Final line total incl. all overrides & custom charges`,
+        { font: { italic: true, sz: 10, color: { rgb: "595959" } } });
+
+      const summaryRows: [string, number, string?][] = [
+        [`${baseLabel} Grand Total (₹)`, stats.baseGrand],
+        [`${compLabel} Grand Total (₹)`, stats.compGrand],
+        ["Net Change (₹)", stats.netChange],
+        ["Net Change (%)", stats.netChangePct],
+        ["Items - No Change", stats.noChange],
+        ["Items - Modified", stats.modified],
+        ["Items - Removed", stats.removedCount],
+        ["Items - Added", stats.addedCount],
+      ];
+      let r = 5;
+      summaryRows.forEach(([label, val], idx) => {
+        const isPct = label === "Net Change (%)";
+        const isMoney = label.includes("₹");
+        setCell(summaryWs, r, 1, label, { font: { bold: true } });
+        setCell(summaryWs, r, 2, val, { font: { bold: true, color: { rgb: NAVY } } }, isPct ? pct : (isMoney ? money : "0"));
+        r++;
       });
+
+      r += 2;
+      setCell(summaryWs, r, 1,
+        `See 'Detailed Comparison' tab for the full line-by-line ${baseLabel} vs ${compLabel} breakup across every BOQ column, colour-coded by change type (legend at bottom of that sheet).`,
+        { font: { italic: true, sz: 10, color: { rgb: "595959" } } });
+
+      r += 3;
+      setCell(summaryWs, r, 1, "Version", { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: NAVY } } });
+      setCell(summaryWs, r, 2, "Grand Total (₹)", { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: NAVY } } });
+      r++;
+      setCell(summaryWs, r, 1, `${baseLabel} (${(baseVer?.type || "").toUpperCase()})`, {});
+      setCell(summaryWs, r, 2, stats.baseGrand, {}, money);
+      r++;
+      setCell(summaryWs, r, 1, `${compLabel} (${(compVer?.type || "").toUpperCase()})`, {});
+      setCell(summaryWs, r, 2, stats.compGrand, {}, money);
+
+      summaryWs['!ref'] = `A1:D${r + 1}`;
+      summaryWs['!cols'] = [{ wch: 3 }, { wch: 46 }, { wch: 18 }, { wch: 4 }];
+      summaryWs['!rows'] = [{ hpt: 8 }, { hpt: 24 }];
+      summaryWs['!merges'] = [
+        { s: { r: 1, c: 1 }, e: { r: 1, c: 6 } },
+        { s: { r: 2, c: 1 }, e: { r: 2, c: 8 } },
+        { s: { r: 12, c: 1 }, e: { r: 12, c: 8 } },
+      ];
+
+      // ================= SHEET 2: DETAILED COMPARISON =================
+      const dWs: any = {};
+      const LEAD_COLS = ["S.No", "Item / Product", "Description / Location", "HSN", "SAC", "Unit", "Status"];
+      const totalCols = LEAD_COLS.length + metricCols.length * 3 + 1; // +1 for Remarks
+
+      setCell(dWs, 0, 0, `${selProj?.name || "Project"} - Full BOQ Comparison (All Columns)  |  ${baseLabel} (${(baseVer?.type || "").toUpperCase()}) vs ${compLabel} (${(compVer?.type || "").toUpperCase()})  |  Client: ${selProj?.client || "-"}`,
+        { font: { bold: true, sz: 13, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: NAVY } }, alignment: { horizontal: "center", vertical: "center" } });
+
+      // Header rows (2 = 0-indexed row 2, i.e. Excel row 3/4)
+      const HEAD_R1 = 2, HEAD_R2 = 3;
+      LEAD_COLS.forEach((label, c) => {
+        setCell(dWs, HEAD_R1, c, label, { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: NAVY } }, alignment: { horizontal: "center", vertical: "center", wrapText: true }, border: thinBorder });
+        setCell(dWs, HEAD_R2, c, "", { fill: { fgColor: { rgb: NAVY } }, border: thinBorder });
+      });
+
+      const merges: any[] = [
+        { s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } },
+      ];
+      LEAD_COLS.forEach((_, c) => merges.push({ s: { r: HEAD_R1, c }, e: { r: HEAD_R2, c } }));
+
+      let colCursor = LEAD_COLS.length;
+      metricCols.forEach(colName => {
+        setCell(dWs, HEAD_R1, colCursor, colName, { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: NAVY } }, alignment: { horizontal: "center", vertical: "center" }, border: thinBorder });
+        for (let k = 1; k < 3; k++) setCell(dWs, HEAD_R1, colCursor + k, "", { fill: { fgColor: { rgb: NAVY } }, border: thinBorder });
+        merges.push({ s: { r: HEAD_R1, c: colCursor }, e: { r: HEAD_R1, c: colCursor + 2 } });
+
+        setCell(dWs, HEAD_R2, colCursor, baseLabel, { font: { bold: true, sz: 9, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: SUBHEAD } }, alignment: { horizontal: "center" }, border: thinBorder });
+        setCell(dWs, HEAD_R2, colCursor + 1, compLabel, { font: { bold: true, sz: 9, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: SUBHEAD } }, alignment: { horizontal: "center" }, border: thinBorder });
+        setCell(dWs, HEAD_R2, colCursor + 2, "Diff", { font: { bold: true, sz: 9, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: SUBHEAD } }, alignment: { horizontal: "center" }, border: thinBorder });
+
+        colCursor += 3;
+      });
+
+      setCell(dWs, HEAD_R1, colCursor, "Remarks / What Changed", { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: NAVY } }, alignment: { horizontal: "center", vertical: "center", wrapText: true }, border: thinBorder });
+      setCell(dWs, HEAD_R2, colCursor, "", { fill: { fgColor: { rgb: NAVY } }, border: thinBorder });
+      merges.push({ s: { r: HEAD_R1, c: colCursor }, e: { r: HEAD_R2, c: colCursor } });
+
+      // Data rows
+      let rowIdx = HEAD_R2 + 1;
+      const grandTotals: Record<string, { base: number; comp: number }> = {};
+      metricCols.forEach(c => { grandTotals[c] = { base: 0, comp: 0 }; });
+
+      comparisonData.forEach((row, idx) => {
+        const isAdded = !row.base;
+        const isRemoved = !row.compare;
+        const bGrand = row.base ? (row.base._grandTotal || 0) : 0;
+        const cGrand = row.compare ? (row.compare._grandTotal || 0) : 0;
+        const isModified = !isAdded && !isRemoved && Math.abs(cGrand - bGrand) > 0.01;
+
+        let status = "No Change";
+        let rowFill = "FFFFFF", statusColor = "000000";
+        let remarks = "Identical values in both versions";
+        if (isAdded) { status = `Added in ${compLabel}`; rowFill = GREEN; statusColor = GREEN_TXT; remarks = `New item — present only in ${compLabel}`; }
+        else if (isRemoved) { status = `Removed in ${compLabel}`; rowFill = RED; statusColor = RED_TXT; remarks = `Present only in ${baseLabel} — not carried into ${compLabel}`; }
+        else if (isModified) { status = "Modified"; rowFill = YELLOW; statusColor = YELLOW_TXT; remarks = "One or more values changed between versions"; }
+
+        const src = row.base || row.compare;
+        setCell(dWs, rowIdx, 0, idx + 1, { fill: { fgColor: { rgb: rowFill } }, alignment: { horizontal: "center" }, border: thinBorder });
+        setCell(dWs, rowIdx, 1, row.name || "", { fill: { fgColor: { rgb: rowFill } }, alignment: { horizontal: "left", wrapText: true, vertical: "top" }, border: thinBorder });
+        setCell(dWs, rowIdx, 2, src?.description || "", { fill: { fgColor: { rgb: rowFill } }, alignment: { horizontal: "left", wrapText: true, vertical: "top" }, border: thinBorder });
+        setCell(dWs, rowIdx, 3, src?.hsn || "—", { fill: { fgColor: { rgb: rowFill } }, alignment: { horizontal: "center" }, border: thinBorder });
+        setCell(dWs, rowIdx, 4, src?.sac || "—", { fill: { fgColor: { rgb: rowFill } }, alignment: { horizontal: "center" }, border: thinBorder });
+        setCell(dWs, rowIdx, 5, src?.unit || "nos", { fill: { fgColor: { rgb: rowFill } }, alignment: { horizontal: "center" }, border: thinBorder });
+        setCell(dWs, rowIdx, 6, status, { font: { bold: true, color: { rgb: statusColor } }, fill: { fgColor: { rgb: rowFill } }, alignment: { horizontal: "center" }, border: thinBorder });
+
+        let cc = LEAD_COLS.length;
+        metricCols.forEach(colName => {
+          const isQty = colName === "Qty";
+          const fmt = isQty ? num : money;
+          const baseVal = row.base ? (row.base[colName] || 0) : 0;
+          const compVal = row.compare ? (row.compare[colName] || 0) : 0;
+          const diff = (!isAdded && !isRemoved) ? (compVal - baseVal) : (isAdded ? compVal : -baseVal);
+
+          if (!isAdded) grandTotals[colName].base += baseVal;
+          if (!isRemoved) grandTotals[colName].comp += compVal;
+
+          setCell(dWs, rowIdx, cc, isAdded ? 0 : Number(baseVal.toFixed(2)), { fill: { fgColor: { rgb: rowFill } }, alignment: { horizontal: isQty ? "center" : "right" }, border: thinBorder }, fmt);
+          setCell(dWs, rowIdx, cc + 1, isRemoved ? 0 : Number(compVal.toFixed(2)), { fill: { fgColor: { rgb: rowFill } }, alignment: { horizontal: isQty ? "center" : "right" }, border: thinBorder }, fmt);
+          setCell(dWs, rowIdx, cc + 2, Number(diff.toFixed(2)), { fill: { fgColor: { rgb: rowFill } }, alignment: { horizontal: isQty ? "center" : "right" }, border: thinBorder }, fmt);
+          cc += 3;
+        });
+
+        setCell(dWs, rowIdx, cc, remarks, { fill: { fgColor: { rgb: rowFill } }, alignment: { horizontal: "left", wrapText: true, vertical: "top" }, border: thinBorder });
+
+        rowIdx++;
+      });
+
+      // Grand total row
+      const gtRow = rowIdx;
+      setCell(dWs, gtRow, 0, "GRAND TOTAL", { font: { bold: true }, fill: { fgColor: { rgb: GREY_TOTAL } }, border: thinBorder });
+      for (let c = 1; c < LEAD_COLS.length; c++) setCell(dWs, gtRow, c, "", { fill: { fgColor: { rgb: GREY_TOTAL } }, border: thinBorder });
+      merges.push({ s: { r: gtRow, c: 0 }, e: { r: gtRow, c: LEAD_COLS.length - 1 } });
+
+      let gtc = LEAD_COLS.length;
+      metricCols.forEach(colName => {
+        const isQty = colName === "Qty";
+        const fmt = isQty ? num : money;
+        const g = grandTotals[colName];
+        setCell(dWs, gtRow, gtc, Number(g.base.toFixed(2)), { font: { bold: true }, fill: { fgColor: { rgb: GREY_TOTAL } }, alignment: { horizontal: isQty ? "center" : "right" }, border: thinBorder }, fmt);
+        setCell(dWs, gtRow, gtc + 1, Number(g.comp.toFixed(2)), { font: { bold: true }, fill: { fgColor: { rgb: GREY_TOTAL } }, alignment: { horizontal: isQty ? "center" : "right" }, border: thinBorder }, fmt);
+        setCell(dWs, gtRow, gtc + 2, Number((g.comp - g.base).toFixed(2)), { font: { bold: true }, fill: { fgColor: { rgb: GREY_TOTAL } }, alignment: { horizontal: isQty ? "center" : "right" }, border: thinBorder }, fmt);
+        gtc += 3;
+      });
+      setCell(dWs, gtRow, gtc, "", { fill: { fgColor: { rgb: GREY_TOTAL } }, border: thinBorder });
+
+      // Legend
+      let legR = gtRow + 2;
+      setCell(dWs, legR, 0, "LEGEND:", { font: { bold: true } });
+      const legendItems: [string, string, string, string][] = [
+        ["No Change", "FFFFFF", "000000", "Same scope, qty & rate in both versions"],
+        ["Modified", YELLOW, YELLOW_TXT, "Qty, rate or any custom column value revised"],
+        [`Removed in ${compLabel}`, RED, RED_TXT, `Present in ${baseLabel} only (dropped / merged in ${compLabel})`],
+        [`Added in ${compLabel}`, GREEN, GREEN_TXT, `Present in ${compLabel} only (new scope)`],
+      ];
+      legendItems.forEach(([label, fill, txtColor, desc]) => {
+        legR++;
+        setCell(dWs, legR, 0, "", { fill: { fgColor: { rgb: fill } }, border: thinBorder });
+        setCell(dWs, legR, 1, label, { font: { bold: true, color: { rgb: txtColor } } });
+        setCell(dWs, legR, 2, desc, { font: { color: { rgb: "595959" } } });
+        merges.push({ s: { r: legR, c: 2 }, e: { r: legR, c: 9 } });
+      });
+
+      dWs['!ref'] = `A1:${XLSX.utils.encode_col(totalCols - 1)}${legR + 1}`;
+      dWs['!merges'] = merges;
+      dWs['!cols'] = [
+        { wch: 6 }, { wch: 30 }, { wch: 42 }, { wch: 11 }, { wch: 9 }, { wch: 8 }, { wch: 18 },
+        ...metricCols.flatMap(() => [{ wch: 13 }, { wch: 13 }, { wch: 13 }]),
+        { wch: 40 },
+      ];
+      dWs['!rows'] = [{ hpt: 22 }, { hpt: 4 }, { hpt: 26 }, { hpt: 16 }];
 
       const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.aoa_to_sheet(wsData);
-      XLSX.utils.book_append_sheet(wb, ws, "Comparison");
-      XLSX.writeFile(wb, `Comparison_${selProj?.name}_V${baseVer?.version_number}_vs_V${compVer?.version_number}.xlsx`);
+      XLSX.utils.book_append_sheet(wb, summaryWs, "Summary");
+      XLSX.utils.book_append_sheet(wb, dWs, "Detailed Comparison");
+
+      const fname = `${selProj?.name || "BOQ"}_Comparison_${baseLabel}_vs_${compLabel}.xlsx`;
+      XLSX.writeFile(wb, fname, { cellStyles: true });
       toast({ title: "Success", description: "Comparison Excel downloaded" });
     } catch (e) {
       console.error(e);
@@ -667,21 +969,21 @@ export function VersionCompareModal({
                           <span className="text-slate-600 font-medium">{summaryStats.modified} Modified</span>
                         </div>
                       </div>
-                      
+
                       <div className="bg-white p-3 rounded-lg border border-slate-100 shadow-sm">
                         <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Prev Version Total</div>
                         <div className="text-sm font-bold text-slate-800 tabular-nums">
                           ₹{Number(summaryStats.baseTotal.toFixed(2)).toLocaleString('en-IN')}
                         </div>
                       </div>
-                      
+
                       <div className="bg-white p-3 rounded-lg border border-slate-100 shadow-sm">
                         <div className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Curr Version Total</div>
                         <div className="text-sm font-bold text-slate-800 tabular-nums">
                           ₹{Number(summaryStats.compareTotal.toFixed(2)).toLocaleString('en-IN')}
                         </div>
                       </div>
-                      
+
                       <div className={`p-3 rounded-lg border shadow-sm ${summaryStats.costDifference > 0 ? 'bg-red-50 border-red-100' : summaryStats.costDifference < 0 ? 'bg-emerald-50 border-emerald-100' : 'bg-slate-50 border-slate-100'}`}>
                         <div className={`text-[10px] font-semibold uppercase tracking-wider mb-1 ${summaryStats.costDifference > 0 ? 'text-red-500' : summaryStats.costDifference < 0 ? 'text-emerald-600' : 'text-slate-500'}`}>
                           Cost Difference
@@ -817,17 +1119,17 @@ export function VersionCompareModal({
                             key={idx}
                             className={cn(
                               "border-b transition-colors group/row",
-                              !row.base ? "bg-emerald-50/50 hover:bg-emerald-50/80 border-emerald-100" : 
-                              !row.compare ? "bg-red-50/50 hover:bg-red-50/80 border-red-100" : 
-                              "border-slate-100 hover:bg-slate-50/70"
+                              !row.base ? "bg-emerald-50/50 hover:bg-emerald-50/80 border-emerald-100" :
+                                !row.compare ? "bg-red-50/50 hover:bg-red-50/80 border-red-100" :
+                                  "border-slate-100 hover:bg-slate-50/70"
                             )}
                           >
                             <td
                               className={cn(
                                 "px-4 py-2.5 border-r border-slate-100 text-sm text-slate-700 sticky left-0 z-10 transition-colors",
-                                !row.base ? "bg-emerald-50/90 group-hover/row:bg-emerald-100/60" : 
-                                !row.compare ? "bg-red-50/90 group-hover/row:bg-red-100/60" : 
-                                "bg-white group-hover/row:bg-slate-50/70"
+                                !row.base ? "bg-emerald-50/90 group-hover/row:bg-emerald-100/60" :
+                                  !row.compare ? "bg-red-50/90 group-hover/row:bg-red-100/60" :
+                                    "bg-white group-hover/row:bg-slate-50/70"
                               )}
                               style={{ boxShadow: "2px 0 6px -2px rgba(0,0,0,0.04)" }}
                             >
