@@ -40,6 +40,10 @@ interface MaterialSubmission {
   hsn_code: string;
   sac_code: string;
   created_at: string;
+  source?: string;
+  boq_item_id?: string | null;
+  previous_shop_name?: string | null;
+  previous_rate?: number | null;
 }
 
 export default function MaterialSubmissionApproval() {
@@ -430,7 +434,14 @@ export default function MaterialSubmissionApproval() {
                       className="mt-1"
                     />
                     <div>
-                      <p className="text-sm text-gray-600">Material</p>
+                      <p className="text-sm text-gray-600 flex items-center gap-2">
+                        Material
+                        {submission.source === "generate_bom" && (
+                          <Badge variant="outline" className="border-indigo-300 bg-indigo-50 text-indigo-700 text-[10px] px-1.5 py-0">
+                            FROM BOM
+                          </Badge>
+                        )}
+                      </p>
                       <p className="font-semibold text-lg">{submission.template_name}</p>
                       <p className="text-sm text-gray-500">{submission.template_code}</p>
                     </div>
@@ -438,16 +449,30 @@ export default function MaterialSubmissionApproval() {
 
                   {/* Supplier/Shop Info */}
                   <div>
-                    <p className="text-sm text-gray-600">Supplier Shop</p>
+                    <p className="text-sm text-gray-600">
+                      {submission.source === "generate_bom" ? "Requested Shop" : "Supplier Shop"}
+                    </p>
                     <p className="font-semibold">{submission.shop_name}</p>
+                    {submission.source === "generate_bom" && submission.previous_shop_name && (
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Previous: <span className="line-through">{submission.previous_shop_name}</span>
+                      </p>
+                    )}
                   </div>
 
                   {/* Rate and Unit */}
                   <div>
-                    <p className="text-sm text-gray-600">Rate</p>
+                    <p className="text-sm text-gray-600">
+                      {submission.source === "generate_bom" ? "Requested Rate" : "Rate"}
+                    </p>
                     <p className="font-semibold">
                       ₹{Number(submission.rate).toFixed(2)} / {submission.unit}
                     </p>
+                    {submission.source === "generate_bom" && submission.previous_rate !== null && submission.previous_rate !== undefined && (
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Previous: <span className="line-through">₹{Number(submission.previous_rate).toFixed(2)}</span>
+                      </p>
+                    )}
                   </div>
 
                   {/* Submitted Date + Price Age */}

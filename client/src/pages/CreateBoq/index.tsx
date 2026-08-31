@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, Zap } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, Zap, Store } from "lucide-react";
 import { fuzzySearch, cn } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -47,6 +47,7 @@ import { ProjectPricingBanner } from './components/ProjectPricingBanner';
 import { EditableHsnSac } from './components/EditableHsnSac';
 import { VersionStatusBanner } from './components/VersionStatusBanner';
 import { BoqItemCard } from './components/BoqItemCard';
+import { ProductFocusDialog } from './components/ProductFocusDialog';
 import { BoqItemRow } from './components/BoqItemRow';
 import { HistorySection } from './components/HistorySection';
 import { ApprovalsList } from './components/ApprovalsList';
@@ -140,6 +141,10 @@ export default function CreateBom() {
   const [isRefreshingCategories, setIsRefreshingCategories] = useState(false);
   const [refreshLog, setRefreshLog] = useState<{ itemName: string; from: string; to: string }[]>([]);
   const [showRefreshLogDialog, setShowRefreshLogDialog] = useState(false);
+  // Product Focus Mode: index into `sortedAllItems` (below) of the product currently
+  // shown in the focus dialog. Purely a UI layer over the existing boqItems state —
+  // no new product/item data is created or duplicated.
+  const [focusedBoqIdx, setFocusedBoqIdx] = useState<number | null>(null);
 
   const productCategories = useMemo(() => {
     const cats = new Set<string>();
@@ -150,6 +155,46 @@ export default function CreateBom() {
     });
     return Array.from(cats).sort();
   }, [boqItems]);
+
+  // Same ordering used by the main product grid for numbering/pagination
+  // (previously computed inline inside the render block below). Hoisted here,
+  // unchanged, so Product Focus Mode can navigate using the identical order
+  // the user sees on the page, without a second implementation of this logic.
+  const sortedAllItems = useMemo(() => {
+    return boqItems.map((item, index) => ({ item, index }))
+      .sort((a, b) => {
+        if (productCategoryOrder.length === 0) return a.index - b.index;
+        const tda = parseTableData(a.item.table_data);
+        const tdb = parseTableData(b.item.table_data);
+        const catA = tda.category_name || tda.category || "General";
+        const catB = tdb.category_name || tdb.category || "General";
+        const indexA = productCategoryOrder.indexOf(catA);
+        const indexB = productCategoryOrder.indexOf(catB);
+        if (indexA !== -1 && indexB !== -1) {
+          if (indexA !== indexB) return indexA - indexB;
+        } else if (indexA !== -1) return -1;
+        else if (indexB !== -1) return 1;
+        return a.index - b.index;
+      })
+      .map(x => x.item);
+  }, [boqItems, productCategoryOrder]);
+
+  // Keep the focused product valid if it is deleted or reordered while the
+  // dialog is open (e.g. via existing delete/reorder actions run from inside
+  // BoqItemCard itself). Falls back to a neighboring product, or closes the
+  // dialog if none remain.
+  useEffect(() => {
+    if (focusedBoqIdx === null) return;
+    if (sortedAllItems.length === 0) { setFocusedBoqIdx(null); return; }
+    if (focusedBoqIdx > sortedAllItems.length - 1) {
+      setFocusedBoqIdx(sortedAllItems.length - 1);
+    }
+  }, [sortedAllItems, focusedBoqIdx]);
+
+  const handleFocusProduct = useCallback((boqItemId: string) => {
+    const idx = sortedAllItems.findIndex(bi => bi.id === boqItemId);
+    if (idx !== -1) setFocusedBoqIdx(idx);
+  }, [sortedAllItems]);
 
   useEffect(() => {
     let initialOrder: string[] = [];
@@ -245,6 +290,7 @@ export default function CreateBom() {
   const [approvals, setApprovals] = useState<any[]>([]);
   const [approvalsModalOpen, setApprovalsModalOpen] = useState(false);
   const [rateChangeRequests, setRateChangeRequests] = useState<any[]>([]);
+  const [bomShopRateRequests, setBomShopRateRequests] = useState<any[]>([]);
   const [rateActionLoading, setRateActionLoading] = useState<string | null>(null);
   const [loadingApprovals, setLoadingApprovals] = useState(false);
   const [approvalActionLoading, setApprovalActionLoading] = useState<string | null>(null);
@@ -356,6 +402,41 @@ export default function CreateBom() {
       fetchApprovals();
     }
   }, [activeTab, user?.role, fetchApprovals]);
+
+  // ── Generate BOM: Change Shop & Rate (new, isolated feature) ───────────
+  // Pending requests here are Material Requests (material_submissions with
+  // source='generate_bom') created from the Change Shop & Rate dialog on a
+  // BOQ material line. They must go through Materials Approval, so this page
+  // just needs to know whether any are still unresolved for this version in
+  // order to keep "Submit for Approval" disabled — the same pattern already
+  // used for Amend Rate requests above.
+  const fetchBomShopRateRequests = useCallback(async () => {
+    if (!selectedVersionId) { setBomShopRateRequests([]); return; }
+    try {
+      const res = await apiFetch(`/api/material-submissions/bom-pending?boq_version_id=${selectedVersionId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setBomShopRateRequests(data.requests || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch BOM shop/rate change requests", err);
+    }
+  }, [selectedVersionId]);
+
+  useEffect(() => {
+    fetchBomShopRateRequests();
+  }, [fetchBomShopRateRequests]);
+
+  const hasPendingBomShopRateChanges = bomShopRateRequests.some((r) => r.approved === null || r.approved === undefined);
+
+  // Lightweight poll while a request is pending, so an admin's decision made
+  // elsewhere (or in another tab) is picked up without a manual reload.
+  useEffect(() => {
+    if (!hasPendingBomShopRateChanges) return;
+    const interval = setInterval(() => { fetchBomShopRateRequests(); }, 15000);
+    return () => clearInterval(interval);
+  }, [hasPendingBomShopRateChanges, fetchBomShopRateRequests]);
+
 
 
   const handleRateAction = async (id: string, action: 'approve' | 'reject') => {
@@ -2119,9 +2200,10 @@ export default function CreateBom() {
           category: category,
           is_project_pricing: template.is_project_pricing || false
         };
+        const itemToAdd = { ...newItem, manual: true };
         const updatedTableData = tableData.materialLines && tableData.targetRequiredQty !== undefined
-          ? { ...tableData, step11_items: [...currentStep11, { ...newItem, manual: true }] }
-          : { ...tableData, step11_items: [...currentStep11, newItem], hsn_sac_type: hsnSacType, hsn_sac_code: hsnSacCode };
+          ? { ...tableData, step11_items: [...currentStep11, itemToAdd] }
+          : { ...tableData, step11_items: [...currentStep11, itemToAdd], hsn_sac_type: hsnSacType, hsn_sac_code: hsnSacCode };
         if (!tableData.hsn_sac_type && !tableData.hsn_sac_code && (hsnSacType || hsnSacCode)) {
           updatedTableData.hsn_sac_type = hsnSacType;
           updatedTableData.hsn_sac_code = hsnSacCode;
@@ -3823,24 +3905,6 @@ export default function CreateBom() {
                         ? <div className="text-gray-500 text-center py-4">No products added yet. Click Add Product +</div>
                         : <div className="space-y-6">
                           {(() => {
-                            const sortedAllItems = boqItems.map((item, index) => ({ item, index }))
-                              .sort((a, b) => {
-                                if (productCategoryOrder.length === 0) return a.index - b.index;
-                                const tda = parseTableData(a.item.table_data);
-                                const tdb = parseTableData(b.item.table_data);
-                                const catA = tda.category_name || tda.category || "General";
-                                const catB = tdb.category_name || tdb.category || "General";
-                                const indexA = productCategoryOrder.indexOf(catA);
-                                const indexB = productCategoryOrder.indexOf(catB);
-                                if (indexA !== -1 && indexB !== -1) {
-                                  if (indexA !== indexB) return indexA - indexB;
-                                } else if (indexA !== -1) return -1;
-                                else if (indexB !== -1) return 1;
-                                return a.index - b.index;
-                              })
-                              .map(x => x.item);
-
-
                             const filteredItems = sortedAllItems.filter(item => {
                               const td = parseTableData(item.table_data);
                               const name = td.product_name || td.item || td.name || "Unnamed Item";
@@ -3971,6 +4035,8 @@ export default function CreateBom() {
                                           handleAddItem={handleAddItem} loadBoqItemsAndEdits={loadBoqItemsAndEdits} setBoqItems={setBoqItems}
                                           checkBudgetEarly={checkBudgetEarly} handleSaveProject={handleSaveProject}
                                           onAnalysis={(name) => setAnalysisProduct(name)}
+                                          onFocusProduct={handleFocusProduct}
+                                          allProductNames={boqItems.map(bi => parseTableData(bi.table_data).product_name).filter(Boolean)}
                                           isCardDragOver={cardDragOverIdx === boqIdx}
                                           onCardDragStart={(e) => { cardDragIdxRef.current = boqIdx; e.dataTransfer.effectAllowed = 'move'; }}
                                           onCardDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setCardDragOverIdx(boqIdx); }}
@@ -4014,6 +4080,8 @@ export default function CreateBom() {
                                             setBoqItems(reordered);
                                             apiFetch('/api/boq-items/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ itemIds: reordered.map(i => i.id) }) }).catch(console.error);
                                           }}
+                                          onBomShopRateChangeSubmitted={fetchBomShopRateRequests}
+                                          bomShopRateRequests={bomShopRateRequests}
                                         />
                                       </div>
                                     );
@@ -4064,7 +4132,7 @@ export default function CreateBom() {
                       {!isReadOnlyMode && (
                         <>
                           <Button onClick={withBudgetCheck(() => currentProjectValue, handleSaveProject)} variant="outline" disabled={isVersionSubmitted || Object.keys(editedFields).length === 0}>Save Draft</Button>
-                          <Button onClick={() => handleSubmitVersion("submitted")} variant="outline" className="border-primary text-primary hover:bg-primary/5 font-bold" disabled={isVersionSubmitted || boqItems.length === 0 || hasPendingRateAmendments} title={hasPendingRateAmendments ? "Cannot lock: There are rate amendments that must be submitted and approved first." : undefined}>Lock Version</Button>
+                          <Button onClick={() => handleSubmitVersion("submitted")} variant="outline" className="border-primary text-primary hover:bg-primary/5 font-bold" disabled={isVersionSubmitted || boqItems.length === 0 || hasPendingRateAmendments || hasPendingBomShopRateChanges} title={(hasPendingRateAmendments || hasPendingBomShopRateChanges) ? "Cannot lock: There are material or rate change requests that must be approved first." : undefined}>Lock Version</Button>
                           {rateAmendmentSummary.hasDraft ? (
                             <Button onClick={handleSubmitRateAmendRequests} variant="default" className="bg-amber-600 hover:bg-amber-700 font-bold" title="Send the amended rate(s) to admin for approval">
                               Submit Rate Amend Request
@@ -4072,6 +4140,10 @@ export default function CreateBom() {
                           ) : rateAmendmentSummary.hasPending ? (
                             <Button variant="default" className="bg-amber-300 font-bold cursor-not-allowed" disabled title="Waiting for admin to approve or reject the submitted rate change request(s)">
                               Awaiting Rate Approval
+                            </Button>
+                          ) : hasPendingBomShopRateChanges ? (
+                            <Button variant="default" className="bg-indigo-300 font-bold cursor-not-allowed" disabled title="Waiting for admin to approve or reject the submitted shop/rate change request(s)">
+                              Awaiting Shop/Rate Approval
                             </Button>
                           ) : (
                             <Button onClick={() => handleSubmitVersion("pending_approval")} variant="default" className="bg-primary hover:bg-primary/90 font-bold" disabled={isVersionSubmitted || boqItems.length === 0}>Submit for Approval</Button>
@@ -4091,6 +4163,12 @@ export default function CreateBom() {
                       <div className="col-span-full flex items-center gap-2 mt-2 p-2 rounded-md bg-orange-50 border border-orange-200 text-orange-700 text-xs font-semibold">
                         <AlertTriangle className="h-4 w-4 text-orange-500 shrink-0" />
                         <span>Rate change request submitted. Waiting for admin approval — Submit for Approval will become available once approved.</span>
+                      </div>
+                    )}
+                    {hasPendingBomShopRateChanges && (
+                      <div className="col-span-full flex items-center gap-2 mt-2 p-2 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-semibold">
+                        <Store className="h-4 w-4 text-indigo-500 shrink-0" />
+                        <span>One or more materials have a Change Shop & Rate request awaiting Materials Approval — Submit for Approval will unlock once resolved.</span>
                       </div>
                     )}
                   </CardContent>
@@ -4863,6 +4941,68 @@ export default function CreateBom() {
         isOpen={!!analysisProduct}
         onClose={() => setAnalysisProduct(null)}
       />
+
+      {/* ── Product Focus Mode ──────────────────────────────────────────────
+          Renders the SAME BoqItemCard used in the main grid for a single
+          product, so no product/item logic is duplicated here and every
+          edit updates the same boqItems state the main grid reads from. */}
+      {focusedBoqIdx !== null && sortedAllItems[focusedBoqIdx] && (() => {
+        const idx: number = focusedBoqIdx;
+        const focusedItem = sortedAllItems[idx];
+        const rawIdx = boqItems.findIndex(bi => bi.id === focusedItem.id);
+        return (
+          <ProductFocusDialog
+            open={true}
+            onClose={() => setFocusedBoqIdx(null)}
+            productIndex={idx}
+            totalProducts={sortedAllItems.length}
+            onPrevious={() => setFocusedBoqIdx(i => (i === null ? null : Math.max(0, i - 1)))}
+            onNext={() => setFocusedBoqIdx(i => (i === null ? null : Math.min(sortedAllItems.length - 1, i + 1)))}
+            cardProps={{
+              boqItem: focusedItem,
+              boqIdx: idx,
+              isVersionSubmitted,
+              expandedProductIds, setExpandedProductIds,
+              getEditedValue, updateEditedField,
+              handleDeleteRow, handleFinalizeProduct,
+              handleAddItem, loadBoqItemsAndEdits, setBoqItems,
+              checkBudgetEarly, handleSaveProject,
+              onAnalysis: (name) => setAnalysisProduct(name),
+              allProductNames: boqItems.map(bi => parseTableData(bi.table_data).product_name).filter(Boolean),
+              mismatches: activeMismatches.filter(m => m.boqItemId === focusedItem.id),
+              isCompactView,
+              onSaveAsTemplate: (item) => {
+                setTemplateToSave(item);
+                setNewTemplateName(parseTableData(item.table_data).product_name || item.estimator);
+                setShowSaveTemplateDialog(true);
+              },
+              editedFields,
+              comments,
+              users,
+              currentUser: user,
+              onAddComment: (versionId: string, itemId?: string) => {
+                const productName = parseTableData(focusedItem.table_data).product_name || focusedItem.estimator;
+                setCommentTarget({ type: itemId ? 'item' : 'product', id: itemId || focusedItem.id, name: itemId ? `${productName} - Item ${itemId}` : productName });
+                setShowCommentDialog(true);
+              },
+              selectedVersionId,
+              totalProducts: boqItems.length,
+              itemCategoryFilter,
+              bomButtonsEnabled,
+              onProductOrdinalChange: (toIdx) => {
+                if (rawIdx === -1 || toIdx === idx) return;
+                const reordered = [...boqItems];
+                const [moved] = reordered.splice(rawIdx, 1);
+                reordered.splice(toIdx, 0, moved);
+                setBoqItems(reordered);
+                apiFetch('/api/boq-items/reorder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ itemIds: reordered.map(i => i.id) }) }).catch(console.error);
+              },
+              onBomShopRateChangeSubmitted: fetchBomShopRateRequests,
+              bomShopRateRequests,
+            }}
+          />
+        );
+      })()}
 
       {/* ── Refresh Categories Log Dialog ───────────────────────────────────── */}
       <Dialog open={showRefreshLogDialog} onOpenChange={setShowRefreshLogDialog}>

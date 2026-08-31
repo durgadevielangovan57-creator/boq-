@@ -900,9 +900,27 @@ export async function registerRoutes(
 
   // Ensure material_submissions table has required columns
   try {
-
-
-
+    // "Generate BOM: Change Shop & Rate" — lets a user request a different
+    // shop + rate for a material already used on a BOQ line. These rows piggy-back
+    // on the existing material_submissions table (so they show up on the same
+    // Materials Approval screen as other material requests) but describe a
+    // change to an *already-approved* material rather than a brand-new one,
+    // so template_id is not applicable and must be nullable.
+    const materialSubmissionCols = [
+      "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'new_material'",
+      "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS previous_material_id VARCHAR(100)",
+      "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS material_name VARCHAR(255)",
+      "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS previous_shop_name VARCHAR(255)",
+      "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS previous_rate DECIMAL(15,2)",
+      "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS requested_shop_name VARCHAR(255)",
+      "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS boq_item_id VARCHAR(100)",
+      "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS boq_version_id VARCHAR(100)",
+      "ALTER TABLE material_submissions ALTER COLUMN template_id DROP NOT NULL",
+    ];
+    for (const sql of materialSubmissionCols) {
+      try { await query(sql); } catch { /* column may already exist / already nullable */ }
+    }
+    console.log("[db] material_submissions columns ensured (Change Shop & Rate support)");
 
 
 
@@ -1399,8 +1417,56 @@ export async function registerRoutes(
       )
     `);
     console.log("[db] step11_products and items tables ensured");
+    // Ensure columns added after initial schema
+    const addCols = [
+      "ALTER TABLE step11_product_items ADD COLUMN IF NOT EXISTS apply_wastage BOOLEAN DEFAULT TRUE",
+      "ALTER TABLE step11_product_items ADD COLUMN IF NOT EXISTS shop_name VARCHAR(255)",
+      "ALTER TABLE step11_product_items ADD COLUMN IF NOT EXISTS base_qty DECIMAL(15,2)",
+      "ALTER TABLE step11_product_items ADD COLUMN IF NOT EXISTS wastage_pct DECIMAL(15,4)",
+      "ALTER TABLE step11_product_items ADD COLUMN IF NOT EXISTS is_project_pricing BOOLEAN DEFAULT FALSE",
+      "ALTER TABLE step11_product_items ADD COLUMN IF NOT EXISTS description TEXT",
+    ];
+    for (const sql of addCols) {
+      try { await query(sql); } catch { /* column may already exist */ }
+    }
   } catch (err: unknown) {
     console.warn("[db] Could not ensure step11_products tables:", (err as any)?.message || err);
+  }
+
+  // ─── Generate BOM: Product Card "Save" / "Save As" feature ───────────────
+  // Additive-only table. Does not touch boq_items, products, or
+  // product_approvals. Tracks approval requests for manually-added
+  // (Add Item) items on a Product Card, submitted either to be merged
+  // into the existing product ("save") or to seed a brand new Product
+  // Card ("save_as"). See docs/generate-bom-save-saveas.md for the spec.
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS boq_manual_item_requests (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        type VARCHAR(20) NOT NULL,
+        boq_item_id VARCHAR(255) NOT NULL,
+        project_id VARCHAR(255),
+        version_id VARCHAR(255),
+        source_product_name TEXT,
+        new_product_name TEXT,
+        item_indexes JSONB NOT NULL DEFAULT '[]',
+        items JSONB NOT NULL DEFAULT '[]',
+        calculated_results JSONB,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        rejection_reason TEXT,
+        requested_by VARCHAR(255),
+        requested_by_name VARCHAR(255),
+        approved_by VARCHAR(255),
+        approved_by_name VARCHAR(255),
+        created_boq_item_id VARCHAR(255),
+        created_at TIMESTAMP DEFAULT NOW(),
+        decided_at TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log("[db] boq_manual_item_requests table ensured");
+  } catch (err: unknown) {
+    console.warn("[db] Could not ensure boq_manual_item_requests table:", (err as any)?.message || err);
   }
 
   // Ensure Step 3 (configuration step) separate tables
@@ -1442,6 +1508,8 @@ export async function registerRoutes(
     // Explicitly upgrade types if they already exist with old restrictive types
     await query(`ALTER TABLE product_step3_config ALTER COLUMN wastage_pct_default TYPE DECIMAL(15,4)`);
     await query(`ALTER TABLE product_step3_config_items ALTER COLUMN wastage_pct TYPE DECIMAL(15,4)`);
+    await query(`ALTER TABLE product_step3_config_items ADD COLUMN IF NOT EXISTS description TEXT`);
+    await query(`ALTER TABLE product_approval_items ADD COLUMN IF NOT EXISTS description TEXT`);
 
     console.log("[db] product_step3_config BOQ columns ensured and types upgraded");
   } catch (err: unknown) {
@@ -4744,6 +4812,154 @@ export async function registerRoutes(
     },
   );
 
+  // ── Generate BOM: Change Shop & Rate (new, isolated feature) ───────────
+  // POST /api/material-submissions/bom-shop-rate - Request a different shop
+  // + rate for a material already used on a Generate BOM line. Creates a
+  // material_submissions row (source='generate_bom') so it shows up on the
+  // same Materials Approval screen as other material requests. The BOM line
+  // itself is left untouched until an admin approves the request.
+  app.post(
+    "/api/material-submissions/bom-shop-rate",
+    authMiddleware,
+    async (req: Request, res: Response) => {
+      try {
+        const { previous_material_id, new_shop_id, new_rate, boq_item_id, boq_version_id } = req.body;
+
+        if (!previous_material_id || !new_shop_id || new_rate === undefined || new_rate === null || !boq_item_id) {
+          res.status(400).json({ message: "previous_material_id, new_shop_id, new_rate and boq_item_id are required" });
+          return;
+        }
+
+        const parsedRate = Number(new_rate);
+        if (!Number.isFinite(parsedRate) || parsedRate < 0) {
+          res.status(400).json({ message: "new_rate must be a valid non-negative number" });
+          return;
+        }
+
+        // Look up the new shop's name for display
+        const shopResult = await query("SELECT id, name FROM shops WHERE id = $1", [new_shop_id]);
+        if (shopResult.rows.length === 0) {
+          res.status(404).json({ message: "Selected shop was not found" });
+          return;
+        }
+        const requestedShopName = shopResult.rows[0].name;
+
+        // Look up the current shop/rate/name for this exact line on this BOQ
+        // item, so the approval screen can show a clear before/after — pulled
+        // from the live boq_items row (per-project pricing may differ from
+        // the materials catalog default).
+        let previousShopName: string | null = null;
+        let previousRate: number | null = null;
+        let materialName: string | null = null;
+        let unit: string | null = null;
+        try {
+          const itemResult = await query("SELECT table_data FROM boq_items WHERE id = $1", [boq_item_id]);
+          if (itemResult.rows.length > 0) {
+            const tableData = typeof itemResult.rows[0].table_data === "string"
+              ? JSON.parse(itemResult.rows[0].table_data)
+              : itemResult.rows[0].table_data;
+            const matchLine = (line: any) => (line?.id === previous_material_id || line?.materialId === previous_material_id);
+            const line =
+              (tableData?.materialLines || []).find(matchLine) ||
+              (tableData?.step11_items || []).find(matchLine);
+            if (line) {
+              previousShopName = line.shop_name ?? null;
+              previousRate = Number(
+                line.supplyRate !== undefined ? line.supplyRate : (line.supply_rate ?? line.rateSqft ?? line.rate ?? 0)
+              );
+              materialName = line.name || line.title || line.description || null;
+              unit = line.unit || null;
+            }
+          }
+        } catch (e) {
+          console.warn("[POST /api/material-submissions/bom-shop-rate] Could not look up current line for previous shop/rate", e);
+        }
+
+        // Fall back to the materials catalog row if the line lookup above failed
+        if (previousShopName === null || previousRate === null || !materialName) {
+          try {
+            const matResult = await query(
+              `SELECT m.rate, m.unit, COALESCE(mt.name, m.name) as name, s.name as shop_name
+               FROM materials m
+               LEFT JOIN material_templates mt ON m.template_id = mt.id
+               LEFT JOIN shops s ON m.shop_id = s.id
+               WHERE m.id = $1`,
+              [previous_material_id],
+            );
+            if (matResult.rows.length > 0) {
+              const m = matResult.rows[0];
+              if (previousShopName === null) previousShopName = m.shop_name;
+              if (previousRate === null) previousRate = Number(m.rate);
+              if (!materialName) materialName = m.name;
+              if (!unit) unit = m.unit;
+            }
+          } catch (e) {
+            console.warn("[POST /api/material-submissions/bom-shop-rate] Could not look up materials catalog fallback", e);
+          }
+        }
+
+        const id = randomUUID();
+        const result = await query(
+          `INSERT INTO material_submissions (
+            id, source, previous_material_id, material_name, unit, shop_id,
+            rate, previous_shop_name, previous_rate, requested_shop_name,
+            boq_item_id, boq_version_id, submitted_by, submitted_at, approved
+          ) VALUES ($1, 'generate_bom', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NULL)
+          RETURNING *`,
+          [
+            id,
+            previous_material_id,
+            materialName,
+            unit,
+            new_shop_id,
+            parsedRate,
+            previousShopName,
+            previousRate,
+            requestedShopName,
+            boq_item_id,
+            boq_version_id || null,
+            (req as any).user?.id,
+          ],
+        );
+
+        res.status(201).json({ submission: result.rows[0] });
+      } catch (err: any) {
+        console.error("/api/material-submissions/bom-shop-rate POST error", err);
+        res.status(500).json({ message: "failed to submit shop/rate change request" });
+      }
+    },
+  );
+
+  // GET /api/material-submissions/bom-pending - List Change Shop & Rate
+  // requests for a given BOQ version (used to show pending badges on BOQ
+  // lines and to keep "Submit for Approval" disabled while any are unresolved).
+  app.get(
+    "/api/material-submissions/bom-pending",
+    authMiddleware,
+    async (req: Request, res: Response) => {
+      try {
+        const { boq_version_id } = req.query;
+        if (!boq_version_id) {
+          res.json({ requests: [] });
+          return;
+        }
+        const result = await query(
+          `SELECT id, previous_material_id, boq_item_id, boq_version_id, material_name, unit,
+                  shop_id, rate, previous_shop_name, previous_rate, requested_shop_name,
+                  submitted_by, submitted_at, approved, approval_reason
+           FROM material_submissions
+           WHERE source = 'generate_bom' AND boq_version_id = $1
+           ORDER BY submitted_at DESC`,
+          [boq_version_id],
+        );
+        res.json({ requests: result.rows });
+      } catch (err: any) {
+        console.error("/api/material-submissions/bom-pending GET error", err);
+        res.status(500).json({ message: "failed to fetch shop/rate change requests" });
+      }
+    },
+  );
+
   // GET /api/supplier/my-shops - Get shops owned by the current supplier
   app.get(
     "/api/supplier/my-shops",
@@ -4924,10 +5140,20 @@ export async function registerRoutes(
     async (_req, res) => {
       try {
         const result = await query(`
-          SELECT ms.*, mt.name as template_name, mt.code as template_code, mt.category as template_category, s.name as shop_name, u.username as submitted_by_username
+          SELECT ms.*, 
+                 COALESCE(mt.name, mt2.name, m.name, ms.material_name) as template_name, 
+                 COALESCE(mt.code, mt2.code, m.code) as template_code, 
+                 COALESCE(mt.category, mt2.category, m.category) as template_category,
+                 COALESCE(ms.brandname, m.brandname) as brandname,
+                 COALESCE(ms.subcategory, m.subcategory) as subcategory,
+                 COALESCE(ms.technicalspecification, m.technicalspecification) as technicalspecification,
+                 COALESCE(s.name, ms.requested_shop_name) as shop_name, 
+                 u.username as submitted_by_username
           FROM material_submissions ms
-          JOIN material_templates mt ON ms.template_id = mt.id
-          JOIN shops s ON ms.shop_id = s.id
+          LEFT JOIN material_templates mt ON ms.template_id = mt.id
+          LEFT JOIN materials m ON m.id = CASE WHEN ms.previous_material_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN ms.previous_material_id::uuid ELSE NULL END
+          LEFT JOIN material_templates mt2 ON m.template_id = mt2.id
+          LEFT JOIN shops s ON ms.shop_id = s.id
           LEFT JOIN users u ON ms.submitted_by = u.id
           WHERE ms.approved IS NULL
           ORDER BY ms.submitted_at DESC
@@ -4974,11 +5200,101 @@ export async function registerRoutes(
           res.status(400).json({ message: "This submission has already been approved." });
           return;
         }
-        const templateResult = await query(
-          "SELECT * FROM material_templates WHERE id = $1",
-          [submission.template_id],
-        );
-        const template = templateResult.rows[0];
+
+        // Generate BOM: Change Shop & Rate — this is a request to change the
+        // shop/rate of an EXISTING material on a BOQ line, not a brand-new
+        // catalog material, so it skips the materials-table insert entirely
+        // and instead writes the new shop/rate onto the specific BOQ line.
+        if (submission.source === "generate_bom") {
+          const updateResult = await query(
+            "UPDATE material_submissions SET approved = true WHERE id = $1 RETURNING *",
+            [id],
+          );
+          const approvedReq = updateResult.rows[0];
+
+          try {
+            const itemResult = await query("SELECT table_data FROM boq_items WHERE id = $1", [approvedReq.boq_item_id]);
+            if (itemResult.rows.length > 0) {
+              const tableData = typeof itemResult.rows[0].table_data === "string"
+                ? JSON.parse(itemResult.rows[0].table_data)
+                : itemResult.rows[0].table_data;
+              const matchLine = (line: any) => (line?.id === approvedReq.previous_material_id || line?.materialId === approvedReq.previous_material_id);
+              let updated = false;
+
+              if (tableData && Array.isArray(tableData.materialLines)) {
+                tableData.materialLines = tableData.materialLines.map((line: any) => {
+                  if (matchLine(line)) {
+                    line.shop_name = approvedReq.requested_shop_name;
+                    line.shop_id = approvedReq.shop_id;
+                    line.supplyRate = Number(approvedReq.rate);
+                    line.installRate = 0;
+                    updated = true;
+                  }
+                  return line;
+                });
+              }
+              if (tableData && Array.isArray(tableData.step11_items)) {
+                tableData.step11_items = tableData.step11_items.map((line: any) => {
+                  if (matchLine(line)) {
+                    line.shop_name = approvedReq.requested_shop_name;
+                    line.shop_id = approvedReq.shop_id;
+                    line.supply_rate = Number(approvedReq.rate);
+                    line.install_rate = 0;
+                    updated = true;
+                  }
+                  return line;
+                });
+              }
+              if (updated) {
+                await query(`UPDATE boq_items SET table_data = $1 WHERE id = $2`, [JSON.stringify(tableData), approvedReq.boq_item_id]);
+              }
+            }
+
+            const approvedBy = (req as any).user?.id;
+            const approvedByName = (req as any).user?.fullName || (req as any).user?.username;
+            await query(
+              `INSERT INTO boq_history (version_id, user_id, user_full_name, action, reason)
+               VALUES ($1, $2, $3, $4, $5)`,
+              [
+                approvedReq.boq_version_id,
+                approvedBy,
+                approvedByName,
+                "Shop & Rate Change Approved",
+                JSON.stringify({
+                  material_name: approvedReq.material_name,
+                  previous_shop_name: approvedReq.previous_shop_name,
+                  previous_rate: approvedReq.previous_rate,
+                  new_shop_name: approvedReq.requested_shop_name,
+                  new_rate: approvedReq.rate,
+                  approved_by: approvedByName,
+                  status: "approved",
+                }),
+              ],
+            );
+          } catch (e) {
+            console.error("[POST /api/material-submissions/:id/approve] Failed to apply generate_bom shop/rate change to BOQ line", e);
+          }
+
+          // Instead of returning early, we let it fall through to create a new material entry
+          // as requested, so the new shop/rate is available globally.
+          // res.json({ submission: approvedReq });
+          // return;
+        }
+
+        let template: any = {};
+        if (submission.template_id) {
+          const templateResult = await query(
+            "SELECT * FROM material_templates WHERE id = $1",
+            [submission.template_id],
+          );
+          template = templateResult.rows[0] || {};
+        } else if (submission.previous_material_id && /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(submission.previous_material_id)) {
+          const templateResult = await query(
+            "SELECT * FROM materials WHERE id = $1",
+            [submission.previous_material_id],
+          );
+          template = templateResult.rows[0] || {};
+        }
 
         const materialId = randomUUID();
         await query(
@@ -4986,18 +5302,18 @@ export async function registerRoutes(
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, true, $17)`,
           [
             materialId,
-            template.name,
-            template.code,
+            template.name || submission.material_name,
+            template.code || `CUST-${Math.floor(Math.random() * 1000000)}`,
             submission.rate,
             submission.shop_id,
-            submission.unit,
+            submission.unit || template.unit,
             submission.category || template.category,
-            submission.brandname,
-            submission.modelnumber,
+            submission.brandname || template.brandname,
+            submission.modelnumber || template.modelnumber,
             submission.subcategory || template.subcategory,
-            submission.product,
-            submission.technicalspecification,
-            submission.template_id,
+            submission.product || template.product,
+            submission.technicalspecification || template.technicalspecification,
+            submission.template_id || template.template_id,
             submission.image || template.image || null,
             submission.hsn_code || submission.hsnCode || template.hsn_code || null,
             submission.sac_code || submission.sacCode || template.sac_code || null,
@@ -5111,6 +5427,38 @@ export async function registerRoutes(
         );
 
         const submission = result.rows[0];
+
+        // Generate BOM: Change Shop & Rate — the BOQ line was never touched
+        // while the request was pending, so there's nothing to revert. Just
+        // record the rejection; no supplier-facing email for this type.
+        if (submission?.source === "generate_bom") {
+          try {
+            await query(
+              `INSERT INTO boq_history (version_id, user_id, user_full_name, action, reason)
+               VALUES ($1, $2, $3, $4, $5)`,
+              [
+                submission.boq_version_id,
+                (req as any).user?.id,
+                (req as any).user?.fullName || (req as any).user?.username,
+                "Shop & Rate Change Rejected",
+                JSON.stringify({
+                  material_name: submission.material_name,
+                  previous_shop_name: submission.previous_shop_name,
+                  previous_rate: submission.previous_rate,
+                  requested_shop_name: submission.requested_shop_name,
+                  requested_rate: submission.rate,
+                  rejected_by: (req as any).user?.fullName || (req as any).user?.username,
+                  reason: reason || "No reason provided",
+                  status: "rejected",
+                }),
+              ],
+            );
+          } catch (e) {
+            console.warn("[POST /api/material-submissions/:id/reject] Failed to record generate_bom rejection history", e);
+          }
+          res.json({ submission });
+          return;
+        }
 
         // Notify the submitter by email that their material was rejected.
         if (submission) {
@@ -7734,17 +8082,52 @@ export async function registerRoutes(
           );
         }
 
-        // 5. Batch Insert BOQ items
+        // 5. Batch Insert/Update BOQ items — de-dupe against bom_item_sketch_item_map
         const maxSortOrderResult = await query(`SELECT MAX(sort_order) as max_sort_order FROM boq_items WHERE version_id = $1`, [targetVersionId]);
         let currentSortOrder = (maxSortOrderResult.rows[0]?.max_sort_order || 0) + 1;
 
         for (const tData of boqItems) {
-          const itemId = `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-          await query(
-            `INSERT INTO boq_items (id, project_id, estimator, table_data, version_id, user_added, sort_order, computed_value, created_at)
-             VALUES ($1, $2, $3, $4, $5, true, $6, $7, NOW())`,
-            [itemId, projectId, (tData.product_name || "Custom Item").substring(0, 50), JSON.stringify(tData), targetVersionId, currentSortOrder++, computeItemValue(tData)]
-          );
+          const sketchItemId = tData.sketch_item_id;
+          let existingBoqItemId = null;
+
+          if (sketchItemId) {
+            const mapRes = await query(
+              `SELECT m.boq_item_id
+               FROM bom_item_sketch_item_map m
+               JOIN boq_items b ON m.boq_item_id = b.id
+               WHERE m.sketch_item_id = $1 AND b.version_id = $2 LIMIT 1`,
+              [sketchItemId, targetVersionId]
+            );
+            if (mapRes.rows.length > 0) existingBoqItemId = mapRes.rows[0].boq_item_id;
+          }
+
+          if (existingBoqItemId) {
+            await query(
+              `UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`,
+              [JSON.stringify(tData), computeItemValue(tData), existingBoqItemId]
+            );
+          } else {
+            const itemId = `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            await query(
+              `INSERT INTO boq_items (id, project_id, estimator, table_data, version_id, user_added, sort_order, computed_value, created_at)
+               VALUES ($1, $2, $3, $4, $5, true, $6, $7, NOW())`,
+              [itemId, projectId, (tData.product_name || "Custom Item").substring(0, 50), JSON.stringify(tData), targetVersionId, currentSortOrder++, computeItemValue(tData)]
+            );
+
+            if (sketchItemId) {
+              const mapId = `bm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+              try {
+                await query(
+                  `INSERT INTO bom_item_sketch_item_map (id, boq_item_id, sketch_item_id, created_at)
+                   VALUES ($1, $2, $3, NOW())
+                   ON CONFLICT (sketch_item_id) DO UPDATE SET boq_item_id = EXCLUDED.boq_item_id, created_at = NOW()`,
+                  [mapId, itemId, sketchItemId]
+                );
+              } catch (e) {
+                console.error("[load-to-boq] mapping error:", e);
+              }
+            }
+          }
         }
 
         console.log(`[load-to-boq] Starting recalculateProjectValue for project ${projectId}, version ${targetVersionId}`);
@@ -8429,6 +8812,1202 @@ export async function registerRoutes(
       } catch (err) {
         console.error("PUT /api/boq-items/:id error:", err);
         res.status(500).json({ message: "Failed to update BOM item" });
+      }
+    }
+  );
+
+  // ─── Generate BOM: Product Card "Save" / "Save As" ───────────────────────
+  // Additive-only endpoints for the new feature. They read/write the SAME
+  // boq_items.table_data.step11_items array that "+ Add Item" already
+  // writes to (no duplicate storage, no new calculation engine). Existing
+  // Add Item / BOM calculation / approval behavior is untouched.
+
+  // POST /api/boq-manual-item-requests - Submit a Save or Save As request
+  app.post(
+    "/api/boq-manual-item-requests",
+    authMiddleware,
+    async (req: Request, res: Response) => {
+      try {
+        const { type, boqItemId, itemIndexes, newProductName, items, calculatedResults, productConfig, fullEdit, addedIndexes, deletedIndexes, editedItems, deletedMaterialIndexes, editedMaterialIndexes } = req.body;
+
+        if (type !== "save" && type !== "save_as") {
+          res.status(400).json({ message: "type must be 'save' or 'save_as'" });
+          return;
+        }
+
+        // ── Full-edit Save: add / edit / delete existing product materials
+        // in one bundled approval request. Distinct payload shape from the
+        // older additive-only "save" (which only ever sends itemIndexes),
+        // so it's handled in its own self-contained branch. ──────────────
+        if (type === "save" && fullEdit === true) {
+          const addedIdx: number[] = Array.isArray(addedIndexes) ? addedIndexes.map(Number) : [];
+          const deletedIdx: number[] = Array.isArray(deletedIndexes) ? deletedIndexes.map(Number) : [];
+          const editedList: { index: number; patch: any }[] = Array.isArray(editedItems) ? editedItems : [];
+          // Deletions of the product's original/pre-existing materials —
+          // these live in tableData.materialLines, a completely separate
+          // array/index-space from step11_items, so they're tracked with
+          // their own list end-to-end rather than folded into allTouched.
+          const deletedMaterialIdx: number[] = Array.isArray(deletedMaterialIndexes) ? deletedMaterialIndexes.map(Number) : [];
+          // Edits to the product's original/pre-existing materials — same
+          // separate index-space reasoning as deletedMaterialIdx above.
+          const editedMaterialList: { index: number; patch: any }[] = Array.isArray(editedMaterialIndexes) ? editedMaterialIndexes : [];
+          const allTouched = [...addedIdx, ...deletedIdx, ...editedList.map((e) => Number(e.index))];
+
+          if (!boqItemId || (allTouched.length === 0 && deletedMaterialIdx.length === 0 && editedMaterialList.length === 0)) {
+            res.status(400).json({ message: "boqItemId and at least one added, edited, or deleted item are required" });
+            return;
+          }
+
+          const boqRes = await query(`SELECT id, project_id, version_id, table_data FROM boq_items WHERE id = $1`, [boqItemId]);
+          if (boqRes.rowCount === 0) {
+            res.status(404).json({ message: "Product card not found" });
+            return;
+          }
+          const boqRow = boqRes.rows[0];
+          const tableData = typeof boqRow.table_data === "string" ? JSON.parse(boqRow.table_data) : (boqRow.table_data || {});
+          const step11Items: any[] = Array.isArray(tableData.step11_items) ? tableData.step11_items : [];
+          const materialLines: any[] = Array.isArray(tableData.materialLines) ? tableData.materialLines : [];
+
+          for (const idx of allTouched) {
+            const item = step11Items[idx];
+            if (!item) {
+              res.status(400).json({ message: `Item index ${idx} not found` });
+              return;
+            }
+            if (item.manualApproval && item.manualApproval.status === "pending") {
+              res.status(400).json({ message: "One or more items already have a pending change awaiting approval." });
+              return;
+            }
+          }
+          for (const idx of deletedMaterialIdx) {
+            const line = materialLines[idx];
+            if (!line) {
+              res.status(400).json({ message: `Material line ${idx} not found` });
+              return;
+            }
+            if (line.manualApproval && line.manualApproval.status === "pending") {
+              res.status(400).json({ message: "One or more materials already have a pending change awaiting approval." });
+              return;
+            }
+          }
+          for (const e of editedMaterialList) {
+            const idx = Number(e.index);
+            const line = materialLines[idx];
+            if (!line) {
+              res.status(400).json({ message: `Material line ${idx} not found` });
+              return;
+            }
+            if (line.manualApproval && line.manualApproval.status === "pending") {
+              res.status(400).json({ message: "One or more materials already have a pending change awaiting approval." });
+              return;
+            }
+          }
+
+          const addedSnapshot = addedIdx.map((idx) => {
+            const editPatch = editedList.find(e => Number(e.index) === idx)?.patch || {};
+            return { ...step11Items[idx], ...editPatch, _action: "add", _index: idx };
+          });
+          const deletedSnapshot = deletedIdx.map((idx) => ({ ...step11Items[idx], _action: "delete", _index: idx }));
+          const editedSnapshot = editedList.map((e) => {
+            const idx = Number(e.index);
+            return { ...step11Items[idx], ...(e.patch || {}), _action: "edit", _index: idx, _before: step11Items[idx] };
+          });
+          // Tagged with _materialIndex (not _index) so approve/reject never
+          // confuses a materialLines position with a step11_items position.
+          const deletedMaterialSnapshot = deletedMaterialIdx.map((idx) => ({
+            ...materialLines[idx], _action: "delete", _source: "materialLine", _materialIndex: idx,
+          }));
+          const editedMaterialSnapshot = editedMaterialList.map((e) => {
+            const idx = Number(e.index);
+            return { ...materialLines[idx], ...(e.patch || {}), _action: "edit", _source: "materialLine", _materialIndex: idx, _before: materialLines[idx] };
+          });
+          const combinedSnapshot = [...addedSnapshot, ...editedSnapshot, ...deletedSnapshot, ...deletedMaterialSnapshot, ...editedMaterialSnapshot];
+
+          const userObj = (req.user as any) || {};
+          const requestedBy = userObj.id || "system";
+          const requestedByName = userObj.fullName || userObj.username || "System";
+          const productName = tableData.product_name || tableData.item || tableData.name || "Unnamed Product";
+
+          const insertResult = await query(
+            `INSERT INTO boq_manual_item_requests (
+              type, boq_item_id, project_id, version_id, source_product_name, new_product_name,
+              item_indexes, items, calculated_results, status, requested_by, requested_by_name
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11)
+            RETURNING *`,
+            [
+              "save",
+              boqItemId,
+              boqRow.project_id || null,
+              boqRow.version_id || null,
+              productName,
+              null,
+              JSON.stringify(allTouched),
+              JSON.stringify(combinedSnapshot),
+              (deletedMaterialIdx.length > 0 || editedMaterialList.length > 0)
+                ? JSON.stringify({ deletedMaterialIndexes: deletedMaterialIdx, editedMaterialIndexes: editedMaterialList.map(e => Number(e.index)) })
+                : null,
+              requestedBy,
+              requestedByName,
+            ]
+          );
+          const request = insertResult.rows[0];
+
+          const editedMaterialIdxSet = new Set(editedMaterialList.map(e => Number(e.index)));
+          const updatedStep11 = step11Items.map((it: any, idx: number) => {
+            if (!allTouched.includes(idx)) return it;
+            const action = addedIdx.includes(idx) ? "add" : deletedIdx.includes(idx) ? "delete" : "edit";
+            return { ...it, manualApproval: { status: "pending", requestId: request.id, type: "save", action, submittedAt: new Date().toISOString() } };
+          });
+          const updatedMaterialLines = materialLines.map((line: any, idx: number) => {
+            if (deletedMaterialIdx.includes(idx)) {
+              return { ...line, manualApproval: { status: "pending", requestId: request.id, type: "save", action: "delete", submittedAt: new Date().toISOString() } };
+            }
+            if (editedMaterialIdxSet.has(idx)) {
+              return { ...line, manualApproval: { status: "pending", requestId: request.id, type: "save", action: "edit", submittedAt: new Date().toISOString() } };
+            }
+            return line;
+          });
+          const updatedTableData = {
+            ...tableData,
+            step11_items: updatedStep11,
+            ...(materialLines.length > 0 ? { materialLines: updatedMaterialLines } : {}),
+          };
+          await query(`UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`, [JSON.stringify(updatedTableData), computeItemValue(updatedTableData), boqItemId]);
+
+          if (boqRow.version_id) {
+            await query(
+              `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name) VALUES ($1, $2, $3, $4, $5, $6)`,
+              [boqRow.version_id, requestedBy, requestedByName, "MANUAL_ITEMS_EDIT_SUBMITTED", boqItemId, productName]
+            );
+          }
+
+          res.json({ request, table_data: updatedTableData });
+          return;
+        }
+
+        if (!boqItemId || !Array.isArray(itemIndexes) || itemIndexes.length === 0) {
+          res.status(400).json({ message: "boqItemId and itemIndexes are required" });
+          return;
+        }
+        if (type === "save_as" && (!newProductName || !String(newProductName).trim())) {
+          res.status(400).json({ message: "newProductName is required for Save As" });
+          return;
+        }
+        if (type === "save_as" && !productConfig?.category) {
+          res.status(400).json({ message: "Category is required for Save As" });
+          return;
+        }
+
+        const boqRes = await query(
+          `SELECT id, project_id, version_id, table_data FROM boq_items WHERE id = $1`,
+          [boqItemId]
+        );
+        if (boqRes.rowCount === 0) {
+          res.status(404).json({ message: "Product card not found" });
+          return;
+        }
+        const boqRow = boqRes.rows[0];
+        const tableData = typeof boqRow.table_data === "string" ? JSON.parse(boqRow.table_data) : (boqRow.table_data || {});
+        const step11Items: any[] = Array.isArray(tableData.step11_items) ? tableData.step11_items : [];
+
+        // Server-side validation
+        const validIndexes: number[] = [];
+        let snapshotItems: any[] = [];
+
+        if (type === "save") {
+          // For "save", every index must point to a manual item in step11Items
+          // that is not already locked into another pending request.
+          for (const idxRaw of itemIndexes) {
+            const idx = Number(idxRaw);
+            const item = step11Items[idx];
+            if (!item || item.manual !== true) continue;
+            if (item.manualApproval && item.manualApproval.status === "pending") continue;
+            validIndexes.push(idx);
+          }
+          if (validIndexes.length === 0) {
+            res.status(400).json({ message: "No eligible newly added manual items found. They may have already been submitted for approval." });
+            return;
+          }
+          snapshotItems = validIndexes.map(idx => step11Items[idx]);
+        } else {
+          // For "save_as", we trust the client's full `items` payload because it includes
+          // both engine-computed items and any manual additions, forming the full new product.
+          if (!Array.isArray(items) || items.length === 0) {
+            res.status(400).json({ message: "items array is required for Save As" });
+            return;
+          }
+          snapshotItems = items;
+        }
+
+        const userObj = (req.user as any) || {};
+        const requestedBy = userObj.id || "system";
+        const requestedByName = userObj.fullName || userObj.username || "System";
+        const productName = tableData.product_name || tableData.item || tableData.name || "Unnamed Product";
+
+        // For save_as, item_indexes stores the count of items (no specific step11 indexes).
+        // For save, validIndexes lists the locked step11 item positions.
+        const indexesForDb = type === "save_as"
+          ? snapshotItems.map((_: any, i: number) => i)
+          : validIndexes;
+
+        const insertResult = await query(
+          `INSERT INTO boq_manual_item_requests (
+            type, boq_item_id, project_id, version_id, source_product_name, new_product_name,
+            item_indexes, items, calculated_results, status, requested_by, requested_by_name
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11)
+          RETURNING *`,
+          [
+            type,
+            boqItemId,
+            boqRow.project_id || null,
+            boqRow.version_id || null,
+            productName,
+            type === "save_as" ? String(newProductName).trim() : null,
+            JSON.stringify(indexesForDb),
+            JSON.stringify(snapshotItems),
+            calculatedResults ? JSON.stringify({ ...calculatedResults, productConfig }) : null,
+            requestedBy,
+            requestedByName,
+          ]
+        );
+        const request = insertResult.rows[0];
+
+        // Lock the source items in step11_items so they
+        // can't be re-submitted while this approval is pending, and so we
+        // can find and delete them when the Save As request is approved.
+        const updatedStep11 = step11Items.map((it: any, idx: number) => {
+          if (!validIndexes.includes(idx)) return it;
+          return { ...it, manualApproval: { status: "pending", requestId: request.id, type, submittedAt: new Date().toISOString() } };
+        });
+        const updatedTableData = { ...tableData, step11_items: updatedStep11 };
+        await query(
+          `UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`,
+          [JSON.stringify(updatedTableData), computeItemValue(updatedTableData), boqItemId]
+        );
+
+        if (boqRow.version_id) {
+          await query(
+            `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name) VALUES ($1, $2, $3, $4, $5, $6)`,
+            [boqRow.version_id, requestedBy, requestedByName, type === "save" ? "MANUAL_ITEMS_SUBMITTED" : "MANUAL_ITEMS_SAVE_AS_SUBMITTED", boqItemId, productName]
+          );
+        }
+
+        res.json({ request, table_data: updatedTableData });
+      } catch (err) {
+        console.error("POST /api/boq-manual-item-requests error:", err);
+        res.status(500).json({ message: "Failed to submit request", error: (err as any)?.message });
+      }
+    }
+  );
+
+  // GET /api/boq-manual-item-requests - List requests (for the "New Items" approval tab)
+  app.get(
+    "/api/boq-manual-item-requests",
+    authMiddleware,
+    async (req: Request, res: Response) => {
+      try {
+        const { status } = req.query;
+        // LEFT JOIN the source product card so the approvals UI can show the
+        // FULL existing product (all its items) alongside the newly added
+        // ones, instead of only the newly submitted items in isolation.
+        // Fetch the global product items as well so the UI can show the full original product
+        // alongside the new items, not just the subset of items that happened to be in the BOQ.
+        let sql = `
+          SELECT 
+            r.*, 
+            b.table_data AS source_table_data,
+            (
+              SELECT json_agg(si.*)
+              FROM step11_products sp
+              JOIN step11_product_items si ON si.step11_product_id = sp.id
+              WHERE sp.product_id::text = (b.table_data->>'product_id')::text
+            ) AS global_product_items
+          FROM boq_manual_item_requests r 
+          LEFT JOIN boq_items b ON b.id::text = r.boq_item_id::text
+        `;
+        const params: any[] = [];
+        if (status && status !== "all") {
+          params.push(status);
+          sql += ` WHERE r.status = $${params.length}`;
+        }
+        sql += ` ORDER BY r.created_at DESC`;
+        const result = await query(sql, params);
+        res.json({ requests: result.rows });
+      } catch (err) {
+        console.error("GET /api/boq-manual-item-requests error:", err);
+        res.status(500).json({ message: "Failed to fetch requests" });
+      }
+    }
+  );
+
+  // GET /api/boq-manual-item-requests/:id - Full detail for one request
+  app.get(
+    "/api/boq-manual-item-requests/:id",
+    authMiddleware,
+    async (req: Request, res: Response) => {
+      try {
+        const { id } = req.params;
+        const result = await query(
+          `
+          SELECT 
+            r.*, 
+            b.table_data AS source_table_data,
+            (
+              SELECT json_agg(si.*)
+              FROM step11_products sp
+              JOIN step11_product_items si ON si.step11_product_id = sp.id
+              WHERE sp.product_id::text = (b.table_data->>'product_id')::text
+            ) AS global_product_items
+          FROM boq_manual_item_requests r 
+          LEFT JOIN boq_items b ON b.id::text = r.boq_item_id::text 
+          WHERE r.id = $1
+          `,
+          [id]
+        );
+        if (result.rowCount === 0) {
+          res.status(404).json({ message: "Request not found" });
+          return;
+        }
+        res.json({ request: result.rows[0] });
+      } catch (err) {
+        console.error("GET /api/boq-manual-item-requests/:id error:", err);
+        res.status(500).json({ message: "Failed to fetch request" });
+      }
+    }
+  );
+
+  // POST /api/boq-manual-item-requests/:id/approve
+  app.post(
+    "/api/boq-manual-item-requests/:id/approve",
+    authMiddleware,
+    requireRole("admin", "software_team"),
+    async (req: Request, res: Response) => {
+      try {
+        const { id } = req.params;
+        const reqRes = await query(`SELECT * FROM boq_manual_item_requests WHERE id = $1 AND status = 'pending'`, [id]);
+        if (reqRes.rowCount === 0) {
+          res.status(404).json({ message: "Pending request not found" });
+          return;
+        }
+        const request = reqRes.rows[0];
+        const itemIndexes: number[] = Array.isArray(request.item_indexes) ? request.item_indexes : JSON.parse(request.item_indexes || "[]");
+        const userObj = (req.user as any) || {};
+        const approvedBy = userObj.id || "system";
+        const approvedByName = userObj.fullName || userObj.username || "System";
+
+        const boqRes = await query(`SELECT id, project_id, version_id, table_data FROM boq_items WHERE id = $1`, [request.boq_item_id]);
+        if (boqRes.rowCount === 0) {
+          res.status(404).json({ message: "Source product card no longer exists" });
+          return;
+        }
+        const boqRow = boqRes.rows[0];
+        const tableData = typeof boqRow.table_data === "string" ? JSON.parse(boqRow.table_data) : (boqRow.table_data || {});
+        const step11Items: any[] = Array.isArray(tableData.step11_items) ? tableData.step11_items : [];
+        const materialLines: any[] = Array.isArray(tableData.materialLines) ? tableData.materialLines : [];
+
+        let createdBoqItemId: string | null = null;
+
+        if (request.type === "save") {
+          // Parse the structured snapshot (present for the newer full-edit
+          // Save flow: add/edit/delete tags per item). Falls back to plain
+          // "every touched item is a fresh add" for the older additive-only
+          // Save flow, so nothing already relying on that shape breaks.
+          let snapshotByIndex: Record<number, any> = {};
+          // Keyed by _materialIndex (materialLines position), separate from
+          // snapshotByIndex above (step11_items position) — same index-space
+          // split used everywhere else materialLine changes are tracked.
+          let snapshotByMaterialIndex: Record<number, any> = {};
+          try {
+            const parsedSnapshot = Array.isArray(request.items) ? request.items : JSON.parse(request.items || "[]");
+            for (const s of parsedSnapshot) {
+              if (s && typeof s._index === "number") snapshotByIndex[s._index] = s;
+              if (s && s._source === "materialLine" && typeof s._materialIndex === "number") snapshotByMaterialIndex[s._materialIndex] = s;
+            }
+          } catch { /* legacy requests have no structured snapshot — ignore */ }
+
+          const newItemsToInsert: any[] = [];
+          const editedItemsToSync: any[] = [];
+          const deletedItemsToSync: any[] = [];
+          const deletedIdxSet = new Set<number>();
+
+          const updatedStep11 = step11Items
+            .map((it: any, idx: number) => {
+              if (!itemIndexes.includes(idx)) return it;
+              if (!it.manualApproval || it.manualApproval.requestId !== id) return it;
+
+              const action: string = it.manualApproval.action || "add";
+              const snap = snapshotByIndex[idx];
+
+              if (action === "delete") {
+                deletedIdxSet.add(idx);
+                deletedItemsToSync.push(it);
+                return null; // filtered out below — item removed from this product
+              }
+              if (action === "edit" && snap) {
+                const { _action, _index, _before, manualApproval, ...patchedFields } = snap;
+                const merged = { ...it, ...patchedFields };
+                delete merged.manualApproval;
+                editedItemsToSync.push(merged);
+                return merged;
+              }
+              // action === "add" (or legacy requests without an action tag)
+              let mergedAdd = { ...it };
+              if (snap) {
+                const { _action, _index, _before, manualApproval, ...patchedFields } = snap;
+                mergedAdd = { ...mergedAdd, ...patchedFields };
+              }
+              delete mergedAdd.manualApproval;
+              newItemsToInsert.push(mergedAdd);
+              return { ...mergedAdd, manualApproval: { ...it.manualApproval, status: "approved", decidedAt: new Date().toISOString() } };
+            })
+            .filter((it: any) => it !== null);
+
+          // Deletions of the product's original/pre-existing materials —
+          // these live in tableData.materialLines (a separate array from
+          // step11_items), flagged with their own pending manualApproval by
+          // the create endpoint. Approving removes them from this card's
+          // materialLines and — same as step11 deletions below — from the
+          // global product library.
+          const updatedMaterialLines = materialLines
+            .map((line: any, idx: number) => {
+              if (!line?.manualApproval || line.manualApproval.requestId !== id || line.manualApproval.status !== "pending") return line;
+
+              if (line.manualApproval.action === "delete") {
+                deletedItemsToSync.push(line);
+                return null; // filtered out below — material removed from this product
+              }
+              if (line.manualApproval.action === "edit") {
+                const snap = snapshotByMaterialIndex[idx];
+                if (!snap) {
+                  const { manualApproval, ...rest } = line;
+                  return rest;
+                }
+                const { _action, _index, _materialIndex, _source, _before, manualApproval, ...patchedFields } = snap;
+                const merged = { ...line, ...patchedFields };
+                delete merged.manualApproval;
+                editedItemsToSync.push(merged);
+                return merged;
+              }
+              return line;
+            })
+            .filter((line: any) => line !== null);
+
+          const updatedTableData = {
+            ...tableData,
+            step11_items: updatedStep11,
+            ...(materialLines.length > 0 ? { materialLines: updatedMaterialLines } : {}),
+          };
+          await query(`UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`, [JSON.stringify(updatedTableData), computeItemValue(updatedTableData), request.boq_item_id]);
+
+          // Sync additions, edits, and deletions into the global product
+          // library so Manage Product (and the next "+ Add Product" for this
+          // product) reflect them. This has to touch every table that stores
+          // a copy of the product's material list, mirroring exactly what
+          // "Manage Product -> Edit -> Save" itself writes to:
+          //   - step11_product_items   (the "Approved" config Manage Product shows)
+          //   - product_step3_config_items (the "draft"/working config — this is
+          //     also what Generate BOM's "+ Add Product" reads materialLines from,
+          //     see confirmAddToBom's GET /api/product-step3-config/:id call, so
+          //     skipping this table means a deleted material silently reappears
+          //     the next time this product is added to a BOM)
+          //   - product_approval_items (audit-trail row, if an 'approved' one exists)
+          if (tableData.product_id && (newItemsToInsert.length > 0 || editedItemsToSync.length > 0 || deletedItemsToSync.length > 0)) {
+            const activeConfigRes = await query(
+              `SELECT id, config_name FROM step11_products WHERE product_id = $1 ORDER BY created_at DESC LIMIT 1`,
+              [tableData.product_id]
+            );
+            const configNameForSync: string | null = activeConfigRes.rowCount && activeConfigRes.rowCount > 0
+              ? activeConfigRes.rows[0].config_name
+              : null;
+
+            // Latest draft/working config for this product (Step 3 table).
+            const step3ConfigRes = configNameForSync
+              ? await query(
+                `SELECT id FROM product_step3_config WHERE product_id = $1 AND config_name = $2 ORDER BY updated_at DESC LIMIT 1`,
+                [tableData.product_id, configNameForSync]
+              )
+              : await query(
+                `SELECT id FROM product_step3_config WHERE product_id = $1 ORDER BY updated_at DESC LIMIT 1`,
+                [tableData.product_id]
+              );
+            const step3ConfigId: number | null = step3ConfigRes.rowCount && step3ConfigRes.rowCount > 0
+              ? step3ConfigRes.rows[0].id
+              : null;
+
+            // Matching audit-trail "approved" row, if one exists.
+            const approvalRowRes = configNameForSync
+              ? await query(
+                `SELECT id FROM product_approvals WHERE product_id = $1 AND config_name = $2 AND status = 'approved'`,
+                [tableData.product_id, configNameForSync]
+              )
+              : { rowCount: 0, rows: [] as any[] };
+            const approvalRowId: number | string | null = approvalRowRes.rowCount && approvalRowRes.rowCount > 0
+              ? approvalRowRes.rows[0].id
+              : null;
+
+            if (activeConfigRes.rowCount && activeConfigRes.rowCount > 0) {
+              const step11ProductId = activeConfigRes.rows[0].id;
+
+              for (const item of newItemsToInsert) {
+                const matId = item.id || item.material_id || item.materialId || "00000000-0000-0000-0000-000000000000";
+                const matName = item.name || item.title || item.material_name || "";
+
+                const existingRes = await query(
+                  `SELECT id FROM step11_product_items WHERE step11_product_id = $1 AND (material_id::text = $2::text OR material_name = $3)`,
+                  [step11ProductId, matId, matName]
+                );
+
+                if (existingRes.rowCount && existingRes.rowCount > 0) {
+                  // Legacy item that frontend treated as "add" because it had no manualApproval.
+                  // It already exists in the global library, so just update it.
+                  await query(
+                    `UPDATE step11_product_items SET
+                       unit = $1, qty = $2, supply_rate = $3, install_rate = $4,
+                       rate = $5, amount = $6, freeze_and_edit = $7,
+                       apply_wastage = $8, shop_name = $9, base_qty = $10,
+                       wastage_pct = $11, location = $12, description = $13
+                     WHERE step11_product_id = $14 
+                     AND (
+                       material_id::text = $15::text 
+                       OR material_name = $16
+                     )`,
+                    [
+                      item.unit || "nos",
+                      item.qty || 0,
+                      item.supplyRate ?? item.supply_rate ?? 0,
+                      item.installRate ?? item.install_rate ?? 0,
+                      (item.supplyRate ?? item.supply_rate ?? 0) + (item.installRate ?? item.install_rate ?? 0),
+                      (item.qty || 0) * ((item.supplyRate ?? item.supply_rate ?? 0) + (item.installRate ?? item.install_rate ?? 0)),
+                      item.freezeAndEdit === true || item.freeze_and_edit === true,
+                      item.applyWastage !== undefined ? item.applyWastage : true,
+                      item.shopName || item.shop_name || null,
+                      item.baseQty ?? item.qty ?? 0,
+                      item.wastagePct !== undefined ? item.wastagePct : null,
+                      item.location || "",
+                      item.description ?? null,
+                      step11ProductId,
+                      matId,
+                      matName
+                    ]
+                  );
+                } else {
+                  await query(
+                    `INSERT INTO step11_product_items 
+                           (step11_product_id, material_id, material_name, unit, qty, supply_rate, install_rate, rate, amount, location, freeze_and_edit, apply_wastage, shop_name, base_qty, wastage_pct, description)
+                           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+                    [
+                      step11ProductId,
+                      matId,
+                      matName,
+                      item.unit || "nos",
+                      item.qty || 0,
+                      item.supplyRate ?? item.supply_rate ?? 0,
+                      item.installRate ?? item.install_rate ?? 0,
+                      (item.supplyRate ?? item.supply_rate ?? 0) + (item.installRate ?? item.install_rate ?? 0),
+                      (item.qty || 0) * ((item.supplyRate ?? item.supply_rate ?? 0) + (item.installRate ?? item.install_rate ?? 0)),
+                      item.location || "",
+                      item.freezeAndEdit === true || item.freeze_and_edit === true,
+                      item.applyWastage !== undefined ? item.applyWastage : true,
+                      item.shopName || item.shop_name || null,
+                      item.baseQty ?? item.qty ?? 0,
+                      item.wastagePct !== undefined ? item.wastagePct : null,
+                      item.description ?? null
+                    ]
+                  );
+                }
+              }
+
+              // Best-effort match on material_id (falling back to name) —
+              // step11_items entries don't carry a direct FK to their
+              // step11_product_items row, so this mirrors how "add" already
+              // links the two tables loosely.
+              for (const item of editedItemsToSync) {
+                const materialId = item.id || item.material_id || item.materialId;
+                const supplyRate = item.supplyRate ?? item.supply_rate ?? 0;
+                const installRate = item.installRate ?? item.install_rate ?? 0;
+                await query(
+                  `UPDATE step11_product_items SET
+                     qty = $1, supply_rate = $2, install_rate = $3, rate = $4, amount = $5,
+                     freeze_and_edit = $6, apply_wastage = $7, base_qty = $8, wastage_pct = $9,
+                     description = $10
+                   WHERE step11_product_id = $11 AND (
+                     ($12::uuid IS NOT NULL AND material_id = $12::uuid) OR
+                     ($12::uuid IS NULL AND material_name = $13)
+                   )`,
+                  [
+                    item.qty || 0,
+                    supplyRate,
+                    installRate,
+                    supplyRate + installRate,
+                    (item.qty || 0) * (supplyRate + installRate),
+                    item.freezeAndEdit === true || item.freeze_and_edit === true,
+                    item.applyWastage !== undefined ? item.applyWastage : true,
+                    item.baseQty ?? item.qty ?? 0,
+                    item.wastagePct !== undefined ? item.wastagePct : null,
+                    item.description ?? null,
+                    step11ProductId,
+                    materialId || null,
+                    item.name || item.title || item.material_name,
+                  ]
+                );
+              }
+
+              for (const item of deletedItemsToSync) {
+                const materialId = item.id || item.material_id || item.materialId;
+                await query(
+                  `DELETE FROM step11_product_items
+                   WHERE step11_product_id = $1 AND (
+                     ($2::uuid IS NOT NULL AND material_id = $2::uuid) OR
+                     ($2::uuid IS NULL AND material_name = $3)
+                   )`,
+                  [step11ProductId, materialId || null, item.name || item.title || item.material_name]
+                );
+              }
+
+              // Update total cost of the config
+              await query(
+                `UPDATE step11_products 
+                       SET total_cost = (
+                           SELECT COALESCE(SUM(qty * (COALESCE(supply_rate, 0) + COALESCE(install_rate, 0))), 0) 
+                           FROM step11_product_items 
+                           WHERE step11_product_id = $1
+                       )
+                       WHERE id = $1`,
+                [step11ProductId]
+              );
+            }
+
+            // Mirror the exact same add / edit / delete into the Step 3
+            // draft/working config — this is what confirmAddToBom actually
+            // reads materialLines from (GET /api/product-step3-config/:id),
+            // so without this a deleted material would reappear the next
+            // time the product is added to a BOM even though it's gone
+            // from the "Approved" config above.
+            if (step3ConfigId) {
+              for (const item of newItemsToInsert) {
+                const matId = item.id || item.material_id || item.materialId || null;
+                const matName = item.name || item.title || item.material_name || "";
+                const supplyRate = item.supplyRate ?? item.supply_rate ?? 0;
+                const installRate = item.installRate ?? item.install_rate ?? 0;
+
+                const existingRes = await query(
+                  `SELECT id FROM product_step3_config_items WHERE step3_config_id = $1 AND (
+                     ($2::text IS NOT NULL AND material_id::text = $2::text) OR material_name = $3
+                   )`,
+                  [step3ConfigId, matId, matName]
+                );
+
+                if (existingRes.rowCount && existingRes.rowCount > 0) {
+                  await query(
+                    `UPDATE product_step3_config_items SET
+                       unit = $1, qty = $2, supply_rate = $3, install_rate = $4, rate = $5,
+                       amount = $6, freeze_and_edit = $7, apply_wastage = $8, shop_name = $9,
+                       base_qty = $10, wastage_pct = $11, location = $12, description = $13
+                     WHERE step3_config_id = $14 AND (
+                       ($15::text IS NOT NULL AND material_id::text = $15::text) OR material_name = $16
+                     )`,
+                    [
+                      item.unit || "nos", item.qty || 0, supplyRate, installRate,
+                      supplyRate + installRate, (item.qty || 0) * (supplyRate + installRate),
+                      item.freezeAndEdit === true || item.freeze_and_edit === true,
+                      item.applyWastage !== undefined ? item.applyWastage : true,
+                      item.shopName || item.shop_name || null,
+                      item.baseQty ?? item.qty ?? 0,
+                      item.wastagePct !== undefined ? item.wastagePct : null,
+                      item.location || "",
+                      item.description ?? null,
+                      step3ConfigId, matId, matName,
+                    ]
+                  );
+                } else {
+                  await query(
+                    `INSERT INTO product_step3_config_items
+                       (step3_config_id, material_id, material_name, unit, qty, supply_rate, install_rate, rate, amount, location, freeze_and_edit, apply_wastage, shop_name, base_qty, wastage_pct, description)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+                    [
+                      step3ConfigId, matId, matName, item.unit || "nos", item.qty || 0,
+                      supplyRate, installRate, supplyRate + installRate,
+                      (item.qty || 0) * (supplyRate + installRate), item.location || "",
+                      item.freezeAndEdit === true || item.freeze_and_edit === true,
+                      item.applyWastage !== undefined ? item.applyWastage : true,
+                      item.shopName || item.shop_name || null,
+                      item.baseQty ?? item.qty ?? 0,
+                      item.wastagePct !== undefined ? item.wastagePct : null,
+                      item.description ?? null,
+                    ]
+                  );
+                }
+              }
+
+              for (const item of editedItemsToSync) {
+                const materialId = item.id || item.material_id || item.materialId || null;
+                const supplyRate = item.supplyRate ?? item.supply_rate ?? 0;
+                const installRate = item.installRate ?? item.install_rate ?? 0;
+                await query(
+                  `UPDATE product_step3_config_items SET
+                     qty = $1, supply_rate = $2, install_rate = $3, rate = $4, amount = $5,
+                     freeze_and_edit = $6, apply_wastage = $7, base_qty = $8, wastage_pct = $9,
+                     description = $10
+                   WHERE step3_config_id = $11 AND (
+                     ($12::text IS NOT NULL AND material_id::text = $12::text) OR material_name = $13
+                   )`,
+                  [
+                    item.qty || 0, supplyRate, installRate, supplyRate + installRate,
+                    (item.qty || 0) * (supplyRate + installRate),
+                    item.freezeAndEdit === true || item.freeze_and_edit === true,
+                    item.applyWastage !== undefined ? item.applyWastage : true,
+                    item.baseQty ?? item.qty ?? 0,
+                    item.wastagePct !== undefined ? item.wastagePct : null,
+                    item.description ?? null,
+                    step3ConfigId, materialId, item.name || item.title || item.material_name,
+                  ]
+                );
+              }
+
+              for (const item of deletedItemsToSync) {
+                const materialId = item.id || item.material_id || item.materialId || null;
+                await query(
+                  `DELETE FROM product_step3_config_items
+                   WHERE step3_config_id = $1 AND (
+                     ($2::text IS NOT NULL AND material_id::text = $2::text) OR material_name = $3
+                   )`,
+                  [step3ConfigId, materialId, item.name || item.title || item.material_name]
+                );
+              }
+
+              await query(
+                `UPDATE product_step3_config
+                   SET total_cost = (
+                     SELECT COALESCE(SUM(qty * (COALESCE(supply_rate, 0) + COALESCE(install_rate, 0))), 0)
+                     FROM product_step3_config_items WHERE step3_config_id = $1
+                   ), updated_at = NOW()
+                 WHERE id = $1`,
+                [step3ConfigId]
+              );
+            }
+
+            // Keep the audit-trail "approved" record's own item list in sync too,
+            // exactly like save-approved-edit does, so its history stays accurate.
+            if (approvalRowId) {
+              for (const item of newItemsToInsert) {
+                const matId = item.id || item.material_id || item.materialId || null;
+                const matName = item.name || item.title || item.material_name || "";
+                const supplyRate = item.supplyRate ?? item.supply_rate ?? 0;
+                const installRate = item.installRate ?? item.install_rate ?? 0;
+
+                const existingRes = await query(
+                  `SELECT id FROM product_approval_items WHERE approval_id = $1 AND (
+                     ($2::text IS NOT NULL AND material_id::text = $2::text) OR material_name = $3
+                   )`,
+                  [approvalRowId, matId, matName]
+                );
+
+                if (existingRes.rowCount && existingRes.rowCount > 0) {
+                  await query(
+                    `UPDATE product_approval_items SET
+                       unit = $1, qty = $2, supply_rate = $3, install_rate = $4, rate = $5,
+                       amount = $6, freeze_and_edit = $7, apply_wastage = $8, shop_name = $9,
+                       base_qty = $10, wastage_pct = $11, location = $12, description = $13
+                     WHERE approval_id = $14 AND (
+                       ($15::text IS NOT NULL AND material_id::text = $15::text) OR material_name = $16
+                     )`,
+                    [
+                      item.unit || "nos", item.qty || 0, supplyRate, installRate,
+                      supplyRate + installRate, (item.qty || 0) * (supplyRate + installRate),
+                      item.freezeAndEdit === true || item.freeze_and_edit === true,
+                      item.applyWastage !== undefined ? item.applyWastage : true,
+                      item.shopName || item.shop_name || null,
+                      item.baseQty ?? item.qty ?? 0,
+                      item.wastagePct !== undefined ? item.wastagePct : null,
+                      item.location || "",
+                      item.description ?? null,
+                      approvalRowId, matId, matName,
+                    ]
+                  );
+                } else {
+                  await query(
+                    `INSERT INTO product_approval_items
+                       (approval_id, material_id, material_name, unit, qty, supply_rate, install_rate, rate, amount, location, freeze_and_edit, apply_wastage, shop_name, base_qty, wastage_pct, description)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+                    [
+                      approvalRowId, matId, matName, item.unit || "nos", item.qty || 0,
+                      supplyRate, installRate, supplyRate + installRate,
+                      (item.qty || 0) * (supplyRate + installRate), item.location || "",
+                      item.freezeAndEdit === true || item.freeze_and_edit === true,
+                      item.applyWastage !== undefined ? item.applyWastage : true,
+                      item.shopName || item.shop_name || null,
+                      item.baseQty ?? item.qty ?? 0,
+                      item.wastagePct !== undefined ? item.wastagePct : null,
+                      item.description ?? null,
+                    ]
+                  );
+                }
+              }
+
+              for (const item of editedItemsToSync) {
+                const materialId = item.id || item.material_id || item.materialId || null;
+                const supplyRate = item.supplyRate ?? item.supply_rate ?? 0;
+                const installRate = item.installRate ?? item.install_rate ?? 0;
+                await query(
+                  `UPDATE product_approval_items SET
+                     qty = $1, supply_rate = $2, install_rate = $3, rate = $4, amount = $5,
+                     freeze_and_edit = $6, apply_wastage = $7, base_qty = $8, wastage_pct = $9,
+                     description = $10
+                   WHERE approval_id = $11 AND (
+                     ($12::text IS NOT NULL AND material_id::text = $12::text) OR material_name = $13
+                   )`,
+                  [
+                    item.qty || 0, supplyRate, installRate, supplyRate + installRate,
+                    (item.qty || 0) * (supplyRate + installRate),
+                    item.freezeAndEdit === true || item.freeze_and_edit === true,
+                    item.applyWastage !== undefined ? item.applyWastage : true,
+                    item.baseQty ?? item.qty ?? 0,
+                    item.wastagePct !== undefined ? item.wastagePct : null,
+                    item.description ?? null,
+                    approvalRowId, materialId, item.name || item.title || item.material_name,
+                  ]
+                );
+              }
+
+              for (const item of deletedItemsToSync) {
+                const materialId = item.id || item.material_id || item.materialId || null;
+                await query(
+                  `DELETE FROM product_approval_items
+                   WHERE approval_id = $1 AND (
+                     ($2::text IS NOT NULL AND material_id::text = $2::text) OR material_name = $3
+                   )`,
+                  [approvalRowId, materialId, item.name || item.title || item.material_name]
+                );
+              }
+
+              await query(
+                `UPDATE product_approvals
+                   SET total_cost = (
+                     SELECT COALESCE(SUM(qty * (COALESCE(supply_rate, 0) + COALESCE(install_rate, 0))), 0)
+                     FROM product_approval_items WHERE approval_id = $1
+                   ), updated_at = NOW()
+                 WHERE id = $1`,
+                [approvalRowId]
+              );
+            }
+          }
+
+        } else {
+          // save_as: create a brand new Product Card from the approved
+          // snapshot, using the same insert shape as the existing manual
+          // "+ Add Item" / "+ Add Product" flow. Source card is only
+          // unlocked, never modified otherwise.
+          const snapshotItems: any[] = Array.isArray(request.items) ? request.items : JSON.parse(request.items || "[]");
+          const calcResults = request.calculated_results ? (typeof request.calculated_results === "string" ? JSON.parse(request.calculated_results) : request.calculated_results) : {};
+          const productConfig = calcResults.productConfig || {};
+
+          const newItems = snapshotItems.map((it: any, i: number) => {
+            const { manualApproval, manual, is_pending, ...rest } = it || {};
+            return { ...rest, s_no: i + 1 };
+          });
+
+          // Build configBasis for a modern product definition (if dimensions were provided in Save As)
+          const configBasis = productConfig.requiredUnitType ? {
+            requiredUnitType: productConfig.requiredUnitType,
+            baseRequiredQty: Number(productConfig.baseRequiredQty) || 1,
+            wastagePctDefault: 0,
+            dimA: productConfig.dimA !== undefined ? Number(productConfig.dimA) : undefined,
+            dimB: productConfig.dimB !== undefined ? Number(productConfig.dimB) : undefined,
+            dimC: productConfig.dimC !== undefined ? Number(productConfig.dimC) : undefined,
+          } : undefined;
+
+          // Convert items to materialLines for modern product definition
+          const materialLines = configBasis ? newItems.map((it: any) => ({
+            id: it.materialId || it.id,
+            name: it.name || it.title,
+            unit: it.unit,
+            location: it.location || "Main Area",
+            baseQty: Number(it.qty ?? it.baseQty ?? 0),
+            wastagePct: it.wastagePct,
+            supplyRate: Number(it.supplyRate ?? it.supply_rate ?? 0),
+            installRate: Number(it.installRate ?? it.install_rate ?? 0),
+            shop_name: it.shop_name,
+            shop_id: it.shop_id,
+            applyWastage: it.applyWastage !== false,
+            applyRounding: true,
+            freezeAndEdit: it.freezeAndEdit,
+            description: it.description || it.title || it.name
+          })) : undefined;
+
+          const newItemId = `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const maxSortOrderResult = await query(`SELECT MAX(sort_order) as max_sort_order FROM boq_items WHERE version_id = $1`, [boqRow.version_id]);
+          const nextSortOrder = (maxSortOrderResult.rows[0]?.max_sort_order || 0) + 1;
+
+          const newTableData = {
+            product_name: request.new_product_name,
+            category: productConfig.category || tableData.category || "General",
+            category_name: productConfig.category || tableData.category_name || tableData.category || "General",
+            subcategory: productConfig.subcategory || null,
+            description: productConfig.description || null,
+            step11_items: newItems,
+            configBasis,
+            materialLines,
+            targetRequiredQty: 1, // Target defaults to 1 when a new product is spawned via Save As
+            finalize_description: productConfig.description || newItems[0]?.description || request.new_product_name,
+            save_as_source_boq_item_id: request.boq_item_id,
+            save_as_request_id: id,
+          };
+
+          // 1. Get or Create global product in Product Library, using the
+          // category/subcategory chosen in the Save As wizard (falls back to
+          // the source product's category if none was picked for some reason).
+          const chosenCategory = productConfig.category || tableData.category || null;
+          const chosenSubcategory = productConfig.subcategory || null;
+          let globalProductId: string;
+          const existingProductRes = await query(
+            `SELECT id FROM products WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
+            [request.new_product_name]
+          );
+
+          if (existingProductRes.rowCount && existingProductRes.rowCount > 0) {
+            globalProductId = existingProductRes.rows[0].id;
+            // Keep the product's category/subcategory in sync with what was
+            // chosen for this Save As request (only overwrites when provided).
+            await query(
+              `UPDATE products SET category = COALESCE($1, category), subcategory = COALESCE($2, subcategory) WHERE id = $3`,
+              [chosenCategory, chosenSubcategory, globalProductId]
+            );
+            // If this product was previously trashed/archived, restore it
+            // so it shows up in Manage Product again.
+            await query(
+              `DELETE FROM archive_records WHERE module = 'products' AND origin_id = $1`,
+              [globalProductId]
+            );
+          } else {
+            const productResult = await query(
+              `INSERT INTO products (name, category, subcategory, created_by) VALUES ($1, $2, $3, $4) RETURNING id`,
+              [request.new_product_name, chosenCategory, chosenSubcategory, approvedByName]
+            );
+            globalProductId = productResult.rows[0].id;
+          }
+
+          // 2. Calculate total_cost and create the product configuration
+          const itemsToInsert = materialLines || newItems;
+          let totalCost = 0;
+          for (const item of itemsToInsert) {
+            const q = Number(item.qty ?? item.baseQty ?? 0);
+            const sr = Number(item.supplyRate ?? item.supply_rate ?? 0);
+            const ir = Number(item.installRate ?? item.install_rate ?? 0);
+            totalCost += q * (sr + ir);
+          }
+
+          const step11ProductResult = await query(
+            `INSERT INTO step11_products (product_id, product_name, config_name, category_id, subcategory_id, total_cost, required_unit_type, base_required_qty, wastage_pct_default, dim_a, dim_b, dim_c, description, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+             RETURNING id`,
+            [
+              globalProductId,
+              request.new_product_name,
+              `Save As Config - ${id.substring(0, 8)}`,
+              chosenCategory,
+              chosenSubcategory,
+              totalCost,
+              configBasis?.requiredUnitType || 'Sqft',
+              configBasis?.baseRequiredQty || 1,
+              Number(productConfig.wastagePctDefault) || 0,
+              configBasis?.dimA || null,
+              configBasis?.dimB || null,
+              configBasis?.dimC || null,
+              productConfig.description || null,
+            ]
+          );
+          const step11ProductId = step11ProductResult.rows[0].id;
+
+          // 3. Create the product items
+          for (let i = 0; i < itemsToInsert.length; i++) {
+            const item = itemsToInsert[i];
+            await query(
+              `INSERT INTO step11_product_items 
+               (step11_product_id, material_id, material_name, unit, qty, supply_rate, install_rate, rate, amount, location, freeze_and_edit, apply_wastage, shop_name, base_qty, wastage_pct)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+              [
+                step11ProductId,
+                item.id || item.material_id || item.materialId,
+                item.name || item.title || item.material_name,
+                item.unit,
+                item.qty,
+                item.supplyRate ?? item.supply_rate ?? 0,
+                item.installRate ?? item.install_rate ?? 0,
+                (item.supplyRate ?? item.supply_rate ?? 0) + (item.installRate ?? item.install_rate ?? 0),
+                (item.qty || 0) * ((item.supplyRate ?? item.supply_rate ?? 0) + (item.installRate ?? item.install_rate ?? 0)),
+                item.location || 'Main Area',
+                item.freezeAndEdit === true,
+                item.applyWastage !== false,
+                item.shop_name || item.shopName || null,
+                item.baseQty ?? item.qty,
+                item.wastagePct !== undefined ? item.wastagePct : null
+              ]
+            );
+          }
+
+          // 4. Create an 'approved' record in product_approvals so the product
+          //    shows under "Approved" in Manage Product (not "Needs Work")
+          const configNameForApproval = `Save As Config - ${id.substring(0, 8)}`;
+          await query(
+            `INSERT INTO product_approvals (
+              product_id, product_name, config_name, category_id, subcategory_id, total_cost,
+              required_unit_type, base_required_qty, wastage_pct_default,
+              dim_a, dim_b, dim_c, status, created_by, created_at, updated_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'approved',$13,NOW(),NOW())`,
+            [
+              globalProductId,
+              request.new_product_name,
+              configNameForApproval,
+              chosenCategory,
+              chosenSubcategory,
+              totalCost,
+              configBasis?.requiredUnitType || 'Sqft',
+              configBasis?.baseRequiredQty || 1,
+              0,
+              configBasis?.dimA || null,
+              configBasis?.dimB || null,
+              configBasis?.dimC || null,
+              approvedByName
+            ]
+          );
+
+          // 5. Update the newTableData to link to the global product
+          (newTableData as any).product_id = globalProductId;
+
+          // 6. Insert into current BOM (fix varchar 50 error on estimator)
+          const estimatorId = `save_as_${id.substring(0, 8)}`;
+          await query(
+            `INSERT INTO boq_items (id, project_id, estimator, table_data, version_id, user_added, sort_order, computed_value, created_at)
+             VALUES ($1, $2, $3, $4, $5, true, $6, $7, NOW())`,
+            [newItemId, boqRow.project_id, estimatorId, JSON.stringify(newTableData), boqRow.version_id || null, nextSortOrder, computeItemValue(newTableData)]
+          );
+          createdBoqItemId = newItemId;
+
+          const updatedStep11 = step11Items.filter((it: any, idx: number) => {
+            // Remove items at the submitted indexes — they have been moved
+            // into the new product card created above.
+            if (itemIndexes.includes(idx)) {
+              return false; // Remove this item
+            }
+            return true; // Keep this item
+          });
+          if (updatedStep11.length === 0) {
+            // Delete the empty source card from the BOM
+            await query(`DELETE FROM boq_items WHERE id = $1`, [request.boq_item_id]);
+          } else {
+            const updatedTableData = { ...tableData, step11_items: updatedStep11 };
+            await query(`UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`, [JSON.stringify(updatedTableData), computeItemValue(updatedTableData), request.boq_item_id]);
+          }
+
+          if (boqRow.version_id) {
+            await query(
+              `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name) VALUES ($1, $2, $3, $4, $5, $6)`,
+              [boqRow.version_id, approvedBy, approvedByName, "ADDED", newItemId, request.new_product_name]
+            );
+          }
+        }
+
+        await query(
+          `UPDATE boq_manual_item_requests SET status = 'approved', approved_by = $1, approved_by_name = $2, decided_at = NOW(), updated_at = NOW(), created_boq_item_id = $3 WHERE id = $4`,
+          [approvedBy, approvedByName, createdBoqItemId, id]
+        );
+
+        try {
+          await recalculateProjectValue(boqRow.project_id, boqRow.version_id || undefined);
+        } catch (recalcErr) {
+          console.warn("boq-manual-item-requests approve — recalculateProjectValue failed (non-fatal):", recalcErr);
+        }
+
+        res.json({ message: "Approved", createdBoqItemId });
+      } catch (err) {
+        console.error("POST /api/boq-manual-item-requests/:id/approve error:", err);
+        res.status(500).json({ message: "Failed to approve request", error: (err as any)?.message });
+      }
+    }
+  );
+
+  // POST /api/boq-manual-item-requests/:id/reject
+  app.post(
+    "/api/boq-manual-item-requests/:id/reject",
+    authMiddleware,
+    requireRole("admin", "software_team"),
+    async (req: Request, res: Response) => {
+      try {
+        const { id } = req.params;
+        const { reason } = req.body || {};
+        const reqRes = await query(`SELECT * FROM boq_manual_item_requests WHERE id = $1 AND status = 'pending'`, [id]);
+        if (reqRes.rowCount === 0) {
+          res.status(404).json({ message: "Pending request not found" });
+          return;
+        }
+        const request = reqRes.rows[0];
+        const itemIndexes: number[] = Array.isArray(request.item_indexes) ? request.item_indexes : JSON.parse(request.item_indexes || "[]");
+        const userObj = (req.user as any) || {};
+        const rejectedBy = userObj.id || "system";
+        const rejectedByName = userObj.fullName || userObj.username || "System";
+
+        const boqRes = await query(`SELECT id, project_id, version_id, table_data FROM boq_items WHERE id = $1`, [request.boq_item_id]);
+        if (boqRes.rowCount && boqRes.rowCount > 0) {
+          const boqRow = boqRes.rows[0];
+          const tableData = typeof boqRow.table_data === "string" ? JSON.parse(boqRow.table_data) : (boqRow.table_data || {});
+          const step11Items: any[] = Array.isArray(tableData.step11_items) ? tableData.step11_items : [];
+          const materialLines: any[] = Array.isArray(tableData.materialLines) ? tableData.materialLines : [];
+
+          let updatedStep11: any[];
+          if (request.type === "save") {
+            // Only truly-new "add" items never belonged to the approved
+            // product — remove those on reject. Items that were only
+            // proposed for editing or deletion were already live on the
+            // product, so they must simply be unlocked, unchanged.
+            updatedStep11 = step11Items
+              .map((it: any, idx: number) => {
+                if (!itemIndexes.includes(idx)) return it;
+                if (!it.manualApproval || it.manualApproval.requestId !== id) return it;
+                const action = it.manualApproval.action || "add";
+                if (action === "add") return null;
+                const { manualApproval, ...rest } = it;
+                return rest;
+              })
+              .filter((it: any) => it !== null);
+          } else {
+            // save_as rejected: original product is untouched, just unlock.
+            updatedStep11 = step11Items.map((it: any, idx: number) => {
+              if (!itemIndexes.includes(idx)) return it;
+              if (!it.manualApproval || it.manualApproval.requestId !== id) return it;
+              const { manualApproval, ...rest } = it;
+              return rest;
+            });
+          }
+          // Un-flag any materialLine deletions this request proposed — they
+          // were never removed anywhere, so rejecting just clears the
+          // pending marker and the material reappears as before.
+          const updatedMaterialLines = materialLines.map((line: any) => {
+            if (!line?.manualApproval || line.manualApproval.requestId !== id) return line;
+            const { manualApproval, ...rest } = line;
+            return rest;
+          });
+          const updatedTableData = {
+            ...tableData,
+            step11_items: updatedStep11,
+            ...(materialLines.length > 0 ? { materialLines: updatedMaterialLines } : {}),
+          };
+          await query(`UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`, [JSON.stringify(updatedTableData), computeItemValue(updatedTableData), request.boq_item_id]);
+          try {
+            await recalculateProjectValue(boqRow.project_id, boqRow.version_id || undefined);
+          } catch (recalcErr) {
+            console.warn("boq-manual-item-requests reject — recalculateProjectValue failed (non-fatal):", recalcErr);
+          }
+        }
+
+        await query(
+          `UPDATE boq_manual_item_requests SET status = 'rejected', rejection_reason = $1, approved_by = $2, approved_by_name = $3, decided_at = NOW(), updated_at = NOW() WHERE id = $4`,
+          [reason || null, rejectedBy, rejectedByName, id]
+        );
+
+        res.json({ message: "Rejected" });
+      } catch (err) {
+        console.error("POST /api/boq-manual-item-requests/:id/reject error:", err);
+        res.status(500).json({ message: "Failed to reject request", error: (err as any)?.message });
       }
     }
   );

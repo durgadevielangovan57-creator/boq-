@@ -1,4 +1,5 @@
 ﻿import React, { useEffect, useState, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { Reorder, useDragControls } from "framer-motion";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
@@ -91,7 +92,8 @@ import {
   Star,
   GitMerge,
   Check,
-  FolderOpen
+  FolderOpen,
+  Package
 } from "lucide-react";
 import { BoqAnalysisDialog } from "@/components/BoqAnalysisDialog";
 import { RateSuggestionPopover } from "@/components/RateSuggestionPopover";
@@ -217,6 +219,40 @@ const getItemMetrics = (td: any) => {
     itemTotal = finalRate * itemQty;
   }
   return { itemTotal, itemQty, itemRate: finalRate, step11 };
+};
+
+/**
+ * Single source of truth for the quantity used anywhere in Finalize BOQ
+ * (display, totals, exports, PDF).
+ *
+ * Priority (highest first):
+ *   1. Lump sum (explicit `is_lump_sum` flag OR unit typed as "ls") → always 1.
+ *   2. `productQuantities` (live in-memory state for this item) — this is
+ *      always kept in sync: it is (re)seeded from the BOM's `targetRequiredQty`
+ *      every time the item is loaded (see the `restoredQtys` / new-item
+ *      restore logic below), and only ever changes after that when the user
+ *      *directly* types into the Qty cell. So on a fresh load it reflects
+ *      the current BOM value, and if the user edits it, their edit is
+ *      respected — the field stays fully editable, same as before.
+ *   3. BOM-driven qty (`targetRequiredQty`) as a fallback for the brief
+ *      moment before `productQuantities` has been seeded.
+ *   4. Fallback to the first step11 item's qty, or 0.
+ */
+const getEffectiveQty = (
+  td: any,
+  itemId: string,
+  productQuantities: { [id: string]: string },
+  productUnits: { [id: string]: string },
+  fallbackQty: number
+): number => {
+  const isLumpSum = td?.is_lump_sum === true || productUnits[itemId]?.toLowerCase() === 'ls';
+  if (isLumpSum) return 1;
+  const manualQtyStr = productQuantities[itemId];
+  if (manualQtyStr !== undefined) return parseFloat(manualQtyStr) || 0;
+  if (td?.targetRequiredQty !== undefined && td?.targetRequiredQty !== null) {
+    return Number(td.targetRequiredQty);
+  }
+  return Number(fallbackQty) || 0;
 };
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -821,6 +857,104 @@ export default function FinalizeBoq() {
   const [showDisabledVersionsDialog, setShowDisabledVersionsDialog] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Copy BOQ Settings (to another version) dialog state
+  const [isCopySettingsDialogOpen, setIsCopySettingsDialogOpen] = useState(false);
+  const [copySettingsSourceVersionId, setCopySettingsSourceVersionId] = useState<string>("");
+  const [isCopyingSettings, setIsCopyingSettings] = useState(false);
+
+  // BOM View floating panel state — shows the linked BOM version's items
+  // without leaving Finalize BOQ.
+  const [isBomViewOpen, setIsBomViewOpen] = useState(false);
+  const [bomViewItems, setBomViewItems] = useState<any[]>([]);
+  // Panel is anchored to the TOP-LEFT of the viewport by default (so a tall
+  // item list never pushes it off-screen the way bottom-anchoring did).
+  // bomViewPos is an x/y offset in px from that anchor, changed by dragging
+  // the header. bomViewSize is the panel's own width/height, changed by
+  // dragging the resize handle in the bottom-right corner.
+  const BOM_VIEW_DEFAULT_SIZE = { width: 400, height: 560 };
+  const BOM_VIEW_MIN_SIZE = { width: 300, height: 260 };
+  const [bomViewPos, setBomViewPos] = useState({ x: 0, y: 0 });
+  const [bomViewSize, setBomViewSize] = useState(BOM_VIEW_DEFAULT_SIZE);
+  // Lets the user manage how big each item card renders inside the panel —
+  // independent of the panel's own width/height (bomViewSize above, changed
+  // by dragging the corner handle).
+  const [bomViewCardSize, setBomViewCardSize] = useState<"sm" | "md" | "lg">("md");
+  const BOM_VIEW_CARD_SIZE_STYLES: Record<"sm" | "md" | "lg", {
+    name: string; label: string; stat: string; badge: string; sno: string; cellPad: string; rowPad: string;
+  }> = {
+    sm: { name: "text-[10.5px]", label: "text-[7px]", stat: "text-[10px]", badge: "text-[7px] px-1 py-0.5", sno: "text-[8px] h-3.5 min-w-[16px]", cellPad: "px-2 py-1", rowPad: "px-2 pt-1.5 pb-1.5" },
+    md: { name: "text-[11.5px]", label: "text-[8px]", stat: "text-[11px]", badge: "text-[8px] px-1.5 py-0.5", sno: "text-[9px] h-4 min-w-[18px]", cellPad: "px-2 py-1.5", rowPad: "px-2.5 pt-2 pb-2" },
+    lg: { name: "text-[13.5px]", label: "text-[9px]", stat: "text-[13px]", badge: "text-[9px] px-2 py-1", sno: "text-[10px] h-5 min-w-[20px]", cellPad: "px-2.5 py-2", rowPad: "px-3 pt-2.5 pb-2.5" },
+  };
+  const bomViewDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+  const bomViewResizeRef = useRef<{ startX: number; startY: number; origW: number; origH: number } | null>(null);
+
+  const handleBomViewDragStart = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return; // left-click / primary touch only
+    e.preventDefault();
+    bomViewDragRef.current = { startX: e.clientX, startY: e.clientY, origX: bomViewPos.x, origY: bomViewPos.y };
+    // Prevent the page from selecting text and force a "grabbing" cursor for
+    // the whole document while dragging — without this the drag looks janky
+    // because the mouse can leave the header and start highlighting text.
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "move";
+    const onMove = (moveEv: MouseEvent) => {
+      if (!bomViewDragRef.current) return;
+      const { startX, startY, origX, origY } = bomViewDragRef.current;
+      const nextX = origX + (moveEv.clientX - startX);
+      const nextY = origY + (moveEv.clientY - startY);
+      // Keep the header reachable on-screen, and never allow the panel to be
+      // dragged back up over the top navbar — 0 is the anchor's own top-left
+      // corner, so the panel can only move down/right from there, or partway
+      // off the left edge while staying grabbable.
+      setBomViewPos({
+        x: Math.max(-200, Math.min(nextX, window.innerWidth - 120)),
+        y: Math.max(0, Math.min(nextY, window.innerHeight - 60)),
+      });
+    };
+    const onUp = () => {
+      bomViewDragRef.current = null;
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [bomViewPos]);
+
+  const handleBomViewResizeStart = useCallback((e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    bomViewResizeRef.current = { startX: e.clientX, startY: e.clientY, origW: bomViewSize.width, origH: bomViewSize.height };
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "nwse-resize";
+    const onMove = (moveEv: MouseEvent) => {
+      if (!bomViewResizeRef.current) return;
+      const { startX, startY, origW, origH } = bomViewResizeRef.current;
+      setBomViewSize({
+        width: Math.max(BOM_VIEW_MIN_SIZE.width, Math.min(origW + (moveEv.clientX - startX), window.innerWidth - 40)),
+        height: Math.max(BOM_VIEW_MIN_SIZE.height, Math.min(origH + (moveEv.clientY - startY), window.innerHeight - 40)),
+      });
+    };
+    const onUp = () => {
+      bomViewResizeRef.current = null;
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [bomViewSize]);
+
+  const [isBomViewLoading, setIsBomViewLoading] = useState(false);
+
   // Dynamic formula popover lock state
   const [activeFormulaCell, setActiveFormulaCell] = useState<{ itemId: string; colName: string } | null>(null);
 
@@ -984,6 +1118,35 @@ export default function FinalizeBoq() {
 
     return filtered;
   }, [boqItems, boqSearchTerm, categoryFilter, categoryOrder]);
+
+  // BOM View (compact panel) items, re-sorted to follow the exact same
+  // category order as the main Finalize BOQ table (categoryOrder) — the
+  // linked BOM version's items come back from the server in their own saved
+  // sequence, which doesn't necessarily match the category order the user
+  // has arranged here. Items are grouped by category in that order; the
+  // relative sequence of items within a category is left exactly as the
+  // server returned it (stable sort).
+  const sortedBomViewItems = React.useMemo(() => {
+    const getItemCategory = (rawItem: any): string => {
+      let td = rawItem.table_data || {};
+      if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
+      return (td.category_name || td.category || "").trim();
+    };
+
+    if (categoryOrder.length === 0) return bomViewItems;
+
+    return [...bomViewItems]
+      .map((item, i) => ({ item, i }))
+      .sort((a, b) => {
+        const idxA = categoryOrder.indexOf(getItemCategory(a.item));
+        const idxB = categoryOrder.indexOf(getItemCategory(b.item));
+        const orderA = idxA === -1 ? categoryOrder.length : idxA;
+        const orderB = idxB === -1 ? categoryOrder.length : idxB;
+        if (orderA !== orderB) return orderA - orderB;
+        return a.i - b.i; // stable: preserve original relative order within a category
+      })
+      .map(({ item }) => item);
+  }, [bomViewItems, categoryOrder]);
 
   const totalPages = Math.ceil(filteredBoqItems.length / pageSize);
   const paginatedBoqItems = React.useMemo(() => {
@@ -1178,6 +1341,81 @@ export default function FinalizeBoq() {
     }
   };
 
+  const handleSupplyOnlyBulk = async () => {
+    if (selectedProductIds.size === 0) {
+      toast({ title: "No items selected", description: "Please select items first.", variant: "destructive" });
+      return;
+    }
+
+    const selectedItems = boqItems.filter(i => selectedProductIds.has(i.id));
+
+    // Helper to find column name flexibly
+    const findCol = (cols: any[], terms: string[], exclude: string[] = ["amount", "total"]) => {
+      return cols.find(c => {
+        const n = c.name.toLowerCase();
+        return terms.every(t => n.includes(t.toLowerCase())) && !exclude.some(e => n.includes(e));
+      });
+    };
+
+    const itemsToUpdate = selectedItems.filter(item => {
+      const cols = customColumns[item.id] || [];
+      const supplyCol = findCol(cols, ["supply", "rate"]);
+      const labourCol = findCol(cols, ["labour", "rate"]) || findCol(cols, ["install", "rate"]) || findCol(cols, ["service", "rate"]);
+      return supplyCol && labourCol;
+    });
+
+    if (itemsToUpdate.length === 0) {
+      toast({
+        title: "No matching items",
+        description: "Selected items must have both 'Supply Rate' and 'Labour/Install/Service Rate' columns.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    toast({ title: "Applying Supply Only", description: `Updating ${itemsToUpdate.length} item(s)...` });
+
+    try {
+      const updates = itemsToUpdate.map(async (item) => {
+        const cols = customColumns[item.id] || [];
+        const nextVals = { ...(customColumnValues[item.id] || {}) };
+        const rowVals = { ...(nextVals[0] || {}) };
+
+        const supplyCol = findCol(cols, ["supply", "rate"]);
+        const labourCol = findCol(cols, ["labour", "rate"]) || findCol(cols, ["install", "rate"]) || findCol(cols, ["service", "rate"]);
+
+        if (supplyCol && labourCol) {
+          // Update column configurations (percentage values)
+          const nextCols = cols.map(c => {
+            if (c.name === supplyCol.name) return { ...c, percentageValue: 100 };
+            if (c.name === labourCol.name) return { ...c, percentageValue: 0 };
+            return c;
+          });
+
+          // Update pre-calculated values
+          rowVals[supplyCol.name] = "100";
+          rowVals[labourCol.name] = "0";
+          nextVals[0] = rowVals;
+
+          // Update local state optimistically
+          setCustomColumns(prev => ({ ...prev, [item.id]: nextCols }));
+          setCustomColumnValues(prev => ({ ...prev, [item.id]: nextVals }));
+
+          // Persist to DB
+          return saveItemLayout(item.id, nextCols, nextVals);
+        }
+      });
+
+      await Promise.all(updates);
+      setSelectedProductIds(new Set());
+      toast({ title: "Success", description: `Supply Only applied to ${itemsToUpdate.length} items.` });
+      loadBoqItemsAndEdits(selectedBoqVersionId || selectedBomVersionId);
+    } catch (e) {
+      console.error("Supply Only bulk update failed:", e);
+      toast({ title: "Error", description: "Failed to apply bulk action.", variant: "destructive" });
+    }
+  };
+
 
 
   // BOM versions: Finalize BOQ should only ever receive the ONE BOM version that
@@ -1216,7 +1454,42 @@ export default function FinalizeBoq() {
     );
   }, [boqVersions]);
 
+  // The BOM version the currently selected BOQ version was created from
+  // (via source_version_id) — used for both the "BOM: V.." indicator and
+  // the "BOM View" floating panel, so both always point at the same,
+  // actual linked BOM version.
+  const linkedBomVersion = React.useMemo(() => {
+    const currentBoqV = filteredBoqVersions.find(v => v.id === selectedBoqVersionId);
+    return currentBoqV?.source_version_id
+      ? bomVersions.find(bv => bv.id === currentBoqV.source_version_id) || null
+      : null;
+  }, [filteredBoqVersions, selectedBoqVersionId, bomVersions]);
 
+  // Loads the linked BOM version's items fresh from the server (never from
+  // any in-memory/editing state of the currently open version) so the BOM
+  // View always reflects exactly what is saved on that BOM version.
+  const handleOpenBomView = async () => {
+    if (!linkedBomVersion) {
+      toast({ title: "No Linked BOM Version", description: "This BOQ version wasn't created from a BOM version.", variant: "destructive" });
+      return;
+    }
+    setBomViewPos({ x: 0, y: 0 }); // always reopen anchored to the corner, ignore any earlier drag
+    setBomViewSize(BOM_VIEW_DEFAULT_SIZE); // always reopen at default size, ignore any earlier resize
+    setIsBomViewOpen(true);
+    setIsBomViewLoading(true);
+    try {
+      const resp = await apiFetch(`/api/boq-items/version/${encodeURIComponent(linkedBomVersion.id)}`);
+      if (!resp.ok) throw new Error("Failed to load BOM items");
+      const data = await resp.json();
+      setBomViewItems(data.items || []);
+    } catch (e) {
+      console.error("Failed to load BOM View items:", e);
+      toast({ title: "Error", description: "Failed to load BOM items", variant: "destructive" });
+      setBomViewItems([]);
+    } finally {
+      setIsBomViewLoading(false);
+    }
+  };
 
   const snapshot = (activeVersion as any)?.last_template_snapshot;
   const getIsModified = (itemId: string, field: string, currentValue: any) => {
@@ -1600,11 +1873,7 @@ export default function FinalizeBoq() {
 
       const { itemRate, itemQty } = getItemMetrics(td);
 
-      const manualQtyStr = productQuantities[item.id];
-      const isLumpSum = td.is_lump_sum || productUnits[item.id]?.toLowerCase() === 'ls';
-      const displayQty = isLumpSum ? 1 : (manualQtyStr !== undefined
-        ? (parseFloat(manualQtyStr) || 0)
-        : itemQty);
+      const displayQty = getEffectiveQty(td, item.id, productQuantities, productUnits, itemQty);
 
       const baseTotalValue = roundOff ? Math.round(itemRate * displayQty) : itemRate * displayQty;
       totalValueSum += baseTotalValue;
@@ -1971,7 +2240,17 @@ export default function FinalizeBoq() {
             if (typeof td.finalize_description === "string") {
               restoredDescs[item.id] = td.finalize_description;
             }
-            if (td.finalize_qty !== undefined && td.finalize_qty !== null) {
+            // Seed the editable Qty cell. The BOM's `targetRequiredQty` (the
+            // "Project Target" set on the Generate BOM page) is the live,
+            // authoritative quantity, so it always wins here on load — this
+            // is what stops a stale saved `finalize_qty` override (e.g. one
+            // written incidentally while editing the Unit field) from
+            // sticking around forever after the BOM qty changes. If there is
+            // no BOM qty at all (item wasn't generated from a BOM), fall
+            // back to whatever was previously saved/typed in Finalize BOQ.
+            if (td.targetRequiredQty !== undefined && td.targetRequiredQty !== null) {
+              restoredQtys[item.id] = String(td.targetRequiredQty);
+            } else if (td.finalize_qty !== undefined && td.finalize_qty !== null) {
               restoredQtys[item.id] = String(td.finalize_qty);
             }
             if (td.finalize_unit !== undefined && td.finalize_unit !== null) {
@@ -2437,7 +2716,9 @@ export default function FinalizeBoq() {
         if (td.finalize_description) {
           setProductDescriptions(prev => ({ ...prev, [newItem.id]: td.finalize_description }));
         }
-        if (td.finalize_qty !== undefined) {
+        if (td.targetRequiredQty !== undefined && td.targetRequiredQty !== null) {
+          setProductQuantities(prev => ({ ...prev, [newItem.id]: String(td.targetRequiredQty) }));
+        } else if (td.finalize_qty !== undefined && td.finalize_qty !== null) {
           setProductQuantities(prev => ({ ...prev, [newItem.id]: String(td.finalize_qty) }));
         }
         if (td.finalize_unit) {
@@ -2651,7 +2932,7 @@ export default function FinalizeBoq() {
       let td = item.table_data || {};
       if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
       const { itemRate, itemQty } = getItemMetrics(td);
-      const displayQty = productQuantities[item.id] !== undefined ? (parseFloat(productQuantities[item.id]) || 0) : itemQty;
+      const displayQty = getEffectiveQty(td, item.id, productQuantities, productUnits, itemQty);
 
       const oRateRaw = parseFloat((overrideRates[item.id] ?? globalOverrideValue) || "0") || 0;
       const itemOverrideType = overrideTypes[item.id] ?? globalOverrideType ?? "value";
@@ -2746,7 +3027,7 @@ export default function FinalizeBoq() {
     let td = item.table_data || {};
     if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
     const { itemRate, itemQty } = getItemMetrics(td);
-    const displayQty = productQuantities[item.id] !== undefined ? (parseFloat(productQuantities[item.id]) || 0) : itemQty;
+    const displayQty = getEffectiveQty(td, item.id, productQuantities, productUnits, itemQty);
     const oRateRaw = parseFloat((overrideRates[item.id] ?? globalOverrideValue) || "0") || 0;
     const itemOverrideType = overrideTypes[item.id] ?? globalOverrideType ?? "value";
     const effectiveOverrideRate = itemOverrideType === "percentage" ? (itemRate * oRateRaw / 100) : oRateRaw;
@@ -3478,7 +3759,7 @@ export default function FinalizeBoq() {
           let td = it.table_data || {};
           if (typeof td === 'string') try { td = JSON.parse(td); } catch { td = {}; }
           acc[it.id] = {
-            qty: String(productQuantities[it.id] ?? td.finalize_qty ?? ""),
+            qty: String(getEffectiveQty(td, it.id, productQuantities, productUnits, 0)),
             rate: String(overrideRates[it.id] ?? td.finalize_override_rate ?? ""),
             unit: String(productUnits[it.id] ?? td.finalize_unit ?? ""),
             description: String(productDescriptions[it.id] ?? td.finalize_description ?? ""),
@@ -3494,7 +3775,7 @@ export default function FinalizeBoq() {
         let td = item.table_data || {};
         if (typeof td === 'string') try { td = JSON.parse(td); } catch { td = {}; }
         const { itemRate, itemQty } = getItemMetrics(td);
-        const displayQty = parseFloat(productQuantities[item.id] ?? td.finalize_qty ?? itemQty) || 0;
+        const displayQty = getEffectiveQty(td, item.id, productQuantities, productUnits, itemQty);
         const totalVal = itemRate * displayQty;
         const oRateRaw = parseFloat((overrideRates[item.id] ?? td.finalize_override_rate ?? globalOverrideValue) || "0") || 0;
         const itemOverrideType = td.finalize_override_type ?? globalOverrideType ?? "value";
@@ -3556,6 +3837,118 @@ export default function FinalizeBoq() {
     } catch (e) {
       console.error("Apply template error:", e);
       toast({ title: "Error", description: "Failed to apply template", variant: "destructive" });
+    }
+  };
+
+  // --- Copy BOQ Settings to Another Version -------------------------------
+  // Copies the exact saved pricing/calculation settings (columns/formulas
+  // such as percentage, margin, negotiation, discounts, markups, override
+  // rate/type, grand total column, hidden columns) from a chosen source BOQ
+  // version onto the currently selected BOQ version, item-for-item.
+  // IMPORTANT: values are copied verbatim from the source — nothing is
+  // recalculated, reset, or defaulted. Item identity (qty, unit, rate,
+  // description, product) on the target version is left untouched; only the
+  // settings fields are overwritten.
+  const handleCopyBoqSettings = async () => {
+    if (!selectedBoqVersionId) {
+      toast({ title: "Select a BOQ Version first", variant: "destructive" });
+      return;
+    }
+    if (!copySettingsSourceVersionId) {
+      toast({ title: "Select a source BOQ version to copy from", variant: "destructive" });
+      return;
+    }
+    if (copySettingsSourceVersionId === selectedBoqVersionId) {
+      toast({ title: "Choose a different source version", description: "The source and target BOQ versions must be different.", variant: "destructive" });
+      return;
+    }
+
+    setIsCopyingSettings(true);
+    try {
+      const resp = await apiFetch(`/api/boq-items/version/${encodeURIComponent(copySettingsSourceVersionId)}`);
+      if (!resp.ok) throw new Error("Failed to load source version items");
+      const data = await resp.json();
+      const sourceItems: any[] = data.items || [];
+
+      const parseTd = (raw: any) => {
+        if (!raw) return {};
+        return typeof raw === "string" ? (JSON.parse(raw) || {}) : raw;
+      };
+      const productKey = (td: any) => String(td.product_name || td.name || "").trim().toLowerCase();
+
+      // Index source items for lookup: by their own id (for direct lineage
+      // via copied_from_item_id) and by product name (fallback match).
+      const sourceById = new Map<string, any>();
+      const sourceByName = new Map<string, any>();
+      for (const s of sourceItems) {
+        sourceById.set(s.id, s);
+        const key = productKey(parseTd(s.table_data));
+        if (key && !sourceByName.has(key)) sourceByName.set(key, s);
+      }
+
+      // The exact settings fields that constitute "BOQ settings" — every
+      // other field on the target item's table_data is left as-is.
+      const SETTINGS_FIELDS = [
+        "finalize_columns",
+        "finalize_column_values",
+        "finalize_override_rate",
+        "finalize_override_type",
+        "finalize_grand_total_column",
+        "finalize_hidden_predefined_cols",
+        "finalize_hide_system_total",
+      ] as const;
+
+      let matchedCount = 0;
+      let skippedCount = 0;
+
+      const updates = boqItems.map(async (item: any) => {
+        const sourceMatch =
+          (item.copied_from_item_id && sourceById.get(item.copied_from_item_id)) ||
+          sourceByName.get(productKey(parseTd(item.table_data)));
+
+        if (!sourceMatch) {
+          skippedCount += 1;
+          return;
+        }
+
+        const sourceTd = parseTd(sourceMatch.table_data);
+        const targetTd = parseTd(item.table_data);
+
+        const mergedTd = { ...targetTd };
+        for (const field of SETTINGS_FIELDS) {
+          // Copy verbatim (exact deep copy via JSON round-trip) — no
+          // recalculation, so the values are identical to the source.
+          mergedTd[field] = sourceTd[field] !== undefined
+            ? JSON.parse(JSON.stringify(sourceTd[field]))
+            : targetTd[field];
+        }
+
+        matchedCount += 1;
+        await apiFetch(`/api/boq-items/${item.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ table_data: mergedTd }),
+        });
+      });
+
+      await Promise.all(updates);
+
+      // Reload so the on-screen columns/values/overrides reflect the copied
+      // settings exactly as they were saved on the source version.
+      await loadBoqItemsAndEdits(selectedBoqVersionId);
+
+      const sourceVer = boqVersions.find(v => v.id === copySettingsSourceVersionId);
+      toast({
+        title: "Settings Copied",
+        description: `Copied settings from BOQ C${sourceVer?.version_number ?? "?"} to ${matchedCount} item(s).${skippedCount ? ` ${skippedCount} item(s) had no match and were left unchanged.` : ""}`,
+      });
+      setIsCopySettingsDialogOpen(false);
+      setCopySettingsSourceVersionId("");
+    } catch (e) {
+      console.error("Copy BOQ settings error:", e);
+      toast({ title: "Error", description: "Failed to copy settings", variant: "destructive" });
+    } finally {
+      setIsCopyingSettings(false);
     }
   };
 
@@ -3643,12 +4036,7 @@ export default function FinalizeBoq() {
         const category = tableData.category || "";
 
         const isLumpSum = tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls';
-        const manualQtyStr = productQuantities[boqItem.id];
-        const displayQty = isLumpSum ? 1 : (manualQtyStr !== undefined
-          ? (parseFloat(manualQtyStr) || 0)
-          : (tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null
-            ? Number(tableData.targetRequiredQty)
-            : Number(currentStep11Items[0]?.qty || 0)));
+        const displayQty = getEffectiveQty(tableData, boqItem.id, productQuantities, productUnits, Number(currentStep11Items[0]?.qty || 0));
 
         // Totals — same calc as row render
         let _exTotal = 0;
@@ -3964,12 +4352,7 @@ export default function FinalizeBoq() {
         }
 
         const isLumpSum = tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls';
-        const manualQtyStr = productQuantities[boqItem.id];
-        const displayQty = isLumpSum ? 1 : (manualQtyStr !== undefined
-          ? (parseFloat(manualQtyStr) || 0)
-          : (tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null
-            ? Number(tableData.targetRequiredQty)
-            : Number(currentStep11Items[0]?.qty || 0)));
+        const displayQty = getEffectiveQty(tableData, boqItem.id, productQuantities, productUnits, Number(currentStep11Items[0]?.qty || 0));
 
         // Totals — same calc as row render
         let _total = 0;
@@ -4604,6 +4987,13 @@ export default function FinalizeBoq() {
         onClick: handleLabourOnlyBulk,
       },
       {
+        id: "supply-only",
+        label: `Supply Only (${selectedProductIds.size})`,
+        icon: <Package className="w-3.5 h-3.5" />,
+        disabled: selectedProductIds.size === 0,
+        onClick: handleSupplyOnlyBulk,
+      },
+      {
         id: "manage-columns",
         label: "Manage Columns",
         icon: <Eye className="w-3.5 h-3.5" />,
@@ -4928,7 +5318,27 @@ export default function FinalizeBoq() {
                   {/* Container 3: BOQ Version */}
                   <div className="flex-[1] min-w-[200px] space-y-1">
                     <div className="flex justify-between items-center px-1">
-                      <Label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">BOQ Version</Label>
+                      <div className="flex items-center gap-1.5">
+                        <Label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">BOQ Version</Label>
+                        {linkedBomVersion && (
+                          <>
+                            <span
+                              className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100 leading-none whitespace-nowrap"
+                              title={`This BOQ version was created from BOM Version V${linkedBomVersion.version_number}`}
+                            >
+                              BOM: V{linkedBomVersion.version_number}
+                            </span>
+                            <button
+                              onClick={handleOpenBomView}
+                              className="text-[9px] text-slate-500 font-bold hover:text-blue-600 hover:underline uppercase leading-none flex items-center gap-0.5"
+                              title={`View items from linked BOM Version V${linkedBomVersion.version_number}`}
+                            >
+                              <Eye className="h-2.5 w-2.5" />
+                              BOM View
+                            </button>
+                          </>
+                        )}
+                      </div>
                       <button
                         onClick={async () => {
                           if (!confirm("Create a new BOQ version?")) return;
@@ -4945,12 +5355,24 @@ export default function FinalizeBoq() {
                             if (resp.ok) {
                               const newVer = await resp.json();
                               toast({ title: "Success", description: "BOQ Version created" });
+                              const prevBoqSourceId = selectedBoqVersionId;
                               const boqResp = await apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId!)}?type=boq`);
                               if (boqResp.ok) {
                                 const boqData = await boqResp.json();
-                                setBoqVersions(boqData.versions || []);
+                                const boqList = boqData.versions || [];
+                                setBoqVersions(boqList);
                                 setSelectedBomVersionId(null);
                                 setSelectedBoqVersionId(newVer.id);
+
+                                // Item structure is copied above, but saved pricing/
+                                // calculation settings (percentage, margin, negotiation,
+                                // rates, discounts, markups) are not. Offer to copy them
+                                // in immediately from an existing BOQ version.
+                                if (confirm("Also copy pricing/calculation settings (percentage, margin, negotiation, rates, discounts, markups) from an existing BOQ version into this new version now?")) {
+                                  const validSource = prevBoqSourceId && boqList.some((v: any) => v.id === prevBoqSourceId) ? prevBoqSourceId : "";
+                                  setCopySettingsSourceVersionId(validSource);
+                                  setIsCopySettingsDialogOpen(true);
+                                }
                               }
                             }
                           } catch (e) { console.error(e); toast({ title: "Error", description: "Failed to create BOQ version", variant: "destructive" }); }
@@ -4958,6 +5380,24 @@ export default function FinalizeBoq() {
                         className="text-[9px] text-emerald-600 font-bold hover:underline uppercase"
                       >
                         + Create
+                      </button>
+                    </div>
+                    <div className="flex justify-end px-1">
+                      <button
+                        onClick={() => {
+                          if (!selectedBoqVersionId) {
+                            toast({ title: "Select a BOQ Version first", variant: "destructive" });
+                            return;
+                          }
+                          setCopySettingsSourceVersionId("");
+                          setIsCopySettingsDialogOpen(true);
+                        }}
+                        disabled={!selectedBoqVersionId}
+                        className="text-[9px] text-blue-600 font-bold hover:underline uppercase disabled:text-slate-300 disabled:no-underline flex items-center gap-1"
+                        title="Copy pricing/calculation settings from another BOQ version"
+                      >
+                        <Copy className="h-2.5 w-2.5" />
+                        Copy Settings
                       </button>
                     </div>
                     <div className="flex gap-1.5">
@@ -4969,14 +5409,29 @@ export default function FinalizeBoq() {
                           <SelectValue placeholder="Select BOQ" />
                         </SelectTrigger>
                         <SelectContent className="max-h-[300px] overflow-y-auto">
-                          {filteredBoqVersions.map((v) => (
-                            <SelectItem value={v.id} key={v.id}>
-                              <div className="flex items-center justify-between w-full gap-2">
-                                <span>BOQ C{v.version_number} ({v.status})</span>
-                                {v.is_last_final && <span className="bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold shrink-0 flex items-center">Final</span>}
-                              </div>
-                            </SelectItem>
-                          ))}
+                          {filteredBoqVersions.map((v) => {
+                            const sourceBom = v.source_version_id
+                              ? bomVersions.find(bv => bv.id === v.source_version_id)
+                              : null;
+                            return (
+                              <SelectItem value={v.id} key={v.id}>
+                                <div className="flex items-center justify-between w-full gap-2">
+                                  <span className="flex items-center gap-1.5">
+                                    BOQ C{v.version_number} ({v.status})
+                                    {sourceBom && (
+                                      <span
+                                        className="text-[8px] font-bold px-1 py-0.5 rounded-sm leading-none bg-blue-50 text-blue-600 border border-blue-100 uppercase shrink-0"
+                                        title={`Created from BOM Version V${sourceBom.version_number}`}
+                                      >
+                                        BOM: V{sourceBom.version_number}
+                                      </span>
+                                    )}
+                                  </span>
+                                  {v.is_last_final && <span className="bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold shrink-0 flex items-center">Final</span>}
+                                </div>
+                              </SelectItem>
+                            );
+                          })}
                         </SelectContent>
                       </Select>
                       {(() => {
@@ -5732,6 +6187,16 @@ export default function FinalizeBoq() {
                         >
                           <Briefcase className="h-3.5 w-3.5" />
                           Labour Only ({selectedProductIds.size})
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-9 gap-1.5 rounded-[14px] border-slate-200 bg-white/80 text-[11px] font-bold uppercase tracking-wide text-slate-600 shadow-sm hover:border-blue-200 hover:text-blue-600"
+                          onClick={handleSupplyOnlyBulk}
+                        >
+                          <Package className="h-3.5 w-3.5" />
+                          Supply Only ({selectedProductIds.size})
                         </Button>
                         <Button
                           type="button"
@@ -6538,26 +7003,36 @@ export default function FinalizeBoq() {
                             )}
                             {!hiddenPredefinedCols.qty && (
                               <td className="border-r px-2 py-1 text-center font-semibold text-gray-800 align-middle w-32 min-w-[100px]">
-                                <input
-                                  type="number"
-                                  value={tableData.is_lump_sum ? 1 : (productQuantities[boqItem.id] ?? (tableData.targetRequiredQty !== undefined ? tableData.targetRequiredQty : (currentStep11Items[0]?.qty || 0)))}
-                                  disabled={isVersionSubmitted || tableData.is_lump_sum || (productUnits[boqItem.id]?.toLowerCase() === 'ls')}
-                                  onWheel={(e) => e.currentTarget.blur()}
-                                  onChange={e => {
-                                    const newQty = e.target.value;
-                                    const isLS = productUnits[boqItem.id]?.toLowerCase() === 'ls';
-                                    if (isLS) return;
-                                    setProductQuantities(prev => ({ ...prev, [boqItem.id]: newQty }));
-                                  }}
-                                  onBlur={async () => {
-                                    const newQty = productQuantities[boqItem.id];
-                                    const oldQty = tableData.finalize_qty;
-                                    await saveItemLayout(boqItem.id, undefined, undefined, undefined, productQuantities[boqItem.id], undefined, undefined, undefined, undefined,
-                                      String(oldQty ?? "") !== String(newQty ?? "") ? { field: "Quantity", oldValue: oldQty, newValue: newQty } : undefined);
-                                  }}
-                                  className={`w-full border border-transparent focus:border-2 focus:border-blue-500 rounded p-0.5 text-[10px] focus:text-[12px] focus:ring-1 ring-blue-300 outline-none transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md ${(tableData.is_lump_sum || (productUnits[boqItem.id]?.toLowerCase() === 'ls')) ? 'bg-transparent text-gray-500' : 'bg-blue-100/50'} focus:bg-white text-center font-semibold h-7 focus:h-8 ${getIsModified(boqItem.id, "qty", productQuantities[boqItem.id] ?? (tableData.targetRequiredQty !== undefined ? tableData.targetRequiredQty : (currentStep11Items[0]?.qty || 0))) ? "text-[#1E3A8A] font-extrabold border-2 border-[#93C5FD] ring-2 ring-[#BFDBFE] rounded" : ""}`}
-                                  placeholder="Qty"
-                                />
+                                {(() => {
+                                  // Qty always starts out synced from the BOM's Project Target
+                                  // (targetRequiredQty) whenever the page loads — see the
+                                  // restoredQtys / getEffectiveQty seeding logic. It stays a
+                                  // normal editable field on top of that, so it can still be
+                                  // typed over directly here when needed.
+                                  const effQty = getEffectiveQty(tableData, boqItem.id, productQuantities, productUnits, Number(currentStep11Items[0]?.qty || 0));
+                                  return (
+                                    <input
+                                      type="number"
+                                      value={effQty}
+                                      disabled={isVersionSubmitted || tableData.is_lump_sum || (productUnits[boqItem.id]?.toLowerCase() === 'ls')}
+                                      onWheel={(e) => e.currentTarget.blur()}
+                                      onChange={e => {
+                                        const newQty = e.target.value;
+                                        const isLS = productUnits[boqItem.id]?.toLowerCase() === 'ls';
+                                        if (isLS) return;
+                                        setProductQuantities(prev => ({ ...prev, [boqItem.id]: newQty }));
+                                      }}
+                                      onBlur={async () => {
+                                        const newQty = productQuantities[boqItem.id];
+                                        const oldQty = tableData.finalize_qty;
+                                        await saveItemLayout(boqItem.id, undefined, undefined, undefined, productQuantities[boqItem.id], undefined, undefined, undefined, undefined,
+                                          String(oldQty ?? "") !== String(newQty ?? "") ? { field: "Quantity", oldValue: oldQty, newValue: newQty } : undefined);
+                                      }}
+                                      className={`w-full border border-transparent focus:border-2 focus:border-blue-500 rounded p-0.5 text-[10px] focus:text-[12px] focus:ring-1 ring-blue-300 outline-none transition-all duration-150 ease-out focus:relative focus:z-30 focus:shadow-md ${(tableData.is_lump_sum || (productUnits[boqItem.id]?.toLowerCase() === 'ls')) ? 'bg-transparent text-gray-500' : 'bg-blue-100/50'} focus:bg-white text-center font-semibold h-7 focus:h-8 ${getIsModified(boqItem.id, "qty", effQty) ? "text-[#1E3A8A] font-extrabold border-2 border-[#93C5FD] ring-2 ring-[#BFDBFE] rounded" : ""}`}
+                                      placeholder="Qty"
+                                    />
+                                  );
+                                })()}
                               </td>
                             )}
                             {!hiddenPredefinedCols.rate && (
@@ -6568,7 +7043,7 @@ export default function FinalizeBoq() {
                             {!hiddenPredefinedCols.system_total && (
                               <td className="border-r px-2 py-1.5 text-right font-semibold text-gray-800 bg-gray-50 align-middle text-[10px] w-32">
                                 ₹{(() => {
-                                  const displayQty = (tableData.is_lump_sum || productUnits[boqItem.id]?.toLowerCase() === 'ls') ? 1 : (productQuantities[boqItem.id] !== undefined ? parseFloat(productQuantities[boqItem.id]) || 0 : (tableData.targetRequiredQty !== undefined ? Number(tableData.targetRequiredQty) : Number(currentStep11Items[0]?.qty || 0)));
+                                  const displayQty = getEffectiveQty(tableData, boqItem.id, productQuantities, productUnits, Number(currentStep11Items[0]?.qty || 0));
                                   const rawVal = rateSqft * displayQty;
                                   return (roundOff ? Math.round(rawVal) : rawVal).toLocaleString(undefined, { minimumFractionDigits: roundOff ? 0 : 2, maximumFractionDigits: roundOff ? 0 : 2 });
                                 })()}
@@ -6615,8 +7090,7 @@ export default function FinalizeBoq() {
                                 ₹{(() => {
                                   const overrideType = overrideTypes[boqItem.id] ?? globalOverrideType ?? "value";
                                   const overrideInputVal = parseFloat((overrideRates[boqItem.id] ?? globalOverrideValue) || "0") || 0;
-                                  const isLumpSum = tableData.is_lump_sum || productUnits[boqItem.id]?.toLowerCase() === 'ls';
-                                  const displayQty = isLumpSum ? 1 : (productQuantities[boqItem.id] !== undefined ? parseFloat(productQuantities[boqItem.id]) || 0 : (tableData.targetRequiredQty || currentStep11Items[0]?.qty || 0));
+                                  const displayQty = getEffectiveQty(tableData, boqItem.id, productQuantities, productUnits, Number(currentStep11Items[0]?.qty || 0));
                                   const systemTotal = rateSqft * displayQty;
 
                                   let effectiveOverrideRate = 0;
@@ -6637,9 +7111,7 @@ export default function FinalizeBoq() {
                             )}
                             {/* Custom columns */}
                             {(() => {
-                              const isLumpSum = tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls';
-                              const manualQtyStr = productQuantities[boqItem.id];
-                              const displayQty = isLumpSum ? 1 : (manualQtyStr !== undefined ? (parseFloat(manualQtyStr) || 0) : (tableData.targetRequiredQty || currentStep11Items[0]?.qty || 0));
+                              const displayQty = getEffectiveQty(tableData, boqItem.id, productQuantities, productUnits, Number(currentStep11Items[0]?.qty || 0));
                               const baseTotalValue = rateSqft * displayQty;
 
                               // Calculate effective override rate based on type
@@ -7415,6 +7887,272 @@ export default function FinalizeBoq() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        <Dialog open={isCopySettingsDialogOpen} onOpenChange={(open) => { if (!isCopyingSettings) { setIsCopySettingsDialogOpen(open); if (!open) setCopySettingsSourceVersionId(""); } }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Copy className="h-4 w-4 text-blue-600" />
+                Copy BOQ Settings
+              </DialogTitle>
+              <DialogDescription>
+                Copy the exact pricing/calculation settings — columns, percentage, margin, negotiation, rates, discounts, markups, and overrides — from another BOQ version into{" "}
+                <strong>
+                  BOQ C{filteredBoqVersions.find(v => v.id === selectedBoqVersionId)?.version_number ?? ""}
+                </strong>
+                . Values are copied exactly as saved; nothing is recalculated, reset, or defaulted.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <Label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Copy Settings From</Label>
+                <Select value={copySettingsSourceVersionId} onValueChange={setCopySettingsSourceVersionId}>
+                  <SelectTrigger className="bg-slate-50 border-slate-200 h-9">
+                    <SelectValue placeholder="Select source BOQ version" />
+                  </SelectTrigger>
+                  <SelectContent
+                    position="popper"
+                    side="bottom"
+                    align="start"
+                    avoidCollisions={false}
+                    sideOffset={4}
+                    className="max-h-[200px] overflow-y-auto z-[100]"
+                  >
+                    {filteredBoqVersions
+                      .filter(v => v.id !== selectedBoqVersionId)
+                      .map((v) => (
+                        <SelectItem value={v.id} key={v.id}>
+                          <div className="flex items-center justify-between w-full gap-2">
+                            <span>BOQ C{v.version_number} ({v.status})</span>
+                            {v.is_last_final && <span className="bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold shrink-0 flex items-center">Final</span>}
+                          </div>
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {copySettingsSourceVersionId && (
+                (() => {
+                  const src = filteredBoqVersions.find(v => v.id === copySettingsSourceVersionId);
+                  const dst = filteredBoqVersions.find(v => v.id === selectedBoqVersionId);
+                  if (!src) return null;
+                  return (
+                    <div className="text-xs bg-blue-50 border border-blue-100 rounded-lg p-3 text-blue-900 space-y-1">
+                      <p>
+                        <strong>Source:</strong> BOQ C{src.version_number} ({src.status}) — last updated {new Date(src.updated_at || src.created_at).toLocaleDateString()}
+                      </p>
+                      <p>
+                        <strong>Target:</strong> BOQ C{dst?.version_number ?? ""} ({dst?.status})
+                      </p>
+                      <p className="text-blue-700">
+                        This will overwrite the current settings on the target version's matching items. Item quantities, rates, units, and descriptions won't be touched.
+                      </p>
+                    </div>
+                  );
+                })()
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setIsCopySettingsDialogOpen(false); setCopySettingsSourceVersionId(""); }} disabled={isCopyingSettings}>
+                Cancel
+              </Button>
+              <Button onClick={handleCopyBoqSettings} disabled={!copySettingsSourceVersionId || isCopyingSettings}>
+                {isCopyingSettings ? "Copying..." : "Copy Settings"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* BOM View — compact floating panel showing every item from the
+            linked BOM version, without navigating away from Finalize BOQ.
+            Data is fetched fresh from the server each time it's opened, and
+            quantities/units are read straight off each item's saved
+            table_data — nothing here is recalculated, rounded, or
+            substituted.
+            NOTE: this is a plain `createPortal` div, NOT a Radix Dialog.
+            Radix's DialogContent ships with a baked-in "zoom + slide to
+            center" open/close animation that, once played, keeps overriding
+            the `transform` used here for drag/resize — even overriding
+            inline styles — which made the panel render permanently
+            off-screen. A plain portaled div has no such animation to fight,
+            so its position is always exactly what bomViewPos/bomViewSize say. */}
+        {isBomViewOpen && createPortal(
+          <div
+            style={{
+              position: "fixed",
+              left: 16,   // pinned to the left edge (top-left corner)
+              top: 64,    // just under the 48px sticky header
+              transform: `translate(${bomViewPos.x}px, ${bomViewPos.y}px)`,
+              width: bomViewSize.width,
+              height: bomViewSize.height,
+              maxWidth: "92vw",
+              maxHeight: "90vh",
+              zIndex: 9999,
+            }}
+            className="bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden"
+          >
+            {/* Drag handle header — click & drag anywhere on this bar to move the panel */}
+            <div
+              onMouseDown={handleBomViewDragStart}
+              className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 shrink-0 space-y-0.5 cursor-move select-none flex items-start justify-between"
+            >
+              <div>
+                <div className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-slate-700">
+                  <GripHorizontal className="h-3.5 w-3.5 text-slate-300 shrink-0" />
+                  <Eye className="h-4 w-4 text-blue-600" />
+                  BOM View
+                  {linkedBomVersion && (
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-100 leading-none normal-case">
+                      V{linkedBomVersion.version_number} ({linkedBomVersion.status})
+                    </span>
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-400 font-semibold pl-[22px]">
+                  Items exactly as saved on the linked BOM version, in the same order as Finalize BOQ
+                </p>
+              </div>
+              <div className="flex items-start gap-1 shrink-0">
+                {/* Card size control — lets the user manage how big each item
+                    card renders, separate from the panel's own drag-resize. */}
+                <div
+                  onMouseDown={(e) => e.stopPropagation()}
+                  className="flex items-center rounded-md border border-slate-200 bg-white overflow-hidden -mt-1"
+                >
+                  {(["sm", "md", "lg"] as const).map((size) => (
+                    <button
+                      key={size}
+                      onClick={() => setBomViewCardSize(size)}
+                      title={size === "sm" ? "Compact" : size === "md" ? "Default" : "Large"}
+                      className={cn(
+                        "px-1.5 py-1 text-[9px] font-black uppercase leading-none",
+                        bomViewCardSize === size
+                          ? "bg-blue-600 text-white"
+                          : "text-slate-400 hover:bg-slate-100"
+                      )}
+                    >
+                      {size === "sm" ? "S" : size === "md" ? "M" : "L"}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={() => {
+                    setIsBomViewOpen(false);
+                    setBomViewPos({ x: 0, y: 0 });
+                    setBomViewSize(BOM_VIEW_DEFAULT_SIZE);
+                  }}
+                  className="shrink-0 rounded-sm opacity-70 hover:opacity-100 hover:bg-slate-200/60 p-1 -mt-1"
+                  title="Close"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-3 py-2.5 space-y-2 bg-white">
+              {isBomViewLoading ? (
+                <div className="py-10 text-center text-xs text-slate-400 font-semibold">Loading BOM items…</div>
+              ) : sortedBomViewItems.length === 0 ? (
+                <div className="py-10 text-center text-xs text-slate-400 font-semibold">No items found on this BOM version.</div>
+              ) : (
+                sortedBomViewItems.map((rawItem: any, idx: number) => {
+                  const td = typeof rawItem.table_data === "string"
+                    ? (JSON.parse(rawItem.table_data || "{}") || {})
+                    : (rawItem.table_data || {});
+
+                  const { itemQty, itemRate, itemTotal } = getItemMetrics(td);
+                  // Read the saved quantity directly — no live editing state
+                  // from the currently open version is applied here.
+                  const qty = getEffectiveQty(td, rawItem.id, {}, {}, itemQty);
+                  const unit = td.finalize_unit || td.configBasis?.requiredUnitType || td.unit || "Sqft";
+                  const name = td.product_name || td.name || "Unnamed Item";
+                  const category = td.category_name || td.category || "";
+                  const isCalculated = Array.isArray(td.step11_items) && td.step11_items.length > 0;
+                  const sz = BOM_VIEW_CARD_SIZE_STYLES[bomViewCardSize];
+
+                  return (
+                    <div key={rawItem.id} className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                      {/* Row 1 — S.No, name, category, calc badge */}
+                      <div className={cn("flex items-start gap-2", sz.rowPad)}>
+                        <span className={cn("mt-0.5 shrink-0 px-1 rounded bg-slate-100 text-slate-500 font-black flex items-center justify-center", sz.sno)}>
+                          {idx + 1}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className={cn("font-bold text-slate-900 leading-tight truncate", sz.name)} title={name}>{name}</p>
+                          {category && (
+                            <p className={cn("text-slate-400 font-semibold uppercase tracking-wide truncate mt-0.5", sz.label)}>{category}</p>
+                          )}
+                        </div>
+                        <span className={cn(
+                          "shrink-0 mt-0.5 font-bold rounded-full uppercase leading-none",
+                          sz.badge,
+                          isCalculated ? "bg-purple-50 text-purple-600 border border-purple-100" : "bg-slate-100 text-slate-500 border border-slate-200"
+                        )}>
+                          {isCalculated ? "Calc" : "Manual"}
+                        </span>
+                      </div>
+
+                      {/* Row 2 — clean separated stat grid: QTY · UNIT · RATE · TOTAL */}
+                      <div className="grid grid-cols-4 border-t border-slate-100 bg-slate-50/60">
+                        <div className={cn("border-r border-slate-100 flex flex-col items-center justify-center", sz.cellPad)}>
+                          <span className={cn("font-bold text-slate-400 uppercase tracking-wide", sz.label)}>Qty</span>
+                          <span className={cn("font-black text-green-600 leading-tight", sz.stat)}>{qty}</span>
+                        </div>
+                        <div className={cn("border-r border-slate-100 flex flex-col items-center justify-center", sz.cellPad)}>
+                          <span className={cn("font-bold text-slate-400 uppercase tracking-wide", sz.label)}>Unit</span>
+                          <span className={cn("font-black text-blue-600 leading-tight truncate max-w-full", sz.stat)}>{unit}</span>
+                        </div>
+                        <div className={cn("border-r border-slate-100 flex flex-col items-center justify-center", sz.cellPad)}>
+                          <span className={cn("font-bold text-slate-400 uppercase tracking-wide", sz.label)}>Rate</span>
+                          <span className={cn("font-black text-slate-800 leading-tight truncate max-w-full", sz.stat)}>
+                            ₹{itemRate.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <div className={cn("flex flex-col items-center justify-center bg-blue-50/50", sz.cellPad)}>
+                          <span className={cn("font-bold text-blue-400 uppercase tracking-wide", sz.label)}>Total</span>
+                          <span className={cn("font-black text-blue-700 leading-tight truncate max-w-full", sz.stat)}>
+                            ₹{itemTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="px-4 py-2 border-t border-slate-100 bg-slate-50/80 shrink-0 flex items-center justify-between">
+              <span className="text-[9px] text-slate-400 font-bold uppercase">{sortedBomViewItems.length} Item{sortedBomViewItems.length === 1 ? "" : "s"}</span>
+              <button
+                onClick={() => {
+                  setIsBomViewOpen(false);
+                  setBomViewPos({ x: 0, y: 0 });
+                  setBomViewSize(BOM_VIEW_DEFAULT_SIZE);
+                }}
+                className="text-[10px] text-slate-500 font-bold hover:text-blue-600 uppercase"
+              >
+                Close
+              </button>
+            </div>
+
+            {/* Resize handle — drag to make the panel bigger or smaller */}
+            <div
+              onMouseDown={handleBomViewResizeStart}
+              className="absolute bottom-0 right-0 w-5 h-5 cursor-nwse-resize flex items-end justify-end p-0.5 group"
+              title="Drag to resize"
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" className="text-slate-300 group-hover:text-blue-500">
+                <circle cx="8" cy="2" r="1" fill="currentColor" />
+                <circle cx="8" cy="5" r="1" fill="currentColor" />
+                <circle cx="8" cy="8" r="1" fill="currentColor" />
+                <circle cx="5" cy="5" r="1" fill="currentColor" />
+                <circle cx="5" cy="8" r="1" fill="currentColor" />
+                <circle cx="2" cy="8" r="1" fill="currentColor" />
+              </svg>
+            </div>
+          </div>,
+          document.body
+        )}
 
         <Dialog open={showDisabledVersionsDialog} onOpenChange={setShowDisabledVersionsDialog}>
           <DialogContent className="sm:max-w-xl">

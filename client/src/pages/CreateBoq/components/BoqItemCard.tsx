@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, FileText } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, FileText, Maximize2 } from "lucide-react";
 import { fuzzySearch, cn } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -42,8 +42,9 @@ import { Project, BOMVersion, BOMItem, Product, Step11Item, BOMHistory, BOMComme
 import { parseTableData, parseImages, safeJson, VERSION_LABEL } from '../utils';
 import { EditableHsnSac } from './EditableHsnSac';
 import { BoqItemRow } from './BoqItemRow';
+import { SaveConfirmDialog, SaveAsWizardDialog, PendingManualItem } from './ManualItemSaveDialogs';
 
-export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, isVersionSubmitted, expandedProductIds, setExpandedProductIds, getEditedValue, updateEditedField, handleDeleteRow, handleFinalizeProduct, handleAddItem, loadBoqItemsAndEdits, setBoqItems, checkBudgetEarly, handleSaveProject, onCardDragStart, onCardDragOver, onCardDrop, isCardDragOver, mismatches, isCompactView, onSaveAsTemplate, editedFields, comments, users, currentUser, onAddComment, selectedVersionId, totalProducts, onProductOrdinalChange, itemCategoryFilter, bomButtonsEnabled, onAnalysis }: {
+export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, isVersionSubmitted, expandedProductIds, setExpandedProductIds, getEditedValue, updateEditedField, handleDeleteRow, handleFinalizeProduct, handleAddItem, loadBoqItemsAndEdits, setBoqItems, checkBudgetEarly, handleSaveProject, onCardDragStart, onCardDragOver, onCardDrop, isCardDragOver, mismatches, isCompactView, onSaveAsTemplate, editedFields, comments, users, currentUser, onAddComment, selectedVersionId, totalProducts, onProductOrdinalChange, itemCategoryFilter, bomButtonsEnabled, onAnalysis, onFocusProduct, allProductNames, onBomShopRateChangeSubmitted, bomShopRateRequests }: {
   boqItem: BOMItem; boqIdx: number; isVersionSubmitted: boolean;
   expandedProductIds: Set<string>; setExpandedProductIds: (fn: (p: Set<string>) => Set<string>) => void;
   getEditedValue: (k: string, f: string, v: any) => any;
@@ -73,6 +74,11 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   itemCategoryFilter: string;
   bomButtonsEnabled?: boolean;
   onAnalysis: (productName: string) => void;
+  /** Optional: opens Product Focus Mode for this product. When omitted, no focus icon is rendered. */
+  onFocusProduct?: (boqItemId: string) => void;
+  allProductNames?: string[];
+  onBomShopRateChangeSubmitted?: () => void;
+  bomShopRateRequests?: any[];
 }) {
   const { toast } = useToast();
   const tableData = parseTableData(boqItem.table_data);
@@ -82,7 +88,55 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [amendRatesActive, setAmendRatesActive] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
+  // Step11 items marked for removal via the Trash icon, but NOT yet
+  // deleted on the server. They're hidden from the BOM table below
+  // (see renderLines) and shown to the Save wizard as "Marked for
+  // removal" via preDeletedIndexes. The real deletion only happens when
+  // the user submits the Save wizard (handleSubmitSaveEdit), which flags
+  // the item with manualApproval: { status: "pending", action: "delete" }
+  // on the server WITHOUT removing it from step11_items — so no other
+  // item's _s11Idx ever shifts while a deletion is pending. ─────────────
+  const [deletedFromBom, setDeletedFromBom] = useState<any[]>([]);
+  // Engine-based material line items (tableData.materialLines) marked for
+  // removal via the Trash icon, but NOT yet deleted on the server — mirrors
+  // deletedFromBom above but for the product's pre-existing/original
+  // materials (identified by _materialIdx instead of _s11Idx). These also
+  // route through the Save wizard's approval flow now, instead of being
+  // deleted instantly, so a deletion of an existing material requires the
+  // same admin approval as any other change.
+  const [deletedMaterialLines, setDeletedMaterialLines] = useState<any[]>([]);
+
+  const handleCardDeleteRow = (id: string, td: any, idx: number, item?: any) => {
+    const isStep11Item = !!item && item._s11Idx !== undefined;
+    if (isStep11Item) {
+      // Defer: track locally + hide from the table. Nothing is deleted
+      // on the server until the Save wizard is submitted.
+      setDeletedFromBom(prev => {
+        if (prev.some(i => i._s11Idx === item._s11Idx)) return prev;
+        return [...prev, item];
+      });
+      return;
+    }
+    const isEngineLine = !!item && item._materialIdx !== undefined;
+    if (isEngineLine) {
+      // Defer: same pending-approval pattern as step11 items above, keyed
+      // by _materialIdx (position in tableData.materialLines) instead.
+      setDeletedMaterialLines(prev => {
+        if (prev.some(i => i._materialIdx === item._materialIdx)) return prev;
+        return [...prev, item];
+      });
+      return;
+    }
+    // Anything else falls back to the previous instant-delete behavior.
+    handleDeleteRow(id, td, idx, item);
+  };
   const [localRemarks, setLocalRemarks] = useState(tableData.remarks || "");
+
+  // ── Save / Save As (new manual items → existing product, additive) ─────
+  const [showSaveConfirm, setShowSaveConfirm] = useState(false);
+  const [showSaveEditWizard, setShowSaveEditWizard] = useState(false);
+  const [showSaveAsWizard, setShowSaveAsWizard] = useState(false);
+  const [isSubmittingSave, setIsSubmittingSave] = useState(false);
 
   const performDelete = async (action: "archive" | "trash", reason?: string) => {
     try {
@@ -101,6 +155,118 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
     }
   };
 
+  // ── Save: bundle all newly added manual items into one approval request,
+  // adding them to THIS existing product once admin-approved. ─────────────
+  const handleConfirmSave = async () => {
+    if (isSubmittingSave || pendingManualItems.length === 0) return;
+    setIsSubmittingSave(true);
+    try {
+      const res = await apiFetch("/api/boq-manual-item-requests", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "save",
+          boqItemId: boqItem.id,
+          itemIndexes: pendingManualItems.map((it) => it.index),
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (data?.table_data) {
+        setBoqItems((prev) => prev.map((i) => (i.id === boqItem.id ? { ...i, table_data: data.table_data } : i)));
+      }
+      toast({ title: "Submitted for Approval", description: `${pendingManualItems.length} new item(s) submitted to add to ${productName}.` });
+      setShowSaveConfirm(false);
+    } catch (err) {
+      console.error("Failed to submit Save request", err);
+      toast({ title: "Error", description: "Failed to submit items for approval.", variant: "destructive" });
+    } finally {
+      setIsSubmittingSave(false);
+    }
+  };
+
+  // ── Save (full edit): bundle added / edited / deleted materials on THIS
+  // existing product into one approval request. Unlike handleConfirmSave
+  // above (additive-only), this lets the user also edit or remove existing
+  // materials — nothing changes on the live product until an admin
+  // approves the request. ──────────────────────────────────────────────
+  const handleSubmitSaveEdit = async (payload: { addedIndexes: number[]; deletedIndexes: number[]; editedItems: { index: number; patch: any }[]; deletedMaterialIndexes?: number[]; editedMaterialIndexes?: { index: number; patch: any }[] }) => {
+    if (isSubmittingSave) return;
+    const { addedIndexes, deletedIndexes, editedItems, deletedMaterialIndexes = [], editedMaterialIndexes = [] } = payload;
+    const totalChanges = addedIndexes.length + deletedIndexes.length + editedItems.length + deletedMaterialIndexes.length + editedMaterialIndexes.length;
+    if (totalChanges === 0) {
+      toast({ title: "No changes", description: "Nothing was added, edited, or deleted." });
+      return;
+    }
+    setIsSubmittingSave(true);
+    try {
+      const res = await apiFetch("/api/boq-manual-item-requests", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "save",
+          fullEdit: true,
+          boqItemId: boqItem.id,
+          addedIndexes,
+          deletedIndexes,
+          editedItems,
+          deletedMaterialIndexes,
+          editedMaterialIndexes,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (data?.table_data) {
+        setBoqItems((prev) => prev.map((i) => (i.id === boqItem.id ? { ...i, table_data: data.table_data } : i)));
+      }
+      // The server now carries manualApproval pending-delete flags on the
+      // touched step11_items and materialLines, so renderLines' filter will
+      // keep hiding them from that going forward. Clear the local tracking
+      // so it doesn't keep hiding anything the wizard's own "undo delete"
+      // toggle un-marked before submit.
+      setDeletedFromBom([]);
+      setDeletedMaterialLines([]);
+      toast({ title: "Submitted for Approval", description: `${totalChanges} change(s) submitted for ${productName}.` });
+      setShowSaveEditWizard(false);
+    } catch (err) {
+      console.error("Failed to submit Save request", err);
+      toast({ title: "Error", description: "Failed to submit changes for approval.", variant: "destructive" });
+    } finally {
+      setIsSubmittingSave(false);
+    }
+  };
+
+  // ── Save As: bundle selected manual items + calc config into one request
+  // that creates a brand-new Product Card once admin-approved. ────────────
+  const handleSubmitSaveAs = async (payload: { newProductName: string; selectedIndexes: number[]; items: any[]; calculatedResults: any; productConfig?: any }) => {
+    if (isSubmittingSave) return;
+    setIsSubmittingSave(true);
+    try {
+      const res = await apiFetch("/api/boq-manual-item-requests", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "save_as",
+          boqItemId: boqItem.id,
+          itemIndexes: payload.selectedIndexes,
+          newProductName: payload.newProductName,
+          items: payload.items,
+          calculatedResults: payload.calculatedResults,
+          productConfig: payload.productConfig,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (data?.table_data) {
+        setBoqItems((prev) => prev.map((i) => (i.id === boqItem.id ? { ...i, table_data: data.table_data } : i)));
+      }
+      toast({ title: "Submitted for Approval", description: `"${payload.newProductName}" submitted for admin approval as a new product.` });
+      setShowSaveAsWizard(false);
+    } catch (err) {
+      console.error("Failed to submit Save As request", err);
+      toast({ title: "Error", description: "Failed to submit new product for approval.", variant: "destructive" });
+    } finally {
+      setIsSubmittingSave(false);
+    }
+  };
+
   useEffect(() => {
     setLocalTarget(tableData.targetRequiredQty || 0);
     setLocalRemarks(tableData.remarks || "");
@@ -108,6 +274,23 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
 
   const step11Items = Array.isArray(tableData.step11_items) ? tableData.step11_items : [];
   const productName = tableData.product_name || boqItem.estimator;
+
+  // ── Save / Save As eligibility ──────────────────────────────────────────
+  // Newly added manual items (via the existing "+ Add Item" button) that
+  // have not yet been locked into a pending Save / Save As approval
+  // request. Purely additive: reads the same step11_items array Add Item
+  // already writes to.
+  const pendingManualItems: PendingManualItem[] = step11Items
+    .map((it: any, index: number) => ({ ...it, index }))
+    .filter((it: any) => it.manual === true && !it.manualApproval);
+  const awaitingApprovalItems = step11Items
+    .map((it: any, index: number) => ({ ...it, index }))
+    .filter((it: any) => it.manual === true && it.manualApproval?.status === "pending");
+  const materialLinesArr: any[] = Array.isArray(tableData.materialLines) ? tableData.materialLines : [];
+  const awaitingApprovalMaterialLines = materialLinesArr.filter((l: any) => l?.manualApproval?.status === "pending");
+  const existingProductNamesInVersion = Array.isArray(allProductNames) && allProductNames.length > 0
+    ? allProductNames
+    : [productName];
   const isBifProd = (productName || "").toLowerCase().includes('bif');
   const isLumpSum = getEditedValue(boqItem.id, "is_lump_sum", tableData.is_lump_sum || false);
   const isExpanded = expandedProductIds.has(boqItem.id);
@@ -127,6 +310,8 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
 
   let displayLines: any[] = step11Items;
   let isEngineBased = false;
+  const isLooseItem = !tableData.materialLines || tableData.targetRequiredQty === undefined || tableData.targetRequiredQty === null;
+  const isMultiItemLooseProduct = isLooseItem && step11Items.length > 1;
 
   if (tableData.materialLines && tableData.targetRequiredQty !== undefined) {
     isEngineBased = true;
@@ -153,6 +338,10 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
         title: line.name, description: line.name, unit: line.unit, shop_name: line.shop_name,
         qtyPerSqf: isLumpSumLine ? 1 : qty, requiredQty: reqQty, roundOff: roundOff,
         rateSqft: rate, amount: Number((roundOff * rate).toFixed(2)), s_no: idx + 1, manual: false,
+        // Include individual rates so SaveAs wizard can read them correctly
+        supply_rate: sRate, install_rate: iRate,
+        // Include wastagePct from the original materialLine so SaveAs wizard preserves it
+        wastagePct: line.wastagePct,
         _materialIdx: idx, itemKey,
         freezeAndEdit: line.freezeAndEdit,
         freeze_and_edit: line.freeze_and_edit,
@@ -164,7 +353,11 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
         original_rate: getEditedValue(itemKey, "original_rate", line.original_rate),
         rate_amendment_status: getEditedValue(itemKey, "rate_amendment_status", line.rate_amendment_status),
         id: line.id || line.materialId,
-        materialId: line.materialId || line.id
+        materialId: line.materialId || line.id,
+        // Carry through the pending-approval flag (if any) set on the raw
+        // materialLine by the server, so the removal filter below can hide
+        // it the same way pending-delete step11_items are hidden.
+        manualApproval: line.manualApproval
       };
     });
     const manualStep11 = step11Items.map((it: any, s11Idx: number) => {
@@ -275,7 +468,41 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   }
 
   // Use updated displayLines directly if we just synced, otherwise use localItems
-  const renderLines = shouldSync ? displayLines : (reorderInit ? localItems : displayLines);
+  const rawRenderLines = shouldSync ? displayLines : (reorderInit ? localItems : displayLines);
+
+  // Hide items marked for removal — either locally (trash icon clicked,
+  // not yet submitted) or already flagged pending-delete on the server
+  // (Save wizard submitted, awaiting admin approval). The underlying
+  // step11_items array is untouched in both cases, so this is purely a
+  // display filter. Also used below to exclude their amounts from totals.
+  const deletedS11Indexes = useMemo(
+    () => new Set(deletedFromBom.map((i: any) => i._s11Idx)),
+    [deletedFromBom]
+  );
+  const deletedMaterialLineIndexes = useMemo(
+    () => new Set(deletedMaterialLines.map((i: any) => i._materialIdx)),
+    [deletedMaterialLines]
+  );
+  const isMarkedForRemoval = (it: any) =>
+    (it._s11Idx !== undefined && deletedS11Indexes.has(it._s11Idx)) ||
+    (it._materialIdx !== undefined && deletedMaterialLineIndexes.has(it._materialIdx)) ||
+    (it.manualApproval?.status === "pending" && it.manualApproval?.action === "delete");
+  const renderLines = rawRenderLines.filter((it: any) => !isMarkedForRemoval(it));
+
+  // ── Items shown inside the Save wizard: visible rows + anything marked
+  // for removal locally (so the wizard can show it struck-through with the
+  // toggle pre-checked). Step11 items keep their real _s11Idx as `index`;
+  // everything else (engine/materialLine rows) gets a unique negative
+  // sentinel index to avoid colliding with real step11 positions — the
+  // wizard still reads the real position off `_materialIdx` when building
+  // the submit payload. ─────────────────────────────────────────────────
+  const wizardItems = [...renderLines, ...deletedFromBom, ...deletedMaterialLines].map((it: any, index: number) => ({
+    ...it,
+    index: it._s11Idx !== undefined ? it._s11Idx : -1_000_000 - index,
+  })) as PendingManualItem[];
+  const wizardPreDeletedIndexes = wizardItems
+    .filter((it: any) => deletedFromBom.some((i: any) => i._s11Idx === it._s11Idx) || deletedMaterialLines.some((i: any) => i._materialIdx === it._materialIdx))
+    .map((it: any) => it.index);
 
   const handleRowReorder = async (newOrder: any[]) => {
     setLocalItems(newOrder);
@@ -319,7 +546,9 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   };
 
 
-  const totalAmount = displayLines.reduce((sum: number, it: any) => sum + (Number(it.amount) || 0), 0);
+  const totalAmount = displayLines
+    .filter((it: any) => !isMarkedForRemoval(it))
+    .reduce((sum: number, it: any) => sum + (Number(it.amount) || 0), 0);
 
   // Calculate Standard Rate at Base Qty (e.g. 100 Sqft) to ensure consistency across projects
   const baseQty = Number(tableData.configBasis?.baseRequiredQty || 1);
@@ -451,6 +680,11 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
           <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title={isExpanded ? "Collapse" : "Expand"} onClick={toggle}>
             {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </Button>
+          {onFocusProduct && (
+            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-blue-600" title="Focus on this product" onClick={(e) => { e.stopPropagation(); onFocusProduct(boqItem.id); }}>
+              <Maximize2 className="h-4 w-4" />
+            </Button>
+          )}
         </div>
       </div>
 
@@ -513,10 +747,19 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
               </div>
 
               <div className="flex items-center gap-2">
+                {bomShopRateRequests?.some(r => r.boq_item_id === boqItem.id && (r.approved === null || r.approved === undefined)) && (
+                  <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded border border-amber-200 flex items-center gap-1.5 uppercase tracking-wider h-7">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                    </span>
+                    Awaiting Approval
+                  </span>
+                )}
                 {!tableData.is_finalized && (
                   <Button variant="outline" size="sm" className="h-7 text-xs border-slate-300 font-bold" disabled={isVersionSubmitted || !bomButtonsEnabled} onClick={() => handleAddItem(boqItem.id)}>+ Add Item</Button>
                 )}
-                <Button variant="default" size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700 text-white font-bold" disabled={isVersionSubmitted || tableData.is_finalized} onClick={() => handleFinalizeProduct(boqItem.id)}>Finalize</Button>
+                <Button variant="default" size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700 text-white font-bold" disabled={isVersionSubmitted || tableData.is_finalized || isMultiItemLooseProduct} onClick={() => handleFinalizeProduct(boqItem.id)}>Finalize</Button>
               </div>
             </div>
 
@@ -558,6 +801,31 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                   Analysis
                 </Button>
                 <Button variant="outline" size="sm" className="h-7 text-xs font-bold border-slate-300 shadow-sm" disabled={isVersionSubmitted} onClick={() => onSaveAsTemplate?.(boqItem)}>Save as Template</Button>
+                {(!isVersionSubmitted && (bomButtonsEnabled || pendingManualItems.length > 0)) && (
+                  <>
+                    {!isLooseItem && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs font-bold border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 shadow-sm"
+                        title={pendingManualItems.length > 0 ? `Add ${pendingManualItems.length} newly added manual item(s) to this product (requires approval)` : "Edit product and submit changes for approval"}
+                        onClick={() => setShowSaveEditWizard(true)}
+                      >
+                        <Save className="h-3.5 w-3.5 mr-1" />
+                        Save {pendingManualItems.length > 0 ? `(${pendingManualItems.length})` : ""}
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs font-bold border-indigo-300 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 shadow-sm"
+                      title={pendingManualItems.length > 0 ? "Use these newly added manual items to create a new product (requires approval)" : "Use this product as a base to create a new product (requires approval)"}
+                      onClick={() => setShowSaveAsWizard(true)}
+                    >
+                      Save As
+                    </Button>
+                  </>
+                )}
                 <Button variant="outline" size="sm" className="h-7 text-xs font-bold border-slate-300 shadow-sm relative" onClick={() => onAddComment(selectedVersionId!, boqItem.id)}>
                   <MessageSquare className="h-3 w-3 mr-1" />
                   Comments ({comments.filter(c => c.product_id === boqItem.id || (c.item_id && c.item_id.startsWith(boqItem.id))).length})
@@ -587,6 +855,13 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                 )}
               </div>
             </div>
+
+            {(awaitingApprovalItems.length + awaitingApprovalMaterialLines.length) > 0 && (
+              <div className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 inline-flex items-center gap-1.5 w-fit">
+                <Clock className="h-3 w-3" />
+                {awaitingApprovalItems.length + awaitingApprovalMaterialLines.length} item{(awaitingApprovalItems.length + awaitingApprovalMaterialLines.length) === 1 ? "" : "s"} awaiting admin approval
+              </div>
+            )}
 
             {/* Row 4: Description + HSN/SAC */}
             <div className="flex flex-wrap items-center gap-4 pt-1">
@@ -641,22 +916,25 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
             </div>
 
             {/* Row 5: Project Target */}
-            {isEngineBased && (
+            {(isEngineBased || isMultiItemLooseProduct) && (
               <div className={`flex items-center gap-3 pt-1 ${isLumpSum ? "opacity-50 pointer-events-none" : ""}`}>
-                <span className="text-xs font-black text-slate-500 uppercase tracking-tight">Project Target:</span>
+                <span className={`text-xs font-black uppercase tracking-tight ${isMultiItemLooseProduct ? "text-red-500" : "text-slate-500"}`}>
+                  {isMultiItemLooseProduct ? "Project Target (Save As Required):" : "Project Target:"}
+                </span>
                 <div className="flex items-center gap-2">
                   <Input
                     type="number"
                     className="h-8 w-24 text-xs font-black text-blue-600 border-blue-200 focus:ring-1 ring-blue-100 bg-white"
-                    value={displayQty}
+                    value={isMultiItemLooseProduct ? "" : displayQty}
                     onChange={(e) => {
                       const val = parseFloat(e.target.value) || 0;
-                      if (isLumpSum) return;
+                      if (isLumpSum || isMultiItemLooseProduct) return;
                       setLocalTarget(Math.max(0, val));
                     }}
 
-                    disabled={isVersionSubmitted || tableData.is_finalized}
+                    disabled={isVersionSubmitted || tableData.is_finalized || isMultiItemLooseProduct}
                     onBlur={async (e) => {
+                      if (isMultiItemLooseProduct) return;
                       const newVal = parseFloat(e.target.value);
                       const currentVal = tableData.targetRequiredQty ?? 1;
                       if (isNaN(newVal) || newVal === currentVal || newVal < 0) { setLocalTarget(currentVal); return; }
@@ -667,8 +945,15 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                       } catch (err) { console.error("Failed to update target qty", err); }
                     }}
                   />
-                  <span className="text-xs font-black text-blue-600">{isLumpSum ? "LS" : (tableData.configBasis?.requiredUnitType || "Unit")}</span>
+                  <span className="text-xs font-black text-blue-600">
+                    {isLumpSum ? "LS" : (isMultiItemLooseProduct ? "Unit" : (tableData.configBasis?.requiredUnitType || "Unit"))}
+                  </span>
                 </div>
+                {isMultiItemLooseProduct && (
+                  <span className="text-[10px] font-bold text-red-600 ml-2 bg-red-50 px-2 py-0.5 rounded border border-red-200">
+                    Please use 'Save As' to convert this multi-item group into a Product.
+                  </span>
+                )}
               </div>
             )}
           </div>
@@ -709,9 +994,9 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                         key={item.itemKey || `${boqItem.id}-${item.originalIdx}`}
                         item={item} itemIdx={item.originalIdx} boqItem={boqItem}
                         tableData={tableData} isEngineBased={isEngineBased} isVersionSubmitted={isVersionSubmitted}
-                        amendRatesActive={amendRatesActive}
+                        amendRatesActive={amendRatesActive} bomButtonsEnabled={bomButtonsEnabled}
                         getEditedValue={getEditedValue} updateEditedField={updateEditedField}
-                        handleDeleteRow={handleDeleteRow} checkBudgetEarly={checkBudgetEarly}
+                        handleDeleteRow={handleCardDeleteRow} checkBudgetEarly={checkBudgetEarly}
                         handleSaveProject={handleSaveProject}
                         isDraggable={!isVersionSubmitted && !tableData.is_finalized}
                         isDragOver={dragOverIdx === item.originalIdx}
@@ -743,6 +1028,11 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                           newOrder.splice(toIdx, 0, moved);
                           handleRowReorder(newOrder);
                         }}
+                        onBomShopRateSubmitted={() => {
+                          loadBoqItemsAndEdits();
+                          onBomShopRateChangeSubmitted?.();
+                        }}
+                        bomShopRateRequests={bomShopRateRequests}
                       />
                     ))
                 }
@@ -796,6 +1086,38 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
           )}
         </>
       )}
+
+      <SaveConfirmDialog
+        open={showSaveConfirm}
+        onOpenChange={setShowSaveConfirm}
+        productName={productName}
+        items={pendingManualItems}
+        isSubmitting={isSubmittingSave}
+        onConfirm={handleConfirmSave}
+      />
+      <SaveAsWizardDialog
+        mode="save"
+        open={showSaveEditWizard}
+        onOpenChange={setShowSaveEditWizard}
+        sourceProductName={productName}
+        items={wizardItems}
+        preDeletedIndexes={wizardPreDeletedIndexes}
+        isSubmitting={isSubmittingSave}
+        existingProductNames={existingProductNamesInVersion}
+        onSubmit={() => { }}
+        onSubmitSave={handleSubmitSaveEdit}
+      />
+      <SaveAsWizardDialog
+        mode="save_as"
+        open={showSaveAsWizard}
+        onOpenChange={setShowSaveAsWizard}
+        sourceProductName={productName}
+        items={wizardItems}
+        preDeletedIndexes={wizardPreDeletedIndexes}
+        isSubmitting={isSubmittingSave}
+        existingProductNames={existingProductNamesInVersion}
+        onSubmit={handleSubmitSaveAs}
+      />
 
       <DeleteConfirmationDialog
         isOpen={deleteConfirmOpen}

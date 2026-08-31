@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, Store } from "lucide-react";
 import { fuzzySearch, cn } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -40,8 +40,9 @@ import { Checkbox } from "../../../components/ui/checkbox";
 import { useData } from "../../../lib/store";
 import { Project, BOMVersion, BOMItem, Product, Step11Item, BOMHistory, BOMComment, User, PROJECT_STATUSES, getProjectStatusMeta } from '../types';
 import { parseTableData, parseImages, safeJson, VERSION_LABEL } from '../utils';
+import { ChangeShopRateDialog } from './ChangeShopRateDialog';
 
-export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqItem, tableData, isEngineBased, isVersionSubmitted, getEditedValue, updateEditedField, handleDeleteRow, checkBudgetEarly, handleSaveProject, isDraggable, isDragOver, onDragStart, onDragOver, onDrop, mismatch, isCompactView, comments, users, currentUser, onAddComment, selectedVersionId, isBifProd, totalItems, onOrdinalChange, amendRatesActive }: {
+export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqItem, tableData, isEngineBased, isVersionSubmitted, getEditedValue, updateEditedField, handleDeleteRow, checkBudgetEarly, handleSaveProject, isDraggable, isDragOver, onDragStart, onDragOver, onDrop, mismatch, isCompactView, comments, users, currentUser, onAddComment, selectedVersionId, isBifProd, totalItems, onOrdinalChange, amendRatesActive, onBomShopRateSubmitted, bomShopRateRequests, bomButtonsEnabled }: {
   item: any; itemIdx: number; boqItem: BOMItem; tableData: any; isEngineBased: boolean; isVersionSubmitted: boolean;
   getEditedValue: (k: string, f: string, v: any) => any;
   updateEditedField: (k: string, f: string, v: any) => void;
@@ -64,9 +65,26 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
   totalItems?: number;
   onOrdinalChange?: (toIdx: number) => void;
   amendRatesActive?: boolean;
+  onBomShopRateSubmitted?: () => void;
+  bomShopRateRequests?: any[];
+  bomButtonsEnabled?: boolean;
 }) {
   const { toast } = useToast();
   const itemKey = item.itemKey || `${boqItem.id}-manual-${itemIdx}`;
+  const [changeShopRateOpen, setChangeShopRateOpen] = useState(false);
+  // "Change Shop & Rate" targets any BOQ line that points at a real
+  // materials.id — this covers both individually-added materials
+  // (item.manual === true, added via "+ Add Item") AND materials that come
+  // from a product's engine-computed material list (item.manual === false,
+  // added via "+ Add Product"). Either way `item.id` is the materials.id for
+  // that line (see BoqItemCard's id: line.id || line.materialId mapping).
+  const canChangeShopRate = !!item.id && !isVersionSubmitted;
+  // Find an unresolved Change Shop & Rate request for this exact material line,
+  // so we can show a "pending approval" indicator right on the row (spec §18)
+  // instead of only a page-level banner.
+  const pendingShopRateRequest = bomShopRateRequests?.find(
+    (r) => r.previous_material_id === item.id && (r.approved === null || r.approved === undefined),
+  );
 
   // Engine items (from computeBoq) have pre-computed rateSqft/requiredQty/roundOff/amount.
   // Rendering them through the editable path reads supply_rate=0, causing the "0 rate" bug.
@@ -176,7 +194,20 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
             />
           </td>
         )}
-        {!isCompactView && <td className="border px-2 py-2 text-left w-32 text-gray-600">{item.shop_name || "-"}</td>}
+        {!isCompactView && (
+          <td className="border px-2 py-2 text-left w-32 text-gray-600 align-top">
+            <div>{item.shop_name || "-"}</div>
+            {pendingShopRateRequest && (
+              <div
+                className="mt-1 inline-flex flex-col gap-0.5 text-[9px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1 py-0.5"
+                title="Change Shop & Rate request is pending Materials Approval"
+              >
+                <span>Pending: {pendingShopRateRequest.requested_shop_name || "New Shop"} | ₹{Number(pendingShopRateRequest.rate).toLocaleString()}</span>
+                <span className="uppercase tracking-wide">Material Approval Pending</span>
+              </div>
+            )}
+          </td>
+        )}
         {!isCompactView && <td className="border px-2 py-2 text-left w-[300px] text-gray-600 truncate max-w-[300px] hover:cursor-help hover:bg-blue-50" title={item.description || "-"}>{item.description || "-"}</td>}
         <td className="border px-2 py-2 text-center w-16">{item.unit || "-"}</td>
         <td className="border px-2 py-2 text-center w-20 font-medium">{(item.qtyPerSqf ?? 0).toFixed(3)}</td>
@@ -285,8 +316,31 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
             {!isBifProd && (
               <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-600 hover:text-red-800 hover:bg-red-50" onClick={() => handleDeleteRow(boqItem.id, tableData, itemIdx, item)} disabled={isVersionSubmitted} title="Delete Item"><Trash2 className="h-3 w-3" /></Button>
             )}
+            {canChangeShopRate && (
+              <Button
+                variant="ghost" size="sm" className="h-6 w-6 p-0 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
+                onClick={() => setChangeShopRateOpen(true)}
+                title="Change Shop & Rate"
+              >
+                <Store className="h-3 w-3" />
+              </Button>
+            )}
           </div>
         </td>
+        {canChangeShopRate && (
+          <ChangeShopRateDialog
+            open={changeShopRateOpen}
+            onOpenChange={setChangeShopRateOpen}
+            materialId={item.id}
+            materialName={item.title || item.description || item.name || "This material"}
+            currentShopName={item.shop_name}
+            currentRate={item.rateSqft}
+            unit={item.unit}
+            boqItemId={boqItem.id}
+            boqVersionId={selectedVersionId}
+            onSubmitted={onBomShopRateSubmitted}
+          />
+        )}
       </tr>
     );
   }
@@ -388,19 +442,33 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
           />
         </td>
       )}
-      {!isCompactView && <td className="border px-2 py-2 text-left w-32 text-gray-600">{item.shop_name || "-"}</td>}
-      {!isCompactView && <td className="border px-2 py-2 text-left w-[300px]">
-        <Input
-          value={localDesc}
-          onChange={(e) => setLocalDesc(e.target.value)}
-          onBlur={() => { setIsFocused(false); updateEditedField(itemKey, "description", localDesc); }}
-          placeholder="Description..."
-          title={localDesc}
-          className="h-7 text-xs border-gray-200 focus:border-blue-400 hover:bg-blue-50"
-          disabled={isVersionSubmitted || (item.freezeAndEdit || item.freeze_and_edit)}
-          onFocus={() => { setIsFocused(true); checkBudgetEarly(); }}
-        />
-      </td>}
+      {!isCompactView && (
+        <td className="border px-2 py-2 text-left w-32 text-gray-600 align-top">
+          <div>{item.shop_name || "-"}</div>
+          {pendingShopRateRequest && (
+            <div
+              className="mt-1 inline-flex flex-col gap-0.5 text-[9px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1 py-0.5"
+              title="Change Shop & Rate request is pending Materials Approval"
+            >
+              <span>Pending: {pendingShopRateRequest.requested_shop_name || "New Shop"} | ₹{Number(pendingShopRateRequest.rate).toLocaleString()}</span>
+              <span className="uppercase tracking-wide">Material Approval Pending</span>
+            </div>
+          )}
+        </td>
+      )}
+      {!isCompactView && (
+        <td className="border px-2 py-2 text-left w-[300px]">
+          <Input
+            value={localDesc}
+            onChange={(e) => setLocalDesc(e.target.value)}
+            onBlur={() => { setIsFocused(false); updateEditedField(itemKey, "description", localDesc); }}
+            placeholder="Description..."
+            title={localDesc}
+            className="h-7 text-xs border-gray-200 focus:border-blue-400 hover:bg-blue-50"
+            disabled={isVersionSubmitted || (item.freezeAndEdit || item.freeze_and_edit)}
+            onFocus={() => { setIsFocused(true); checkBudgetEarly(); }}
+          />
+        </td>)}
       <td className="border px-2 py-2 text-center w-16">
         <Input
           type="text"
@@ -573,8 +641,31 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
               <Trash2 className="h-3 w-3" />
             </Button>
           )}
+          {canChangeShopRate && (
+            <Button
+              variant="ghost" size="sm" className="h-6 w-6 p-0 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
+              onClick={() => setChangeShopRateOpen(true)}
+              title="Change Shop & Rate"
+            >
+              <Store className="h-3 w-3" />
+            </Button>
+          )}
         </div>
       </td>
+      {canChangeShopRate && (
+        <ChangeShopRateDialog
+          open={changeShopRateOpen}
+          onOpenChange={setChangeShopRateOpen}
+          materialId={item.id}
+          materialName={item.description || item.name || "This material"}
+          currentShopName={item.shop_name}
+          currentRate={sRate}
+          unit={unit}
+          boqItemId={boqItem.id}
+          boqVersionId={selectedVersionId}
+          onSubmitted={onBomShopRateSubmitted}
+        />
+      )}
     </tr>
   );
 }, (prevProps, nextProps) => {

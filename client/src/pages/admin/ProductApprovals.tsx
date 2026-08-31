@@ -22,6 +22,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { useData } from "@/lib/store";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import NewItemsApprovalTab from "./NewItemsApprovalTab";
 
 type Approval = {
   id: string;
@@ -112,6 +113,22 @@ export default function ProductApprovals() {
 
   useEffect(() => {
     fetchApprovals();
+  }, []);
+
+  // New Items (Save / Save As from Generate BOM) pending count for the tab badge
+  const [newItemsPendingCount, setNewItemsPendingCount] = useState(0);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch("/api/boq-manual-item-requests?status=pending");
+        if (res.ok) {
+          const data = await res.json();
+          setNewItemsPendingCount((data.requests || []).length);
+        }
+      } catch (err) {
+        console.error("Failed to load new items pending count:", err);
+      }
+    })();
   }, []);
 
   const toggleExpand = async (id: string) => {
@@ -1101,7 +1118,7 @@ export default function ProductApprovals() {
                 </div>
 
                 <Tabs defaultValue={editRequests.length > 0 ? "edit-requests" : "product-approvals"} className="w-full">
-                  <TabsList className="mb-6 grid w-full grid-cols-2 max-w-[440px]">
+                  <TabsList className="mb-6 grid w-full grid-cols-3 max-w-[660px]">
                     <TabsTrigger value="edit-requests" className="font-semibold flex items-center justify-center gap-2">
                       <span>Edit Requests</span>
                       {totalEditRequestsCount > 0 && (
@@ -1118,6 +1135,14 @@ export default function ProductApprovals() {
                         </Badge>
                       )}
                     </TabsTrigger>
+                    <TabsTrigger value="new-items" className="font-semibold flex items-center justify-center gap-2">
+                      <span>New Items</span>
+                      {newItemsPendingCount > 0 && (
+                        <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100 font-bold px-2 py-0.5 text-xs">
+                          {newItemsPendingCount}
+                        </Badge>
+                      )}
+                    </TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="edit-requests" className="space-y-4">
@@ -1126,6 +1151,10 @@ export default function ProductApprovals() {
 
                   <TabsContent value="product-approvals" className="space-y-4">
                     {renderTable(standardApprovals)}
+                  </TabsContent>
+
+                  <TabsContent value="new-items" className="space-y-4">
+                    <NewItemsApprovalTab canAct={!isViewOnly} />
                   </TabsContent>
                 </Tabs>
               </div>

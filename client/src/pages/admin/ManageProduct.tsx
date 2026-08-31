@@ -127,6 +127,9 @@ export default function ManageProduct() {
     const [dateSort, setDateSort] = useState<"newest" | "oldest">("newest");
     const [statusFilter, setStatusFilter] = useState<string>("All");
     const [myModules, setMyModules] = useState<Set<string>>(new Set());
+    // Shows an immediate "Loading next page..." indicator the instant Next/Continue
+    // is clicked, and guards against duplicate clicks while the next step is prepared.
+    const [isStepTransitioning, setIsStepTransitioning] = useState(false);
 
     // Fetch the current user's granted module permissions (for the "Edit Approved/Submitted
     // Configs" override, assignable per-user from Access Control -> Manage User Access)
@@ -407,15 +410,20 @@ export default function ManageProduct() {
         refetchOnMount: "always",
     });
 
-    const rawMaterials = materialsData || [];
-    const uniqueMaterials = Array.from(new Map(
-        rawMaterials
-            .filter(m => {
-                if (!isSupplier) return true;
-                return supplierShops.some(s => String(s.id) === String(m.shop_id || m.shopId) || (s.name && s.name === m.shop_name));
-            })
-            .map(m => [(m.id || Math.random()).toString(), m])
-    ).values());
+    // Memoized so this O(n) pass over the full materials list only re-runs when the
+    // underlying data actually changes, not on every render (e.g. typing in a search
+    // box or toggling the step-transition indicator).
+    const uniqueMaterials = useMemo(() => {
+        const rawMaterials = materialsData || [];
+        return Array.from(new Map(
+            rawMaterials
+                .filter(m => {
+                    if (!isSupplier) return true;
+                    return supplierShops.some(s => String(s.id) === String(m.shop_id || m.shopId) || (s.name && s.name === m.shop_name));
+                })
+                .map(m => [(m.id || Math.random()).toString(), m])
+        ).values());
+    }, [materialsData, isSupplier, supplierShops]);
 
     const availableUnitTypes = useMemo(() => {
         const defaults = ["Sqft", "Sqmt", "Length", "LS", "RFT", "RMT"];
@@ -430,7 +438,10 @@ export default function ManageProduct() {
         return finalUnits.sort();
     }, [materialsData]);
 
-    const filteredMaterials = uniqueMaterials.filter(m => {
+    // Memoized: previously recomputed (including the fuzzySearch pass over every
+    // material) on every single render, which is a big part of why opening Step 2
+    // felt slow. Now it only recalculates when a relevant input actually changes.
+    const filteredMaterials = useMemo(() => uniqueMaterials.filter(m => {
         if (materialSearch) {
             if (!fuzzySearch(materialSearch, [m.name || "", m.code || ""])) return false;
         }
@@ -447,22 +458,53 @@ export default function ManageProduct() {
         }
 
         return true;
-    });
+    }), [uniqueMaterials, materialSearch, selectedCategory, selectedSubcategory, projectPricingFilter]);
 
+    // Note: the configMaterials rebuild that used to run synchronously here (duplicating
+    // the useEffect below that does the same mapping whenever step === 2) has been
+    // removed. It was extra work done inline on the click before the page could paint;
+    // the effect already produces the identical result right after the step-2/3 view
+    // commits, so removing the duplicate here does not change behavior, only timing.
     const nextStep = () => {
+        if (isStepTransitioning) return; // guard against duplicate/rapid clicks
         if (step === 1 && !selectedProduct) { toast({ title: "Product Required", description: "Please select a product.", variant: "destructive" }); return; }
         if (step === 2 && selectedMaterials.length === 0) { toast({ title: "Selection Required", description: "Select at least one material.", variant: "destructive" }); return; }
-        if (step === 2) {
-            const existingMap = new Map(configMaterials.map(m => [m.id, m]));
-            setConfigMaterials(selectedMaterials.map(m => {
-                const ex = existingMap.get(m.id);
-                if (ex) return ex;
-                const rate = Number(m.rate) || 0;
-                return { ...m, qty: 1, baseQty: 1, wastagePct: undefined, amount: rate, rate, supplyRate: rate, installRate: 0, location: m.technicalspecification || m.name || "", description: m.technicalspecification || m.name || "", applyWastage: true, applyRounding: true, freezeAndEdit: false, shop_id: m.shop_id || m.shopId, shopId: m.shop_id || m.shopId };
-            }));
-        }
-        setStep(step + 1);
+
+        // Show the "Loading next page..." indicator immediately, then defer the actual
+        // (potentially heavier) step change to the next tick so the browser gets a
+        // chance to paint the indicator first instead of blocking on the render.
+        setIsStepTransitioning(true);
+        setTimeout(() => {
+            setStep(prev => prev + 1);
+        }, 0);
     };
+
+    // Same fix as nextStep, for the Back buttons: show the indicator immediately,
+    // defer the actual step change, and guard against duplicate/rapid clicks so
+    // Back can no longer feel "stuck" while the previous step re-renders.
+    const prevStep = () => {
+        if (isStepTransitioning) return;
+        setIsStepTransitioning(true);
+        setTimeout(() => {
+            setStep(prev => prev - 1);
+        }, 0);
+    };
+
+    // Once the new step has actually committed to the DOM, dismiss the loading
+    // indicator on the following paint. Using a double rAF (instead of clearing it
+    // synchronously) ensures the indicator is removed only after the next page has
+    // really rendered, not just after the state update was scheduled.
+    useEffect(() => {
+        if (!isStepTransitioning) return;
+        let raf2 = 0;
+        const raf1 = requestAnimationFrame(() => {
+            raf2 = requestAnimationFrame(() => setIsStepTransitioning(false));
+        });
+        return () => {
+            cancelAnimationFrame(raf1);
+            if (raf2) cancelAnimationFrame(raf2);
+        };
+    }, [step, isStepTransitioning]);
 
     const buildPayloadItems = () => boqResults.computed.map(m => ({
         materialId: m.id, materialName: m.name, unit: m.unit, qty: m.roundOffQty, rate: m.rate,
@@ -1013,6 +1055,18 @@ export default function ManageProduct() {
 
     return (
         <LayoutComponent {...(isSupplier ? { shopName, shopLocation, shopApproved: true } : {})}>
+            {isStepTransitioning && (
+                <div
+                    role="status"
+                    aria-live="polite"
+                    className="fixed inset-0 z-[60] flex items-center justify-center bg-white/70 backdrop-blur-[1px] animate-in fade-in duration-150"
+                >
+                    <div className="flex items-center gap-3 bg-white px-6 py-4 rounded-xl shadow-xl border">
+                        <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                        <span className="text-sm font-bold text-slate-700">Loading next page…</span>
+                    </div>
+                </div>
+            )}
             <div className="container mx-auto py-8 px-4">
                 <Card className="max-w-6xl mx-auto shadow-xl border-none">
                     <CardHeader className="bg-primary/5 border-b pb-6">
@@ -1766,7 +1820,9 @@ export default function ManageProduct() {
                                     </div>
                                 )}
                                 <div className="flex justify-end pt-4">
-                                    <Button size="sm" onClick={nextStep} disabled={!selectedProduct} className="px-6 h-10">Next Step <ArrowRight className="ml-2 h-4 w-4" /></Button>
+                                    <Button size="sm" onClick={nextStep} disabled={!selectedProduct || isStepTransitioning} className="px-6 h-10">
+                                        {isStepTransitioning ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading…</> : <>Next Step <ArrowRight className="ml-2 h-4 w-4" /></>}
+                                    </Button>
                                 </div>
                             </div>
                         )}
@@ -1925,14 +1981,16 @@ export default function ManageProduct() {
                                     </div>
                                 </div>
                                 <div className="flex flex-col sm:flex-row justify-between items-center gap-4 pt-8 mt-4 border-t border-dashed">
-                                    <Button variant="outline" size="sm" onClick={() => setStep(step - 1)} className="w-full sm:w-auto px-8 h-10 border-slate-200 font-bold uppercase tracking-wide"><ArrowLeft className="mr-2 h-4 w-4" /> Back</Button>
+                                    <Button variant="outline" size="sm" onClick={prevStep} disabled={isStepTransitioning} className="w-full sm:w-auto px-8 h-10 border-slate-200 font-bold uppercase tracking-wide">
+                                        {isStepTransitioning ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading…</> : <><ArrowLeft className="mr-2 h-4 w-4" /> Back</>}
+                                    </Button>
                                     <div className="flex items-center gap-6 w-full sm:w-auto">
                                         <div className="flex flex-col items-end">
                                             <p className="text-[10px] font-black tracking-widest text-muted-foreground uppercase leading-none mb-1">Total Selected</p>
                                             <p className="text-sm font-black text-primary leading-none">{selectedMaterials.length} Items</p>
                                         </div>
-                                        <Button size="sm" onClick={nextStep} disabled={selectedMaterials.length === 0} className="w-full sm:w-auto h-12 px-12 bg-primary hover:bg-primary/90 text-white font-black uppercase tracking-widest shadow-xl shadow-primary/20 transition-all hover:scale-[1.02]">
-                                            Continue <ArrowRight className="ml-2 h-4 w-4" />
+                                        <Button size="sm" onClick={nextStep} disabled={selectedMaterials.length === 0 || isStepTransitioning} className="w-full sm:w-auto h-12 px-12 bg-primary hover:bg-primary/90 text-white font-black uppercase tracking-widest shadow-xl shadow-primary/20 transition-all hover:scale-[1.02]">
+                                            {isStepTransitioning ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading…</> : <>Continue <ArrowRight className="ml-2 h-4 w-4" /></>}
                                         </Button>
                                     </div>
                                 </div>
@@ -2087,12 +2145,13 @@ export default function ManageProduct() {
                                                                     <TableHead className="font-bold">Material Name</TableHead>
                                                                     <TableHead className="font-bold">Unit</TableHead>
                                                                     <TableHead className="font-bold">Shop</TableHead>
+                                                                    <TableHead className="font-bold">Rate</TableHead>
                                                                     <TableHead className="text-right font-bold pr-6">Action</TableHead>
                                                                 </TableRow>
                                                             </TableHeader>
                                                             <TableBody>
                                                                 {loadingMaterials ? (
-                                                                    <TableRow><TableCell colSpan={4} className="text-center py-10"><Loader2 className="h-6 w-6 animate-spin mx-auto text-primary" /></TableCell></TableRow>
+                                                                    <TableRow><TableCell colSpan={5} className="text-center py-10"><Loader2 className="h-6 w-6 animate-spin mx-auto text-primary" /></TableCell></TableRow>
                                                                 ) : (uniqueMaterials || []).filter(m => {
                                                                     return fuzzySearch(step3MaterialSearch, [m.name || "", m.code || ""]);
                                                                 }).map(material => (
@@ -2110,6 +2169,7 @@ export default function ManageProduct() {
                                                                         </TableCell>
                                                                         <TableCell>{material.unit || "-"}</TableCell>
                                                                         <TableCell>{material.shop_name || "-"}</TableCell>
+                                                                        <TableCell className="font-bold text-[13px]">₹{Number(material.rate || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
                                                                         <TableCell className="text-right pr-4">
                                                                             <Button size="sm" variant="outline" className="h-8 text-xs font-bold border-primary text-primary hover:bg-primary hover:text-white"
                                                                                 onClick={() => {
@@ -2284,7 +2344,9 @@ export default function ManageProduct() {
 
                                     <div className="flex flex-col sm:flex-row justify-between items-center gap-4 pt-6 mt-4 border-t">
                                         <div className="flex items-center gap-3 w-full sm:w-auto">
-                                            <Button variant="outline" size="sm" onClick={() => setStep(step - 1)} className="w-full sm:w-auto px-6 h-10"><ArrowLeft className="mr-2 h-4 w-4" /> Back to Selection</Button>
+                                            <Button variant="outline" size="sm" onClick={prevStep} disabled={isStepTransitioning} className="w-full sm:w-auto px-6 h-10">
+                                                {isStepTransitioning ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading…</> : <><ArrowLeft className="mr-2 h-4 w-4" /> Back to Selection</>}
+                                            </Button>
                                             <Button variant="outline" size="sm" onClick={() => { resetSelection(); setStep(1); setSelectedProduct(null); }} className="w-full sm:w-auto px-6 h-10 border-blue-400 text-blue-700 hover:bg-blue-50">+ Add Another Product</Button>
                                         </div>
                                         <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -2299,7 +2361,6 @@ export default function ManageProduct() {
                                                     {isSaving ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Submitting...</> : "Submit for Approval"}
                                                 </Button>
                                             )}
-                                            <Button size="sm" onClick={nextStep} className="w-full sm:w-auto h-10 bg-primary hover:bg-primary/90 text-white font-bold px-6 transition-all">Continue to Review <ArrowRight className="ml-2 h-4 w-4" /></Button>
                                         </div>
                                     </div>
                                 </div>
@@ -2369,7 +2430,9 @@ export default function ManageProduct() {
                                     </table>
                                 </div>
                                 <div className="flex flex-col sm:flex-row justify-between items-center gap-4 pt-8 mt-8 border-t border-black/10">
-                                    <Button variant="outline" size="sm" onClick={() => setStep(step - 1)} className="w-full sm:w-auto px-6 h-10 font-bold uppercase tracking-wide" disabled={isSaving}><ArrowLeft className="mr-2 h-4 w-4" /> Back</Button>
+                                    <Button variant="outline" size="sm" onClick={prevStep} className="w-full sm:w-auto px-6 h-10 font-bold uppercase tracking-wide" disabled={isSaving || isStepTransitioning}>
+                                        {isStepTransitioning ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading…</> : <><ArrowLeft className="mr-2 h-4 w-4" /> Back</>}
+                                    </Button>
                                     <div className="flex items-center gap-3 w-full sm:w-auto">
                                         {isReadOnly && (
                                             <Button

@@ -2113,6 +2113,8 @@ export default function AdminDashboard() {
 
   const isVoltAmpele = user?.username === "VoltAmpele@gmail.com";
 
+
+
   const isProductManager = user?.role === "product_manager";
 
   // --- Dynamic Permissions Hook ---
@@ -4685,7 +4687,9 @@ export default function AdminDashboard() {
                                 onCheckedChange={() =>
                                   toggleSelectAllMaterialRequests(
                                     materialRequests
-                                      .filter((r: any) => r.status === "pending")
+                           
+                           
+                                    .filter((r: any) => r.status === "pending")
                                       .map((r: any) => r.id)
                                   )
                                 }
@@ -4801,6 +4805,16 @@ export default function AdminDashboard() {
                                   <div className="flex-1 min-w-0">
                                     <h3 className="text-lg font-bold flex items-center gap-2 flex-wrap">
                                       {request.material.name}
+                                      {request.source === 'generate_bom' && (
+                                        <Badge variant="outline" className="border-indigo-300 bg-indigo-50 text-indigo-700 text-[10px] px-1.5 py-0 uppercase tracking-widest h-5 flex items-center">
+                                          From BOM
+                                        </Badge>
+                                      )}
+                                      {request.requestType === 'shop_rate_change' && (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-800 border border-indigo-300">
+                                          <Store className="h-3 w-3" /> Shop & Rate Change
+                                        </span>
+                                      )}
                                       {request.material.is_project_pricing && (
                                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-300">
                                           ★ Project Pricing Material
@@ -4808,7 +4822,7 @@ export default function AdminDashboard() {
                                       )}
                                     </h3>
                                     <p className="text-sm text-muted-foreground">
-                                      Submitted by: {request.submittedBy} at{" "}
+                                      {request.requestType === 'shop_rate_change' ? 'Requested by' : 'Submitted by'}: {request.submittedBy} at{" "}
                                       {new Date(
                                         request.submittedAt
                                       ).toLocaleDateString()}
@@ -4816,38 +4830,56 @@ export default function AdminDashboard() {
                                   </div>
                                 </div>
 
-                                <div className="grid grid-cols-2 gap-3 text-sm mt-2">
-                                  <div>
-                                    <p className="font-semibold">Code</p>
-                                    <p>{request.material.code || request.material.template_code || request.material.templateCode || '-'}</p>
-                                  </div>
-                                  <div>
-                                    <p className="font-semibold">Rate</p>
-                                    <p>₹{request.material.rate ?? request.material.price ?? '-'}</p>
-                                  </div>
-                                  <div>
-                                    <p className="font-semibold">Unit</p>
-                                    <p>{request.material.unit || request.material.uom || '-'}</p>
-                                  </div>
-                                  <div>
-                                    <p className="font-semibold">Category</p>
-                                    <p>{request.material.category || request.material.categoryName || request.material.category_name || request.material.vendorCategory || request.material.vendor_category || '-'}</p>
-                                  </div>
-                                  <div>
-                                    <p className="font-semibold">Sub Category</p>
-                                    <p>{request.material.subCategory || request.material.subcategory || request.material.sub_category || '-'}</p>
-                                  </div>
-                                  <div>
-                                    <p className="font-semibold">Brand</p>
-                                    <p>{request.material.brandName || request.material.brandname || request.material.brand || request.material.make || '-'}</p>
-                                  </div>
-                                  {(request.material.technicalSpecification || request.material.technicalspecification) && (
-                                    <div className="col-span-2">
-                                      <p className="font-semibold">Technical Specification</p>
-                                      <p className="text-blue-600 italic text-xs">{request.material.technicalSpecification || request.material.technicalspecification}</p>
+                                {request.requestType === 'shop_rate_change' ? (
+                                  <div className="grid grid-cols-2 gap-3 text-sm mt-2">
+                                    <div className="rounded-md border border-slate-200 p-3">
+                                      <p className="text-xs text-slate-500 mb-1">Current</p>
+                                      <p className="font-semibold">{request.generateBomChange?.previousShopName || "-"}</p>
+                                      <p className="text-slate-600">₹{Number(request.generateBomChange?.previousRate || 0).toLocaleString()}</p>
                                     </div>
-                                  )}
-                                </div>
+                                    <div className="rounded-md border border-indigo-200 bg-indigo-50 p-3">
+                                      <p className="text-xs text-indigo-700 mb-1">Requested</p>
+                                      <p className="font-semibold">{request.generateBomChange?.requestedShopName || "-"}</p>
+                                      <p className="text-indigo-800">₹{Number(request.material.rate || 0).toLocaleString()}{request.material.unit ? ` / ${request.material.unit}` : ""}</p>
+                                    </div>
+                                    <div className="col-span-2 text-xs text-slate-500">
+                                      Source: <span className="font-medium">Generate BOM</span>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="grid grid-cols-2 gap-3 text-sm mt-2">
+                                    <div>
+                                      <p className="font-semibold">Code</p>
+                                      <p>{request.material.code || request.material.template_code || request.material.templateCode || '-'}</p>
+                                    </div>
+                                    <div>
+                                      <p className="font-semibold">Rate</p>
+                                      <p>₹{request.material.rate ?? request.material.price ?? '-'}</p>
+                                    </div>
+                                    <div>
+                                      <p className="font-semibold">Unit</p>
+                                      <p>{request.material.unit || request.material.uom || '-'}</p>
+                                    </div>
+                                    <div>
+                                      <p className="font-semibold">Category</p>
+                                      <p>{request.material.category || request.material.categoryName || request.material.category_name || request.material.vendorCategory || request.material.vendor_category || '-'}</p>
+                                    </div>
+                                    <div>
+                                      <p className="font-semibold">Sub Category</p>
+                                      <p>{request.material.subCategory || request.material.subcategory || request.material.sub_category || '-'}</p>
+                                    </div>
+                                    <div>
+                                      <p className="font-semibold">Brand</p>
+                                      <p>{request.material.brandName || request.material.brandname || request.material.brand || request.material.make || '-'}</p>
+                                    </div>
+                                    {(request.material.technicalSpecification || request.material.technicalspecification) && (
+                                      <div className="col-span-2">
+                                        <p className="font-semibold">Technical Specification</p>
+                                        <p className="text-blue-600 italic text-xs">{request.material.technicalSpecification || request.material.technicalspecification}</p>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
 
                                 {/* Approve / Reject Buttons - Admin/Software Team/Purchase Team */}
                                 {canApproveReject && (

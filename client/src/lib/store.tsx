@@ -179,10 +179,17 @@ export function DataProvider({ children }: { children: ReactNode }) {
         const submissions = (data.submissions || []).map((s: any) => ({
           id: s.submission.id,
           status: "pending",
-          source: 'submission',
+          source: s.submission.source || 'submission',
+          requestType: s.submission.source === 'generate_bom' ? 'shop_rate_change' : undefined,
+          generateBomChange: s.submission.source === 'generate_bom' ? {
+            previousShopName: s.submission.previous_shop_name || '-',
+            previousRate: s.submission.previous_rate || 0,
+            requestedShopName: s.submission.requested_shop_name || '-',
+            requestedRate: s.submission.rate || 0,
+          } : undefined,
           material: {
             id: s.submission.id,
-            name: s.submission.template_name || "Supplier Material",
+            name: s.submission.template_name || s.submission.material_name || "Supplier Material",
             code: s.submission.template_code || "",
             rate: s.submission.rate,
             unit: s.submission.unit,
@@ -428,7 +435,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const approveMaterial = async (id: string, source?: string) => {
     let res;
-    if (source === 'submission') {
+    if (source === 'submission' || source === 'generate_bom' || source === 'new_material') {
       res = await apiFetch(`/material-submissions/${id}/approve`, { method: 'POST' });
     } else {
       res = await apiFetch(`/materials/${id}/approve`, { method: 'POST' });
@@ -450,14 +457,16 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
   const rejectMaterial = async (id: string, reason?: string | null, source?: string) => {
     let res;
-    if (source === 'submission') {
+    if (source === 'submission' || source === 'generate_bom' || source === 'new_material') {
       res = await apiFetch(`/material-submissions/${id}/reject`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason })
       });
     } else {
       res = await apiFetch(`/materials/${id}/reject`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason })
       });
     }
