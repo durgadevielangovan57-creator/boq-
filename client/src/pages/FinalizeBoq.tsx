@@ -92,8 +92,7 @@ import {
   Star,
   GitMerge,
   Check,
-  FolderOpen,
-  Package
+  FolderOpen
 } from "lucide-react";
 import { BoqAnalysisDialog } from "@/components/BoqAnalysisDialog";
 import { RateSuggestionPopover } from "@/components/RateSuggestionPopover";
@@ -1337,81 +1336,6 @@ export default function FinalizeBoq() {
       loadBoqItemsAndEdits(selectedBoqVersionId || selectedBomVersionId);
     } catch (e) {
       console.error("Labour Only bulk update failed:", e);
-      toast({ title: "Error", description: "Failed to apply bulk action.", variant: "destructive" });
-    }
-  };
-
-  const handleSupplyOnlyBulk = async () => {
-    if (selectedProductIds.size === 0) {
-      toast({ title: "No items selected", description: "Please select items first.", variant: "destructive" });
-      return;
-    }
-
-    const selectedItems = boqItems.filter(i => selectedProductIds.has(i.id));
-
-    // Helper to find column name flexibly
-    const findCol = (cols: any[], terms: string[], exclude: string[] = ["amount", "total"]) => {
-      return cols.find(c => {
-        const n = c.name.toLowerCase();
-        return terms.every(t => n.includes(t.toLowerCase())) && !exclude.some(e => n.includes(e));
-      });
-    };
-
-    const itemsToUpdate = selectedItems.filter(item => {
-      const cols = customColumns[item.id] || [];
-      const supplyCol = findCol(cols, ["supply", "rate"]);
-      const labourCol = findCol(cols, ["labour", "rate"]) || findCol(cols, ["install", "rate"]) || findCol(cols, ["service", "rate"]);
-      return supplyCol && labourCol;
-    });
-
-    if (itemsToUpdate.length === 0) {
-      toast({
-        title: "No matching items",
-        description: "Selected items must have both 'Supply Rate' and 'Labour/Install/Service Rate' columns.",
-        variant: "destructive"
-      });
-      return;
-    }
-
-    toast({ title: "Applying Supply Only", description: `Updating ${itemsToUpdate.length} item(s)...` });
-
-    try {
-      const updates = itemsToUpdate.map(async (item) => {
-        const cols = customColumns[item.id] || [];
-        const nextVals = { ...(customColumnValues[item.id] || {}) };
-        const rowVals = { ...(nextVals[0] || {}) };
-
-        const supplyCol = findCol(cols, ["supply", "rate"]);
-        const labourCol = findCol(cols, ["labour", "rate"]) || findCol(cols, ["install", "rate"]) || findCol(cols, ["service", "rate"]);
-
-        if (supplyCol && labourCol) {
-          // Update column configurations (percentage values)
-          const nextCols = cols.map(c => {
-            if (c.name === supplyCol.name) return { ...c, percentageValue: 100 };
-            if (c.name === labourCol.name) return { ...c, percentageValue: 0 };
-            return c;
-          });
-
-          // Update pre-calculated values
-          rowVals[supplyCol.name] = "100";
-          rowVals[labourCol.name] = "0";
-          nextVals[0] = rowVals;
-
-          // Update local state optimistically
-          setCustomColumns(prev => ({ ...prev, [item.id]: nextCols }));
-          setCustomColumnValues(prev => ({ ...prev, [item.id]: nextVals }));
-
-          // Persist to DB
-          return saveItemLayout(item.id, nextCols, nextVals);
-        }
-      });
-
-      await Promise.all(updates);
-      setSelectedProductIds(new Set());
-      toast({ title: "Success", description: `Supply Only applied to ${itemsToUpdate.length} items.` });
-      loadBoqItemsAndEdits(selectedBoqVersionId || selectedBomVersionId);
-    } catch (e) {
-      console.error("Supply Only bulk update failed:", e);
       toast({ title: "Error", description: "Failed to apply bulk action.", variant: "destructive" });
     }
   };
@@ -2730,7 +2654,14 @@ export default function FinalizeBoq() {
         if (td.finalize_override_type) {
           setOverrideTypes(prev => ({ ...prev, [newItem.id]: td.finalize_override_type }));
         } else {
-          setOverrideTypes(prev => ({ ...prev, [newItem.id]: 'value' }));
+          // No saved override type on this new item — match whatever mode
+          // ("%" or "value") the rest of the sheet is currently using,
+          // instead of hardcoding 'value'. Hardcoding it here used to force
+          // brand-new rows into flat ₹-replace mode even when every other
+          // row was computing a % markup, making the new row's Total (L)
+          // look like it was "just adding" the raw override number instead
+          // of applying it as a percentage.
+          setOverrideTypes(prev => ({ ...prev, [newItem.id]: globalOverrideType ?? 'percentage' }));
         }
 
         setBoqItems(prev => [...prev, newItem]);
@@ -2782,7 +2713,7 @@ export default function FinalizeBoq() {
         ...existingTd,
         finalize_columns: updatedCols !== undefined ? updatedCols : (customColumns[boqItemId] || []),
         finalize_column_values: updatedVals !== undefined ? updatedVals : (customColumnValues[boqItemId] || {}),
-        finalize_description: updatedDesc !== undefined ? updatedDesc : (productDescriptions[boqItemId] ?? ""),
+        finalize_description: updatedDesc !== undefined ? updatedDesc : (productDescriptions[boqItemId] ?? existingTd.finalize_description ?? ""),
         finalize_qty: updatedQty !== undefined ? updatedQty : (productQuantities[boqItemId] ?? null),
         finalize_unit: updatedUnit !== undefined ? updatedUnit : (productUnits[boqItemId] ?? null),
         finalize_override_rate: updatedOverrideRate !== undefined ? updatedOverrideRate : (overrideRates[boqItemId] ?? null),
@@ -4987,13 +4918,6 @@ export default function FinalizeBoq() {
         onClick: handleLabourOnlyBulk,
       },
       {
-        id: "supply-only",
-        label: `Supply Only (${selectedProductIds.size})`,
-        icon: <Package className="w-3.5 h-3.5" />,
-        disabled: selectedProductIds.size === 0,
-        onClick: handleSupplyOnlyBulk,
-      },
-      {
         id: "manage-columns",
         label: "Manage Columns",
         icon: <Eye className="w-3.5 h-3.5" />,
@@ -6191,16 +6115,6 @@ export default function FinalizeBoq() {
                         <Button
                           type="button"
                           size="sm"
-                          variant="outline"
-                          className="h-9 gap-1.5 rounded-[14px] border-slate-200 bg-white/80 text-[11px] font-bold uppercase tracking-wide text-slate-600 shadow-sm hover:border-blue-200 hover:text-blue-600"
-                          onClick={handleSupplyOnlyBulk}
-                        >
-                          <Package className="h-3.5 w-3.5" />
-                          Supply Only ({selectedProductIds.size})
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
                           variant="destructive"
                           className="h-9 gap-1.5 rounded-[14px] text-[11px] font-bold uppercase tracking-wide"
                           disabled={isVersionSubmitted}
@@ -7085,9 +6999,7 @@ export default function FinalizeBoq() {
                                 </div>
                               </td>
                             )}
-                            {!hiddenPredefinedCols.override_total && (
-                              <td className="border-r px-2 py-1.5 text-right font-semibold text-gray-800 bg-gray-50 align-middle text-[10px] w-32">
-                                ₹{(() => {
+                            {!hiddenPredefinedCols.override_total && (() => {
                                   const overrideType = overrideTypes[boqItem.id] ?? globalOverrideType ?? "value";
                                   const overrideInputVal = parseFloat((overrideRates[boqItem.id] ?? globalOverrideValue) || "0") || 0;
                                   const displayQty = getEffectiveQty(tableData, boqItem.id, productQuantities, productUnits, Number(currentStep11Items[0]?.qty || 0));
@@ -7105,10 +7017,24 @@ export default function FinalizeBoq() {
                                     ? (overrideType === "percentage" ? (systemTotal + markupTotal) : markupTotal)
                                     : systemTotal;
 
-                                  return (roundOff ? Math.round(rawVal) : rawVal).toLocaleString(undefined, { minimumFractionDigits: roundOff ? 0 : 2, maximumFractionDigits: roundOff ? 0 : 2 });
-                                })()}
-                              </td>
-                            )}
+                                  // Override Total should always be >= System Total. If an
+                                  // override (typically a flat ₹ replace) drives it below the
+                                  // system total, flag the cell in red so it's caught immediately.
+                                  const isBelowSystemTotal = rawVal < systemTotal;
+
+                              return (
+                                <td
+                                  className={`border-r px-2 py-1.5 text-right font-semibold align-middle text-[10px] w-32 ${
+                                    isBelowSystemTotal
+                                      ? "bg-red-50 text-red-600"
+                                      : "text-gray-800 bg-gray-50"
+                                  }`}
+                                  title={isBelowSystemTotal ? "Override Total is lower than System Total" : undefined}
+                                >
+                                  ₹{(roundOff ? Math.round(rawVal) : rawVal).toLocaleString(undefined, { minimumFractionDigits: roundOff ? 0 : 2, maximumFractionDigits: roundOff ? 0 : 2 })}
+                                </td>
+                              );
+                            })()}
                             {/* Custom columns */}
                             {(() => {
                               const displayQty = getEffectiveQty(tableData, boqItem.id, productQuantities, productUnits, Number(currentStep11Items[0]?.qty || 0));
