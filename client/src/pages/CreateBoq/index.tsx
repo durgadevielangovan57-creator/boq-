@@ -1768,8 +1768,24 @@ export default function CreateBom() {
       toast({ title: 'Nothing to submit', description: 'No valid rate amendments were found. Please re-enter the new rate and try again.', variant: 'destructive' });
       return;
     }
-    try {
-      for (const it of validItems) {
+    // Each item is now submitted AND saved independently. Previously the loop
+    // created every request first and only called handleSaveProject() once at
+    // the very end — so if any single item in the batch failed (duplicate
+    // request, brief network blip, one bad row), the loop threw and exited
+    // immediately. Items that had already succeeded before the failure had
+    // their 'pending' status flipped only in memory (via updateEditedField)
+    // but that status was NEVER persisted to the database, because the single
+    // trailing handleSaveProject() call was never reached. The admin could
+    // still approve the request that WAS created, but since the BOQ item's
+    // own rate_amendment_status in the database silently stayed 'draft', the
+    // approval endpoint's `line.rate_amendment_status === 'pending'` match
+    // never fired, the item never flipped to 'approved', and a page refresh
+    // showed "Submit Rate Amend Request" again — requiring repeated
+    // resubmission and creating duplicate pending requests for the same item.
+    let succeededCount = 0;
+    let failedCount = 0;
+    for (const it of validItems) {
+      try {
         await apiFetch('/api/bom-rate-changes', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1790,14 +1806,25 @@ export default function CreateBom() {
         });
         // Flip local status from 'draft' (unsent) to 'pending' (awaiting admin decision)
         updateEditedField(it.itemKey, 'rate_amendment_status', 'pending');
+        // Persist THIS item's 'pending' status immediately, instead of waiting
+        // until every item in the batch has been processed. This is what
+        // guarantees the status actually reaches the database even if a
+        // later item in the batch fails.
+        await handleSaveProject();
+        succeededCount++;
+      } catch (err) {
+        console.error(`Failed to submit rate change request for ${it.materialName}`, err);
+        failedCount++;
       }
-      await handleSaveProject();
+    }
+
+    if (succeededCount > 0) {
       toast({
         title: 'Rate Change Request Submitted',
-        description: `Sent ${validItems.length} rate amendment${validItems.length > 1 ? 's' : ''} for admin approval.${skippedCount > 0 ? ` (${skippedCount} skipped due to an invalid rate — please re-enter and resubmit.)` : ''}`
+        description: `Sent ${succeededCount} rate amendment${succeededCount > 1 ? 's' : ''} for admin approval.${skippedCount > 0 ? ` (${skippedCount} skipped due to an invalid rate — please re-enter and resubmit.)` : ''}${failedCount > 0 ? ` (${failedCount} failed to submit — please try again for those.)` : ''}`
       });
-    } catch (err) {
-      console.error('Failed to submit rate change requests', err);
+    }
+    if (succeededCount === 0 && failedCount > 0) {
       toast({ title: 'Error', description: 'Failed to submit rate change request(s)', variant: 'destructive' });
     }
   };

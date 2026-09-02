@@ -1370,6 +1370,23 @@ export async function registerRoutes(
     );
   }
 
+  // Ensure boq_history has the columns the "Change Log" (field-level
+  // who-changed-what-value) feature needs. Purely additive — existing rows
+  // and every existing column above are untouched.
+  try {
+    await query(`ALTER TABLE boq_history ADD COLUMN IF NOT EXISTS item_id VARCHAR(100)`);
+    await query(`ALTER TABLE boq_history ADD COLUMN IF NOT EXISTS item_name TEXT`);
+    await query(`ALTER TABLE boq_history ADD COLUMN IF NOT EXISTS field_name TEXT`);
+    await query(`ALTER TABLE boq_history ADD COLUMN IF NOT EXISTS old_value TEXT`);
+    await query(`ALTER TABLE boq_history ADD COLUMN IF NOT EXISTS new_value TEXT`);
+    console.log("[db] boq_history change-log columns verified/added");
+  } catch (err: unknown) {
+    console.warn(
+      "[db] Could not add boq_history change-log columns:",
+      (err as any)?.message || err,
+    );
+  }
+
   // Add foreign key constraint (ignore error if it already exists)
   try {
     await query(
@@ -6116,12 +6133,17 @@ export async function registerRoutes(
 
         // Copy items from previous version if requested
         if (copy_from_version) {
-          // Fetch items for this version specifically, and only active (user_added) ones
+          // Fetch items for this version specifically, and only active (user_added) ones.
+          // Previously this required user_added = true exactly, which silently excluded
+          // any legitimate item whose flag ended up NULL instead of true (e.g. older rows
+          // inserted before the column had a default). Now NULL is treated the same as
+          // true — only rows explicitly marked false (genuinely not user-added) are
+          // excluded — so every real BOM item makes it across to the new BOQ version.
           // Also ensuring items actually belong to this project for data integrity
           const itemsResult = await query(
             `SELECT * FROM boq_items 
              WHERE version_id = $1 
-             AND user_added = true
+             AND user_added IS NOT FALSE
              ORDER BY sort_order ASC, created_at ASC`,
             [copy_from_version],
           );
@@ -6129,20 +6151,16 @@ export async function registerRoutes(
           const archivedIds = await archiveService.getArchivedItemIds('boq_items');
           const trashedIds = await archiveService.getTrashedItemIds('boq_items');
 
-          const existingCopySet = new Set();
+          // NOTE: this used to skip any item whose table_data was byte-identical to one
+          // already copied in this loop, treating it as a "duplicate". That silently
+          // dropped genuinely separate line items — e.g. the same product added twice
+          // with the same qty/rate, which is a normal thing to do — losing real data and
+          // causing item counts (and totals) to differ between the BOM and the BOQ. Every
+          // BOM item is now copied across 1:1, with its table_data (qty, rate, every
+          // value) unchanged, so nothing is skipped, rounded, or recalculated here.
           for (const item of itemsResult.rows) {
             // Skip archived or trashed items
             if (archivedIds.includes(item.id) || trashedIds.includes(item.id)) continue;
-
-            const td = typeof item.table_data === 'string' ? JSON.parse(item.table_data) : item.table_data;
-            if (td) delete td.created_at;
-            const key = JSON.stringify(td);
-
-            if (existingCopySet.has(key)) {
-              console.log(`[copy_from_version] Skipping duplicate item during copy`);
-              continue;
-            }
-            existingCopySet.add(key);
 
             const newItemId = `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.random().toString(36).substr(2, 9)}`;
             await query(
@@ -6222,11 +6240,13 @@ export async function registerRoutes(
         const archivedIds = await archiveService.getArchivedItemIds('boq_items');
         const trashedIds = await archiveService.getTrashedItemIds('boq_items');
 
-        // Source: current items in the BOM version
+        // Source: current items in the BOM version.
+        // Same fix as copy_from_version above: NULL user_added is treated the same as
+        // true, so a legitimate item never gets silently excluded from syncing.
         const bomItemsResult = await query(
           `SELECT * FROM boq_items
            WHERE version_id = $1
-           AND user_added = true
+           AND user_added IS NOT FALSE
            ORDER BY sort_order ASC, created_at ASC`,
           [bom_version_id],
         );
@@ -6239,22 +6259,17 @@ export async function registerRoutes(
           [targetVersionId],
         );
 
-        const normalizeKey = (tableData: any) => {
-          let td = typeof tableData === 'string' ? JSON.parse(tableData) : tableData;
-          td = td ? { ...td } : {};
-          delete td.created_at;
-          return JSON.stringify(td);
-        };
-
-        // Track what's already covered in the target version, by original
-        // item id (preferred) and by content (fallback safety net) so we
-        // never insert a duplicate.
+        // Track what's already covered in the target version, by original item id.
+        // This alone is exact and sufficient to prevent re-adding a row that was
+        // already synced in. The previous content-based fallback check (comparing
+        // table_data JSON) was removed — it silently skipped genuinely separate BOM
+        // items that happened to share identical qty/rate/description (e.g. the same
+        // product added twice on purpose), which lost real items and caused the BOM
+        // and BOQ item counts/totals to mismatch.
         const alreadyCopiedFromIds = new Set<string>();
-        const existingDataKeys = new Set<string>();
         let maxSortOrder = 0;
         for (const row of existingItemsResult.rows) {
           if (row.copied_from_item_id) alreadyCopiedFromIds.add(row.copied_from_item_id);
-          existingDataKeys.add(normalizeKey(row.table_data));
           if (typeof row.sort_order === "number" && row.sort_order > maxSortOrder) {
             maxSortOrder = row.sort_order;
           }
@@ -6273,14 +6288,6 @@ export async function registerRoutes(
             skippedCount++;
             continue;
           }
-
-          // Content-identical item already present -> skip, don't duplicate
-          const key = normalizeKey(item.table_data);
-          if (existingDataKeys.has(key)) {
-            skippedCount++;
-            continue;
-          }
-          existingDataKeys.add(key);
 
           const newItemId = `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}-${Math.random().toString(36).substr(2, 9)}`;
 
@@ -8781,7 +8788,7 @@ export async function registerRoutes(
     async (req: Request, res: Response) => {
       try {
         const { id } = req.params;
-        const { table_data } = req.body;
+        const { table_data, change_log } = req.body;
 
         if (!table_data) {
           res.status(400).json({ message: "table_data is required" });
@@ -8803,6 +8810,45 @@ export async function registerRoutes(
           }
         } catch (recalcErr) {
           console.warn("PUT /api/boq-items/:id — recalculateProjectValue failed (non-fatal):", recalcErr);
+        }
+
+        // Persist the Change Log entry (if any) the client sent alongside
+        // this edit. FinalizeBoq.tsx already builds and sends `change_log`
+        // for real, single, human edits (Rate/Qty/Description/Unit/custom
+        // column), but this was never being read or written anywhere, so
+        // the Change Log dialog always stayed empty. Best-effort and
+        // non-blocking, same as the recalculateProjectValue call above —
+        // a failure here never blocks or breaks the save that already
+        // succeeded.
+        try {
+          const changeEntries = Array.isArray(change_log) ? change_log : (change_log ? [change_log] : []);
+          if (changeEntries.length > 0) {
+            const row = updateResult.rows[0];
+            const versionId = row?.version_id;
+            if (versionId) {
+              const userObj = (req.user as any) || {};
+              const itemName = table_data?.product_name || table_data?.item || table_data?.name || table_data?.category_name || "Unknown Item";
+              for (const entry of changeEntries) {
+                if (!entry || entry.field === undefined) continue;
+                await query(
+                  `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name, field_name, old_value, new_value)
+                   VALUES ($1, $2, $3, 'field_changed', $4, $5, $6, $7, $8)`,
+                  [
+                    versionId,
+                    userObj.id || "system",
+                    userObj.fullName || userObj.username || "System",
+                    id,
+                    itemName,
+                    entry.field,
+                    entry.oldValue === undefined ? null : String(entry.oldValue),
+                    entry.newValue === undefined ? null : String(entry.newValue),
+                  ]
+                );
+              }
+            }
+          }
+        } catch (changeLogErr) {
+          console.warn("PUT /api/boq-items/:id — writing change_log to boq_history failed (non-fatal):", changeLogErr);
         }
 
         res.json({ message: "BOM item updated successfully" });
