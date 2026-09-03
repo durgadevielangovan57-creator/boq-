@@ -982,8 +982,11 @@ export default function CreateBom() {
       .then(data => {
         if (!data) return;
         let list: BOMVersion[] = data.versions || [];
-        const isReadOnlyMode = user?.role === 'finance_team' || user?.role === 'purchase_team';
-        if (isReadOnlyMode) {
+        // Purchase team only sees approved versions. Finance team is still
+        // read-only (see isReadOnlyMode below) but should also see draft
+        // versions, so they are intentionally excluded from this filter.
+        const approvedOnlyMode = user?.role === 'purchase_team';
+        if (approvedOnlyMode) {
           list = list.filter((v: BOMVersion) => v.status === 'approved');
         }
         setVersions(list);
