@@ -63,7 +63,7 @@ import {
   ChevronRight,
   Briefcase,
   Package,
-
+  TrendingUp,
   MapPin,
   IndianRupee,
   Lock,
@@ -1074,6 +1074,41 @@ export default function FinalizeBoq() {
 
   const activeVersionId = selectedBoqVersionId || selectedBomVersionId;
   const activeVersion = [...bomVersions, ...boqVersions].find(v => v.id === activeVersionId);
+
+  // ── NEW FEATURE: Price Update alert ─────────────────────────────────────
+  // Materials get added to a BOQ with whatever rate they had at that time
+  // (a snapshot). If someone later updates that material's rate in the
+  // master catalog, this BOQ has no way of knowing — the old rate just sits
+  // there looking current. This checks every material line in the active
+  // version against the master catalog's current rate, and surfaces any
+  // mismatches via a blinking button next to the search bar.
+  const [priceChanges, setPriceChanges] = useState<Array<{ itemId: string; itemName: string; materialId: string; materialName: string; oldRate: number; newRate: number }>>([]);
+  const [isPriceChangesDialogOpen, setIsPriceChangesDialogOpen] = useState(false);
+  const [isCheckingPriceChanges, setIsCheckingPriceChanges] = useState(false);
+
+  const checkPriceChanges = React.useCallback(async () => {
+    if (!activeVersionId) { setPriceChanges([]); return; }
+    setIsCheckingPriceChanges(true);
+    try {
+      const resp = await apiFetch(`/api/boq-versions/${activeVersionId}/price-changes`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setPriceChanges(Array.isArray(data.changes) ? data.changes : []);
+      }
+    } catch (e) {
+      console.error("Failed to check for material price changes:", e);
+    } finally {
+      setIsCheckingPriceChanges(false);
+    }
+  }, [activeVersionId]);
+
+  useEffect(() => {
+    checkPriceChanges();
+    // Re-check periodically while this BOQ is open, in case a material's
+    // rate is updated elsewhere while the user is sitting on this page.
+    const interval = setInterval(checkPriceChanges, 60000);
+    return () => clearInterval(interval);
+  }, [checkPriceChanges]);
 
   const filteredBoqItems = React.useMemo(() => {
     // Use SAME category resolution as Generate BOM: category_name first, then category
@@ -2772,6 +2807,55 @@ export default function FinalizeBoq() {
     });
   };
 
+  // Diffs two table_data snapshots and returns a change_log entry for every
+  // VALUE field that actually differs. This is what makes the Change Log
+  // catch every edit automatically, instead of only the handful of fields
+  // (Description/Unit/Quantity/Override Rate) that were manually wired to
+  // build a changeInfo object at their own onBlur handler. Any new value
+  // field added later, or any custom column value edited from any call
+  // site, is picked up here with no extra wiring needed.
+  //
+  // Deliberately NOT diffed (these are layout/structure, not "values" —
+  // matching the Change Log dialog's own description of tracking value
+  // changes): finalize_columns (column add/remove/rename), finalize_hide_
+  // system_total, finalize_grand_total_column, finalize_hidden_predefined_
+  // cols, is_lump_sum, frontend_computed_value. Say so if you'd also like
+  // column add/remove logged as its own entry type.
+  const buildAutoChangeLog = (oldTd: any, newTd: any): Array<{ field: string; oldValue: any; newValue: any }> => {
+    const entries: Array<{ field: string; oldValue: any; newValue: any }> = [];
+    const trackedScalarFields: Array<[string, string]> = [
+      ["finalize_description", "Description"],
+      ["finalize_qty", "Quantity"],
+      ["finalize_unit", "Unit"],
+      ["finalize_override_rate", "Override Rate"],
+      ["finalize_override_type", "Override Type"],
+    ];
+    trackedScalarFields.forEach(([key, label]) => {
+      const oldVal = oldTd?.[key] ?? "";
+      const newVal = newTd?.[key] ?? "";
+      if (String(oldVal) !== String(newVal)) entries.push({ field: label, oldValue: oldVal, newValue: newVal });
+    });
+
+    // Custom column values are keyed by row index -> column name -> value.
+    const oldColVals = oldTd?.finalize_column_values || {};
+    const newColVals = newTd?.finalize_column_values || {};
+    const rowIdxs = Array.from(new Set([...Object.keys(oldColVals), ...Object.keys(newColVals)]));
+    const multiRow = rowIdxs.length > 1;
+    rowIdxs.forEach((rowIdxStr) => {
+      const oldRow = oldColVals[rowIdxStr] || {};
+      const newRow = newColVals[rowIdxStr] || {};
+      const colNames = Array.from(new Set([...Object.keys(oldRow), ...Object.keys(newRow)]));
+      colNames.forEach((colName) => {
+        const oldVal = oldRow[colName] ?? "";
+        const newVal = newRow[colName] ?? "";
+        if (String(oldVal) !== String(newVal)) {
+          entries.push({ field: multiRow ? `${colName} (row ${Number(rowIdxStr) + 1})` : colName, oldValue: oldVal, newValue: newVal });
+        }
+      });
+    });
+    return entries;
+  };
+
   const saveItemLayout = async (boqItemId: string, updatedCols?: any[], updatedVals?: any, updatedDesc?: string, updatedQty?: string, updatedOverrideRate?: string, updatedUnit?: string, updatedHiddenPredefinedCols?: Record<string, boolean>, updatedOverrideType?: "value" | "percentage", changeInfo?: { field: string; oldValue: any; newValue: any } | Array<{ field: string; oldValue: any; newValue: any }>) => {
     try {
       const boqItem = boqItems.find(i => i.id === boqItemId);
@@ -2801,15 +2885,24 @@ export default function FinalizeBoq() {
         frontend_computed_value: calculatedColumnTotals.itemFinalValues[boqItemId],
       };
 
+      // Merge whatever the caller explicitly built (kept first/preferred,
+      // since it's already curated wording for that call site) with
+      // anything the generic diff above also caught, skipping duplicates
+      // by field name so a field isn't logged twice in one save.
+      const manualEntries = Array.isArray(changeInfo) ? changeInfo.filter(Boolean) : (changeInfo ? [changeInfo] : []);
+      const manualFields = new Set(manualEntries.map((e) => e.field));
+      const autoEntries = buildAutoChangeLog(existingTd, updatedTd).filter((e) => !manualFields.has(e.field));
+      const mergedChangeLog = [...manualEntries, ...autoEntries];
+
       const resp = await apiFetch(`/api/boq-items/${boqItemId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        // change_log carries ONLY the field(s) the user explicitly edited in this
-        // call (e.g. typed a new Rate, Qty, Description, Unit, or custom column
-        // value). Bulk/automatic saves (global % recalculation, column
-        // add/remove/clone, etc.) don't pass this, so they never spam the
-        // Change Log — only real, single, human edits show up there.
-        body: JSON.stringify({ table_data: updatedTd, change_log: changeInfo }),
+        // change_log now carries every VALUE field that actually changed in
+        // this save (auto-detected via diff, above) — not just the field(s)
+        // a given call site happened to wire up manually. Column layout
+        // changes (add/remove/clone/hide) are still excluded on purpose;
+        // see buildAutoChangeLog's comment.
+        body: JSON.stringify({ table_data: updatedTd, change_log: mergedChangeLog.length > 0 ? mergedChangeLog : undefined }),
       });
 
       if (resp.ok) {
@@ -5946,6 +6039,44 @@ export default function FinalizeBoq() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* NEW: Price Update details — lists every material whose master-catalog
+            rate no longer matches what was captured on this BOQ, from -> to. */}
+        <Dialog open={isPriceChangesDialogOpen} onOpenChange={setIsPriceChangesDialogOpen}>
+          <DialogContent className="max-w-[600px]">
+            <DialogHeader>
+              <DialogTitle className="text-lg font-bold flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-red-500" />
+                Material Price Updates
+              </DialogTitle>
+              <DialogDescription className="text-xs">
+                These materials' rates have changed in the catalog since they were added to this BOQ. Update the item(s) below if the new rate should be reflected here.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[400px] overflow-y-auto -mx-1 px-1 space-y-2 py-2">
+              {priceChanges.length === 0 ? (
+                <div className="text-center text-slate-500 py-8 text-sm">No price changes detected.</div>
+              ) : (
+                priceChanges.map((c, idx) => (
+                  <div key={`${c.itemId}-${c.materialId}-${idx}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-bold text-slate-800 truncate">{c.materialName}</div>
+                      <div className="text-[10px] text-slate-500 truncate">in {c.itemName}</div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0 text-[12px] font-bold">
+                      <span className="text-slate-400 line-through">₹{c.oldRate.toLocaleString()}</span>
+                      <span className="text-slate-300">→</span>
+                      <span className={c.newRate > c.oldRate ? "text-red-600" : "text-green-600"}>₹{c.newRate.toLocaleString()}</span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+            <DialogFooter className="bg-slate-50 border-t p-4 -m-6 mt-4">
+              <Button onClick={() => setIsPriceChangesDialogOpen(false)} className="bg-slate-800 text-white font-bold h-9 px-6 uppercase text-[11px]">Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
         {/* BOM Items Section — one card+table per product */}
         {selectedProjectId && (
           <div className="space-y-4">
@@ -5984,6 +6115,37 @@ export default function FinalizeBoq() {
                     </button>
                   )}
                 </div>
+
+                {/* NEW: Price Update alert — blinks non-stop whenever any material
+                    used in this BOQ has a rate in the master catalog that no longer
+                    matches the rate captured when it was added here. Silent/grey
+                    and disabled when everything is up to date. */}
+                {priceChanges.length > 0 && (
+                  <style>{`
+                    @keyframes priceUpdateBlink {
+                      0%, 49% { opacity: 1; }
+                      50%, 100% { opacity: 0.3; }
+                    }
+                    .price-update-blink { animation: priceUpdateBlink 0.8s steps(1, end) infinite; }
+                  `}</style>
+                )}
+                <button
+                  type="button"
+                  onClick={() => priceChanges.length > 0 && setIsPriceChangesDialogOpen(true)}
+                  disabled={priceChanges.length === 0}
+                  title={priceChanges.length > 0 ? `${priceChanges.length} material price change(s) detected — click to view` : "No material price changes detected"}
+                  className={`flex items-center gap-2 h-11 px-4 rounded-lg border text-[11px] font-bold uppercase tracking-wide shrink-0 ${priceChanges.length > 0
+                    ? "price-update-blink bg-red-500 border-red-600 text-white shadow-md cursor-pointer"
+                    : "bg-slate-50 border-slate-200 text-slate-400 cursor-default"
+                    }`}
+                >
+                  <TrendingUp className="w-4 h-4" />
+                  {isCheckingPriceChanges && priceChanges.length === 0
+                    ? "Checking Prices..."
+                    : priceChanges.length > 0
+                      ? `Price Updated (${priceChanges.length})`
+                      : "Prices Up To Date"}
+                </button>
 
                 <div className="flex items-center gap-4">
                   <div className="flex items-center gap-2">

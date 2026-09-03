@@ -168,7 +168,7 @@ export async function registerSketchRoutes(app: Express) {
       const result = await query(queryStr, queryParams);
       const archivedIds = await archiveService.getArchivedItemIds('sketch_plans');
       const trashedIds = await archiveService.getTrashedItemIds('sketch_plans');
-      const filtered = (result.rows || []).filter((r: any) => !archivedIds.includes(r.id) && !trashedIds.includes(r.id));
+      const filtered = (result.rows || []).filter((r: any) => !(new Set(archivedIds)).has(r.id) && !(new Set(trashedIds)).has(r.id));
       res.json({ plans: filtered });
     } catch (err) {
       console.error("GET /api/sketch-plans error", err);

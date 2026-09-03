@@ -6936,6 +6936,87 @@ export async function registerRoutes(
     }
   );
 
+  // GET /api/boq-versions/:versionId/price-changes - NEW FEATURE: compares the
+  // supply rate captured on each material line (at the time it was added to
+  // this BOQ) against that material's CURRENT rate in the master `materials`
+  // table. Powers the blinking "Price Update" button next to the search bar
+  // on the Finalize BOQ page — this is the only thing that endpoint needs.
+  app.get(
+    "/api/boq-versions/:versionId/price-changes",
+    authMiddleware,
+    async (req: Request, res: Response) => {
+      try {
+        const { versionId } = req.params;
+
+        const itemsRes = await query(
+          `SELECT id, table_data FROM boq_items WHERE version_id = $1`,
+          [versionId]
+        );
+
+        // Collect every material line across every item in this version that
+        // (a) references a real master material by id, and (b) has a
+        // captured rate to compare against. Manual/typed-in materials (no
+        // material id) are skipped — there's nothing in the master catalog
+        // to compare them to.
+        type LineRef = { itemId: string; itemName: string; materialId: string; materialName: string; oldRate: number };
+        const lineRefs: LineRef[] = [];
+        const materialIds = new Set<string>();
+
+        for (const row of itemsRes.rows) {
+          let td = row.table_data;
+          if (typeof td === "string") {
+            try { td = JSON.parse(td); } catch { td = {}; }
+          }
+          td = td || {};
+          const itemName = td.product_name || td.item || td.name || td.category_name || "Unknown Item";
+          const materialLines: any[] = Array.isArray(td.materialLines) ? td.materialLines : [];
+          materialLines.forEach((ml) => {
+            const materialId = ml?.id || ml?.materialId;
+            const oldRate = Number(ml?.supplyRate ?? ml?.rate);
+            if (!materialId || Number.isNaN(oldRate)) return;
+            materialIds.add(materialId);
+            lineRefs.push({ itemId: row.id, itemName, materialId, materialName: ml.name || "Unknown Material", oldRate });
+          });
+        }
+
+        if (materialIds.size === 0) {
+          res.json({ changes: [] });
+          return;
+        }
+
+        const materialsRes = await query(
+          `SELECT id, name, rate FROM materials WHERE id = ANY($1::uuid[])`,
+          [Array.from(materialIds)]
+        );
+        const currentRateById = new Map<string, { name: string; rate: number }>();
+        materialsRes.rows.forEach((m: any) => {
+          currentRateById.set(m.id, { name: m.name, rate: Number(m.rate) });
+        });
+
+        const changes = lineRefs
+          .map((ref) => {
+            const current = currentRateById.get(ref.materialId);
+            if (!current || Number.isNaN(current.rate)) return null;
+            if (current.rate === ref.oldRate) return null;
+            return {
+              itemId: ref.itemId,
+              itemName: ref.itemName,
+              materialId: ref.materialId,
+              materialName: current.name || ref.materialName,
+              oldRate: ref.oldRate,
+              newRate: current.rate,
+            };
+          })
+          .filter(Boolean);
+
+        res.json({ changes });
+      } catch (err) {
+        console.error("GET /api/boq-versions/:versionId/price-changes error", err);
+        res.status(500).json({ message: "Failed to check for price changes" });
+      }
+    }
+  );
+
   // GET /api/boq-versions/:versionId/history - Fetch history for a version
   app.get(
     "/api/boq-versions/:versionId/history",
@@ -7267,6 +7348,104 @@ export async function registerRoutes(
     }
   );
 
+  // Push qty/name/unit/category/remarks changes made on a BOM version's items into
+  // every already-created BOQ item that was copied from them (matched via
+  // copied_from_item_id), no matter which BOQ version they were copied into.
+  // Unlike /sync-from-bom (which only appends items missing from the target),
+  // this UPDATES items that already exist on the BOQ side, so an edit made to an
+  // approved BOM (change qty -> approve again) is reflected on the Finalize BOQ
+  // without anyone having to manually re-type the value there.
+  // Deliberately does NOT touch rate/override/other BOQ-only fields that may have
+  // already been priced on the Finalize BOQ side.
+  async function syncBomVersionChangesToLinkedBoqs(bomVersionId: string, userId?: string, userFullName?: string) {
+    try {
+      const bomItemsRes = await query(
+        `SELECT id, table_data FROM boq_items WHERE version_id = $1 AND user_added IS NOT FALSE`,
+        [bomVersionId]
+      );
+      if (bomItemsRes.rows.length === 0) return;
+
+      const bomItemIds = bomItemsRes.rows.map((r: any) => r.id);
+      const bomItemMap = new Map<string, any>();
+      for (const row of bomItemsRes.rows) {
+        let td = row.table_data;
+        if (typeof td === 'string') { try { td = JSON.parse(td); } catch { td = {}; } }
+        bomItemMap.set(row.id, td || {});
+      }
+
+      // Find every BOQ-side item that was ever copied from one of these BOM items,
+      // in any target version (not just the version this BOM was originally copied into).
+      const targetItemsRes = await query(
+        `SELECT id, version_id, table_data, copied_from_item_id
+         FROM boq_items
+         WHERE copied_from_item_id = ANY($1::text[])`,
+        [bomItemIds]
+      );
+      if (targetItemsRes.rows.length === 0) return;
+
+      const archivedIds = await archiveService.getArchivedItemIds('boq_items');
+      const trashedIds = await archiveService.getTrashedItemIds('boq_items');
+
+      const SYNCED_FIELDS = ['targetRequiredQty', 'requiredUnitType', 'product_name', 'category', 'remarks'];
+      const affectedVersionIds = new Set<string>();
+      let updatedCount = 0;
+
+      for (const target of targetItemsRes.rows) {
+        if (archivedIds.includes(target.id) || trashedIds.includes(target.id)) continue;
+        const sourceTd = bomItemMap.get(target.copied_from_item_id);
+        if (!sourceTd) continue; // source BOM item was itself deleted/archived
+
+        let targetTd = target.table_data;
+        if (typeof targetTd === 'string') { try { targetTd = JSON.parse(targetTd); } catch { targetTd = {}; } }
+
+        const changedFields: { field: string; old_value: any; new_value: any }[] = [];
+        const newTd = { ...targetTd };
+        for (const field of SYNCED_FIELDS) {
+          if (sourceTd[field] === undefined) continue;
+          if (JSON.stringify(targetTd?.[field]) !== JSON.stringify(sourceTd[field])) {
+            changedFields.push({ field, old_value: targetTd?.[field], new_value: sourceTd[field] });
+            newTd[field] = sourceTd[field];
+          }
+        }
+        if (changedFields.length === 0) continue; // nothing actually changed, skip write + history noise
+
+        newTd.bom_synced_at = new Date().toISOString();
+        await query(`UPDATE boq_items SET table_data = $1 WHERE id = $2`, [JSON.stringify(newTd), target.id]);
+        updatedCount++;
+        affectedVersionIds.add(target.version_id);
+
+        try {
+          const itemName = newTd.product_name || newTd.item || newTd.name || "Unknown Item";
+          for (const chg of changedFields) {
+            await query(
+              `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name, field_name, old_value, new_value, created_at)
+               VALUES ($1, $2, $3, 'AUTO_SYNCED_FROM_BOM', $4, $5, $6, $7, $8, NOW())`,
+              [target.version_id, userId || 'system', userFullName || 'System', target.id, itemName, chg.field, JSON.stringify(chg.old_value), JSON.stringify(chg.new_value)]
+            );
+          }
+        } catch (hErr) {
+          console.warn("[bom_boq_sync] Failed to log auto-sync history:", hErr);
+        }
+      }
+
+      // Recompute totals for every BOQ version that received an update
+      for (const vId of Array.from(affectedVersionIds)) {
+        try {
+          const verRes = await query(`SELECT project_id FROM boq_versions WHERE id = $1`, [vId]);
+          if (verRes.rows[0]?.project_id) {
+            await recalculateProjectValue(verRes.rows[0].project_id, vId);
+          }
+        } catch (rErr) {
+          console.warn("[bom_boq_sync] Failed to recalc project value for version", vId, rErr);
+        }
+      }
+
+      console.log(`[bom_boq_sync] Auto-synced ${updatedCount} item(s) from BOM ${bomVersionId} into ${affectedVersionIds.size} linked BOQ version(s)`);
+    } catch (err) {
+      console.error("[bom_boq_sync] syncBomVersionChangesToLinkedBoqs error:", err);
+    }
+  }
+
   // ==================== BOM APPROVAL ROUTES ====================
 
   // GET /api/bom-approvals - List all submitted BOM versions
@@ -7337,6 +7516,20 @@ export async function registerRoutes(
         } catch (hErr) {
           console.warn("Failed to log approval history:", hErr);
         }
+
+        // Push any qty/name/unit/category/remarks changes on this version's items into
+        // every already-created Finalize BOQ item copied from them, so a re-approved
+        // edit (edit request -> change qty -> approve) shows up there without a manual
+        // re-sync. Safe to run even when this version's type is 'boq' — it only touches
+        // rows whose copied_from_item_id matches one of this version's own items, which
+        // will simply be zero for a boq-type version.
+        try {
+          const approver = (req as any).user;
+          await syncBomVersionChangesToLinkedBoqs(id, approver?.id, approver?.fullName || approver?.username);
+        } catch (syncErr) {
+          console.error("[bom_boq_sync] Failed to auto-sync approved BOM changes to linked BOQ(s):", syncErr);
+        }
+
         res.json({ message: "BOM version approved successfully" });
 
         // --- Notify submitter (and, for BOM, the finance team) on approval (fire-and-forget) ---
@@ -9253,14 +9446,29 @@ export async function registerRoutes(
         const approvedByName = userObj.fullName || userObj.username || "System";
 
         const boqRes = await query(`SELECT id, project_id, version_id, table_data FROM boq_items WHERE id = $1`, [request.boq_item_id]);
+
+        let boqRow;
+        let tableData: any = {};
+        let step11Items: any[] = [];
+        let materialLines: any[] = [];
+
         if (boqRes.rowCount === 0) {
-          res.status(404).json({ message: "Source product card no longer exists" });
-          return;
+          if (request.type !== "save_as") {
+            res.status(404).json({ message: "Source product card no longer exists" });
+            return;
+          }
+          // For save_as, if the source card is deleted, we can still proceed
+          // using the project_id and version_id from the request.
+          boqRow = {
+            project_id: request.project_id,
+            version_id: request.version_id,
+          };
+        } else {
+          boqRow = boqRes.rows[0];
+          tableData = typeof boqRow.table_data === "string" ? JSON.parse(boqRow.table_data) : (boqRow.table_data || {});
+          step11Items = Array.isArray(tableData.step11_items) ? tableData.step11_items : [];
+          materialLines = Array.isArray(tableData.materialLines) ? tableData.materialLines : [];
         }
-        const boqRow = boqRes.rows[0];
-        const tableData = typeof boqRow.table_data === "string" ? JSON.parse(boqRow.table_data) : (boqRow.table_data || {});
-        const step11Items: any[] = Array.isArray(tableData.step11_items) ? tableData.step11_items : [];
-        const materialLines: any[] = Array.isArray(tableData.materialLines) ? tableData.materialLines : [];
 
         let createdBoqItemId: string | null = null;
 
@@ -9940,20 +10148,22 @@ export async function registerRoutes(
           );
           createdBoqItemId = newItemId;
 
-          const updatedStep11 = step11Items.filter((it: any, idx: number) => {
-            // Remove items at the submitted indexes — they have been moved
-            // into the new product card created above.
-            if (itemIndexes.includes(idx)) {
-              return false; // Remove this item
+          if (boqRes.rowCount && boqRes.rowCount > 0) {
+            const updatedStep11 = step11Items.filter((it: any, idx: number) => {
+              // Remove items at the submitted indexes — they have been moved
+              // into the new product card created above.
+              if (itemIndexes.includes(idx)) {
+                return false; // Remove this item
+              }
+              return true; // Keep this item
+            });
+            if (updatedStep11.length === 0) {
+              // Delete the empty source card from the BOM
+              await query(`DELETE FROM boq_items WHERE id = $1`, [request.boq_item_id]);
+            } else {
+              const updatedTableData = { ...tableData, step11_items: updatedStep11 };
+              await query(`UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`, [JSON.stringify(updatedTableData), computeItemValue(updatedTableData), request.boq_item_id]);
             }
-            return true; // Keep this item
-          });
-          if (updatedStep11.length === 0) {
-            // Delete the empty source card from the BOM
-            await query(`DELETE FROM boq_items WHERE id = $1`, [request.boq_item_id]);
-          } else {
-            const updatedTableData = { ...tableData, step11_items: updatedStep11 };
-            await query(`UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`, [JSON.stringify(updatedTableData), computeItemValue(updatedTableData), request.boq_item_id]);
           }
 
           if (boqRow.version_id) {
