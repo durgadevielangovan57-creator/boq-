@@ -2342,7 +2342,9 @@ export async function registerRoutes(
 
       const archivedIds = await archiveService.getArchivedItemIds('shops');
       const trashedIds = await archiveService.getTrashedItemIds('shops');
-      const filtered = result.rows.filter(r => !archivedIds.includes(r.id) && !trashedIds.includes(r.id));
+      const archivedSet = new Set(archivedIds);
+      const trashedSet = new Set(trashedIds);
+      const filtered = result.rows.filter(r => !archivedSet.has(r.id) && !trashedSet.has(r.id));
 
       res.json({ shops: filtered });
     } catch (err) {
@@ -2530,11 +2532,16 @@ export async function registerRoutes(
       const archivedMaterialIds = await archiveService.getArchivedItemIds('materials');
       const trashedMaterialIds = await archiveService.getTrashedItemIds('materials');
 
+      const archivedProductsSet = new Set(archivedProductIds);
+      const trashedProductsSet = new Set(trashedProductIds);
+      const archivedMaterialsSet = new Set(archivedMaterialIds);
+      const trashedMaterialsSet = new Set(trashedMaterialIds);
+
       const filteredProducts = productsRows.filter(
-        (r: any) => !archivedProductIds.includes(r.id) && !trashedProductIds.includes(r.id)
+        (r: any) => !archivedProductsSet.has(r.id) && !trashedProductsSet.has(r.id)
       );
       const filteredMaterials = materialsRows.filter(
-        (r: any) => !archivedMaterialIds.includes(r.id) && !trashedMaterialIds.includes(r.id)
+        (r: any) => !archivedMaterialsSet.has(r.id) && !trashedMaterialsSet.has(r.id)
       );
 
       console.log(`[api/search] after archive filter: products=${filteredProducts.length} (removed ${productsRows.length - filteredProducts.length} archived/trashed)`);
@@ -2577,8 +2584,10 @@ export async function registerRoutes(
 
       const archivedIds = await archiveService.getArchivedItemIds('materials');
       const trashedIds = await archiveService.getTrashedItemIds('materials');
+      const archivedSet = new Set(archivedIds);
+      const trashedSet = new Set(trashedIds);
       const filtered = result.rows
-        .filter(r => !archivedIds.includes(r.id) && !trashedIds.includes(r.id))
+        .filter(r => !archivedSet.has(r.id) && !trashedSet.has(r.id))
         .map((r: any) => {
           // Fall back to the material template's image if this specific
           // shop material row doesn't have its own image set. Does not
@@ -4381,7 +4390,7 @@ export async function registerRoutes(
 
       const archivedIds = await archiveService.getArchivedItemIds('subcategories');
       const trashedIds = await archiveService.getTrashedItemIds('subcategories');
-      const filtered = result.rows.filter((r) => !archivedIds.includes(r.id) && !trashedIds.includes(r.id));
+      const filtered = result.rows.filter((r) => !(new Set(archivedIds)).has(r.id) && !(new Set(trashedIds)).has(r.id));
 
       res.json({ subcategories: filtered });
     } catch (err) {
@@ -4557,7 +4566,9 @@ export async function registerRoutes(
       const result = await query(queryStr);
       const archivedIds = await archiveService.getArchivedItemIds('products');
       const trashedIds = await archiveService.getTrashedItemIds('products');
-      const filtered = result.rows.filter((r: any) => !archivedIds.includes(r.id) && !trashedIds.includes(r.id));
+      const archivedSet = new Set(archivedIds);
+      const trashedSet = new Set(trashedIds);
+      const filtered = result.rows.filter((r: any) => !archivedSet.has(r.id) && !trashedSet.has(r.id));
 
       res.json({ products: filtered });
     } catch (err) {
@@ -8584,7 +8595,7 @@ export async function registerRoutes(
         const trashedIds = await archiveService.getTrashedItemIds('boq_items');
 
         const rawItems = result.rows
-          .filter((row: any) => !archivedIds.includes(row.id) && !trashedIds.includes(row.id))
+          .filter((row: any) => !(new Set(archivedIds)).has(row.id) && !(new Set(trashedIds)).has(row.id))
           .map((row: any) => ({
             id: row.id,
             project_id: row.project_id,
@@ -10246,7 +10257,7 @@ export async function registerRoutes(
       const result = await query("SELECT * FROM boq_templates ORDER BY name ASC");
       const archivedIds = await archiveService.getArchivedItemIds('boq_templates');
       const trashedIds = await archiveService.getTrashedItemIds('boq_templates');
-      const filtered = result.rows.filter((r) => !archivedIds.includes(r.id) && !trashedIds.includes(r.id));
+      const filtered = result.rows.filter((r) => !(new Set(archivedIds)).has(r.id) && !(new Set(trashedIds)).has(r.id));
       res.json({ templates: filtered });
     } catch (err) {
       console.error("GET /api/boq-templates error", err);
@@ -10310,7 +10321,7 @@ export async function registerRoutes(
       const result = await query("SELECT * FROM bom_templates ORDER BY name ASC");
       const archivedIds = await archiveService.getArchivedItemIds('bom_templates');
       const trashedIds = await archiveService.getTrashedItemIds('bom_templates');
-      const filtered = result.rows.filter((r) => !archivedIds.includes(r.id) && !trashedIds.includes(r.id));
+      const filtered = result.rows.filter((r) => !(new Set(archivedIds)).has(r.id) && !(new Set(trashedIds)).has(r.id));
       res.json({ templates: filtered });
     } catch (err) {
       console.error("GET /api/bom-templates error", err);

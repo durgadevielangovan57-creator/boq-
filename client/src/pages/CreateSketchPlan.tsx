@@ -132,9 +132,29 @@ const parseImages = (imageField: any): string[] => {
 // Helper to append auth token to URLs for <img> and <a> tags
 const appendAuthToken = (url: string) => {
   if (!url || url.startsWith('data:')) return url;
+  
+  // Do NOT append our backend JWT token to direct Supabase Storage URLs.
+  // Doing so will cause Supabase to reject the request, as our backend JWT is invalid for them.
+  if (url.includes('supabase.co')) {
+    // Strip any accidentally appended tokens that were saved to the DB
+    const [base, query] = url.split('?');
+    if (!query) return url;
+    const params = new URLSearchParams(query);
+    params.delete('token');
+    const rest = params.toString();
+    return rest ? `${base}?${rest}` : base;
+  }
+
   const token = typeof localStorage !== "undefined" ? localStorage.getItem("authToken") : null;
   if (!token) return url;
-  return url.includes('?') ? `${url}&token=${token}` : `${url}?token=${token}`;
+  // Strip any existing token param(s) first so repeated saves/reloads don't keep
+  // stacking "&token=...&token=...&token=..." onto the same URL forever.
+  const [base, query] = url.split('?');
+  if (!query) return `${base}?token=${token}`;
+  const params = new URLSearchParams(query);
+  params.delete('token');
+  const rest = params.toString();
+  return rest ? `${base}?${rest}&token=${token}` : `${base}?token=${token}`;
 };
 
 // Helper Component for Image Columns (Pre/Post)
@@ -143,9 +163,11 @@ const PhotoColumn = ({
   handleRowImageUpload, removeRowImage, renameRowImage,
   setPreviewImage, setSketchTarget, setSketchInitialData,
   lastSketchItemIdxRef, setSketchDialogOpen,
-  onImageDragStart, onImageDrop
+  onImageDragStart, onImageDrop, planImages, onSelectFromPlan
 }: any) => {
   const [isOver, setIsOver] = useState(false);
+  const [showPlanPicker, setShowPlanPicker] = useState(false);
+  const [pickedPlanIdxs, setPickedPlanIdxs] = useState<number[]>([]);
 
   return (
     <Dialog>
@@ -171,7 +193,17 @@ const PhotoColumn = ({
         >
           {images.length > 0 ? (
             <div className={cn("relative rounded overflow-hidden", isCompact ? "w-6 h-6" : "w-8 h-8")}>
-              <img src={images[0].url} className="w-full h-full object-cover" />
+              <img
+                src={images[0].url}
+                alt=""
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  const el = e.currentTarget;
+                  if (el.dataset.retried === "1") { el.onerror = null; return; }
+                  el.dataset.retried = "1";
+                  el.src = appendAuthToken(images[0].url.split("?")[0]);
+                }}
+              />
               <span className="absolute bottom-0 right-0 bg-amber-500 text-white text-[7px] px-0.5 rounded-tl font-bold leading-none">
                 {images.length}
               </span>
@@ -212,9 +244,16 @@ const PhotoColumn = ({
             >
               <img
                 src={img.url}
+                alt=""
                 className="w-full h-full object-cover cursor-pointer hover:opacity-80 transition-opacity"
                 onClick={() => setPreviewImage(img)}
                 title="Click to view full image"
+                onError={(e) => {
+                  const el = e.currentTarget;
+                  if (el.dataset.retried === "1") { el.onerror = null; return; }
+                  el.dataset.retried = "1";
+                  el.src = appendAuthToken(img.url.split("?")[0]);
+                }}
               />
               <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[8px] p-1 truncate opacity-0 group-hover:opacity-100 transition-opacity pr-6 pointer-events-none">
                 {img.name}
@@ -258,9 +297,64 @@ const PhotoColumn = ({
                 <span className="text-[10px] uppercase font-bold text-center">Open<br />Camera</span>
                 <input type="file" accept="image/*" capture="environment" onChange={(e) => handleRowImageUpload(idx, e, category)} className="hidden" />
               </label>
+              {!!(planImages && planImages.length) && (
+                <button
+                  type="button"
+                  onClick={() => { setPickedPlanIdxs([]); setShowPlanPicker(v => !v); }}
+                  className="aspect-square rounded border-2 border-dashed border-emerald-200 flex flex-col items-center justify-center text-emerald-500 hover:border-emerald-400 hover:bg-emerald-50 cursor-pointer transition-colors"
+                >
+                  <ImageIcon className="w-5 h-5 mb-1" />
+                  <span className="text-[10px] uppercase font-bold text-center">Select from<br />Plan Photos</span>
+                </button>
+              )}
             </>
           )}
         </div>
+        {showPlanPicker && !isLocked && (
+          <div className="border-t pt-3 mt-1">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-bold text-slate-600">Select from Plan-Level Site Photos ({pickedPlanIdxs.length} selected)</span>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={pickedPlanIdxs.length === 0}
+                  onClick={() => {
+                    const imgs = pickedPlanIdxs.map(i => planImages[i]).filter(Boolean);
+                    onSelectFromPlan?.(imgs);
+                    setPickedPlanIdxs([]);
+                    setShowPlanPicker(false);
+                  }}
+                >
+                  Add Selected
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setShowPlanPicker(false)}>Cancel</Button>
+              </div>
+            </div>
+            <div className="grid grid-cols-4 gap-2 max-h-[220px] overflow-y-auto">
+              {(planImages || []).map((img: any, pIdx: number) => {
+                const picked = pickedPlanIdxs.includes(pIdx);
+                return (
+                  <div
+                    key={pIdx}
+                    onClick={() => setPickedPlanIdxs(prev => picked ? prev.filter(i => i !== pIdx) : [...prev, pIdx])}
+                    className={cn(
+                      "relative aspect-square rounded border-2 overflow-hidden cursor-pointer transition-all",
+                      picked ? "border-emerald-500 ring-2 ring-emerald-200" : "border-slate-200 hover:border-emerald-300"
+                    )}
+                  >
+                    <img src={img.url} alt={img.name || "Plan photo"} className="w-full h-full object-cover" />
+                    {picked && (
+                      <div className="absolute inset-0 bg-emerald-500/20 flex items-center justify-center">
+                        <div className="bg-emerald-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px] font-bold">✓</div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -276,7 +370,7 @@ const SketchPlanRow = React.memo(({
   isSelected, toggleSelect, userRole, onImageDragStart, onImageDrop,
   addDimension, removeDimension, updateDimension, cloneItem, categories,
   includeSupply, setIncludeSupply, includeLabour, setIncludeLabour,
-  openNotesIdx, columnVisibility
+  openNotesIdx, columnVisibility, planImages, addPlanImagesToRow
 }: any) => {
   const [itemSearchTab, setItemSearchTab] = useState<"all" | "material" | "product" | "pp">("all");
   const [showQuickSelection, setShowQuickSelection] = useState(true);
@@ -1099,6 +1193,8 @@ const SketchPlanRow = React.memo(({
             setSketchDialogOpen={setSketchDialogOpen}
             onImageDragStart={onImageDragStart}
             onImageDrop={onImageDrop}
+            planImages={planImages}
+            onSelectFromPlan={(imgs: any[]) => addPlanImagesToRow(idx, "pre", imgs)}
           />
         </td>
       )}
@@ -1122,6 +1218,8 @@ const SketchPlanRow = React.memo(({
             setSketchDialogOpen={setSketchDialogOpen}
             onImageDragStart={onImageDragStart}
             onImageDrop={onImageDrop}
+            planImages={planImages}
+            onSelectFromPlan={(imgs: any[]) => addPlanImagesToRow(idx, "post", imgs)}
           />
         </td>
       )}
@@ -1154,7 +1252,7 @@ export default function CreateSketchPlan() {
   }, [setWouterLocation]);
   const { toast } = useToast();
   const [currentId, setCurrentId] = useState<string | null>(paramId || null);
-  
+
   useEffect(() => {
     if (paramId !== undefined && paramId !== currentId) {
       setCurrentId(paramId || null);
@@ -1660,7 +1758,7 @@ export default function CreateSketchPlan() {
   // Lock & Approval State
   const [isLocked, setIsLocked] = useState(false);
   const [isLinked, setIsLinked] = useState(false);
-  const [linkedBomVersionId, setLinkedBomVersionId] = useState<string|null>(null);
+  const [linkedBomVersionId, setLinkedBomVersionId] = useState<string | null>(null);
   const [requestStatus, setRequestStatus] = useState<string>("none");
   const [requestReason, setRequestReason] = useState("");
   const [showUnlockDialog, setShowUnlockDialog] = useState(false);
@@ -3520,6 +3618,47 @@ export default function CreateSketchPlan() {
     e.dataTransfer.effectAllowed = "move";
   };
 
+  // Auto-scroll the page while dragging a photo near the top/bottom edge of the
+  // viewport, so dragging a Plan-Level Site Photo up into the items table (or
+  // vice-versa) works even when the target row is currently scrolled out of view.
+  useEffect(() => {
+    const EDGE = 90; // px from viewport edge that triggers scrolling
+    const MAX_SPEED = 22; // px per animation frame at the very edge
+    let rafId: number | null = null;
+    let pointerY: number | null = null;
+
+    const tick = () => {
+      if (pointerY !== null) {
+        const vh = window.innerHeight;
+        if (pointerY < EDGE) {
+          const speed = MAX_SPEED * (1 - pointerY / EDGE);
+          window.scrollBy(0, -speed);
+        } else if (pointerY > vh - EDGE) {
+          const speed = MAX_SPEED * (1 - (vh - pointerY) / EDGE);
+          window.scrollBy(0, speed);
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+
+    const onDragOver = (e: DragEvent) => {
+      pointerY = e.clientY;
+    };
+    const stop = () => { pointerY = null; };
+
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragend", stop);
+    document.addEventListener("drop", stop);
+    rafId = requestAnimationFrame(tick);
+
+    return () => {
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragend", stop);
+      document.removeEventListener("drop", stop);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, []);
+
   const handleImageDrop = (e: React.DragEvent, target: any) => {
     e.preventDefault();
     if (isLocked) return;
@@ -3577,6 +3716,23 @@ export default function CreateSketchPlan() {
     toast({
       title: `Image ${shouldCopy ? "Copied" : "Moved"}`,
       description: `${shouldCopy ? "Copied" : "Moved"} image into ${target.type === "main" ? "Plan Photos" : `Row ${target.rowIdx + 1} (${target.type})`}`
+    });
+  };
+
+  // Copy one or more already-uploaded Plan-Level Site Photos into a row's pre/post images.
+  // This does NOT remove them from the Plan-Level Site Photos section (copy, not move).
+  const addPlanImagesToRow = (rowIdx: number, category: "pre" | "post", imgs: PlanImage[]) => {
+    if (isLocked || !imgs.length) return;
+    const nextItems = [...items];
+    const field = category === "pre" ? "preImages" : "postImages";
+    const row = { ...nextItems[rowIdx] };
+    const copies = imgs.map(img => ({ ...img, id: undefined }));
+    row[field] = [...(row[field] || []), ...copies];
+    nextItems[rowIdx] = row;
+    setItems(nextItems);
+    toast({
+      title: "Photo(s) Added",
+      description: `${copies.length} photo(s) added to Row ${rowIdx + 1} (${category === "pre" ? "Pre-work" : "Post-work"}).`
     });
   };
 
@@ -4474,6 +4630,8 @@ export default function CreateSketchPlan() {
                               userRole={userRole}
                               onImageDragStart={handleImageDragStart}
                               onImageDrop={handleImageDrop}
+                              planImages={planImages}
+                              addPlanImagesToRow={addPlanImagesToRow}
                               addDimension={addDimension}
                               removeDimension={removeDimension}
                               updateDimension={updateDimension}
@@ -4528,7 +4686,23 @@ export default function CreateSketchPlan() {
                           draggable={!(isLocked || isSupplierReadOnly)}
                           onDragStart={(e) => handleImageDragStart(e, { type: "main", imgIdx: idx })}
                         >
-                          <img src={img.url} className="w-full h-full object-cover cursor-pointer hover:opacity-80 transition-opacity" onClick={() => setPreviewImage(img)} title="Click to view full image" />
+                          <img
+                            src={img.url}
+                            alt=""
+                            className="w-full h-full object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                            onClick={() => setPreviewImage(img)}
+                            title="Click to view full image"
+                            onError={(e) => {
+                              const el = e.currentTarget;
+                              if (el.dataset.retried === "1") {
+                                el.onerror = null;
+                                el.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23cbd5e1' stroke-width='1.5'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Ccircle cx='8.5' cy='8.5' r='1.5'/%3E%3Cpath d='M21 15l-5-5L5 21'/%3E%3C/svg%3E";
+                                return;
+                              }
+                              el.dataset.retried = "1";
+                              el.src = appendAuthToken(img.url.split("?")[0]);
+                            }}
+                          />
                           <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[8px] p-1 truncate opacity-0 group-hover:opacity-100 transition-opacity pr-6 pointer-events-none">
                             {img.name}
                           </div>

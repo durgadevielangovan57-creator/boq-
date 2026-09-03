@@ -30,9 +30,9 @@ export function Header() {
   // Easy Access Dropdown state
   const [easyAccessOpen, setEasyAccessOpen] = useState(false);
   const easyAccessRef = useRef<HTMLDivElement>(null);
-  
+
   // Quick Access Items State
-  const [easyAccessItems, setEasyAccessItems] = useState<{label: string, href: string}[]>([]);
+  const [easyAccessItems, setEasyAccessItems] = useState<{ label: string, href: string }[]>([]);
   const [customizeOpen, setCustomizeOpen] = useState(false);
 
   useEffect(() => {
@@ -40,7 +40,7 @@ export function Header() {
     if (saved) {
       try {
         setEasyAccessItems(JSON.parse(saved));
-      } catch(e) {}
+      } catch (e) { }
     } else {
       setEasyAccessItems([
         { label: "Create Project", href: "/create-project" },
@@ -51,7 +51,7 @@ export function Header() {
     }
   }, []);
 
-  const saveQuickAccess = (items: {label: string, href: string}[]) => {
+  const saveQuickAccess = (items: { label: string, href: string }[]) => {
     setEasyAccessItems(items);
     localStorage.setItem("quick_access_items", JSON.stringify(items));
   };
@@ -176,17 +176,18 @@ export function Header() {
   // Fetch approval counts — same as Sidebar.tsx
   useEffect(() => {
     if (!user) return;
-    apiFetch("/api/approval-requests")
+    apiFetch("/api/shops-pending-approval")
       .then((r) => r.json())
       .then((data) => {
         setPendingShopCount(Array.isArray(data) ? data.length : 0);
       })
       .catch(() => setPendingShopCount(0));
 
-    apiFetch("/api/material-approval-requests")
+    apiFetch("/api/material-submissions-pending-approval")
       .then((r) => r.json())
       .then((data) => {
-        setPendingMaterialCount(Array.isArray(data) ? data.length : 0);
+        const submissions = Array.isArray(data?.submissions) ? data.submissions : [];
+        setPendingMaterialCount(submissions.length);
       })
       .catch(() => setPendingMaterialCount(0));
 
@@ -200,14 +201,26 @@ export function Header() {
     apiFetch("/api/bom-approvals")
       .then((r) => r.json())
       .then((data) => {
-        setPendingBomCount(Array.isArray(data) ? data.length : 0);
+        const approvals = Array.isArray(data?.approvals) ? data.approvals : [];
+        const bomOnly = approvals.filter(
+          (a: any) =>
+            !(a.type === "boq" || a.is_boq_submission === true) &&
+            ["submitted", "pending_approval", "edit_requested"].includes(a.status),
+        );
+        setPendingBomCount(bomOnly.length);
       })
       .catch(() => setPendingBomCount(0));
 
-    apiFetch("/api/boq-approvals")
+    apiFetch("/api/bom-approvals")
       .then((r) => r.json())
       .then((data) => {
-        setPendingBoqCount(Array.isArray(data) ? data.length : 0);
+        const approvals = Array.isArray(data?.approvals) ? data.approvals : [];
+        const boqOnly = approvals.filter(
+          (a: any) =>
+            (a.type === "boq" || a.is_boq_submission === true) &&
+            ["submitted", "pending_approval", "edit_requested"].includes(a.status),
+        );
+        setPendingBoqCount(boqOnly.length);
       })
       .catch(() => setPendingBoqCount(0));
   }, [user?.id]);
@@ -381,208 +394,204 @@ export function Header() {
 
   return (
     <>
-    <header className="sticky top-0 z-40 w-full h-12 bg-white border-b border-[#E5E7EB] px-4 flex items-center justify-between no-print">
-      {/* CENTER-RIGHT SECTION */}
-      <div className="flex items-center gap-2 ml-auto">
-        {/* Easy Access Dropdown */}
-        <div className="relative" ref={easyAccessRef}>
-          <button
-            onClick={() => setEasyAccessOpen(!easyAccessOpen)}
-            className={`flex items-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium border transition-all duration-150 ${
-              easyAccessOpen
+      <header className="sticky top-0 z-40 w-full h-12 bg-white border-b border-[#E5E7EB] px-4 flex items-center justify-between no-print">
+        {/* CENTER-RIGHT SECTION */}
+        <div className="flex items-center gap-2 ml-auto">
+          {/* Easy Access Dropdown */}
+          <div className="relative" ref={easyAccessRef}>
+            <button
+              onClick={() => setEasyAccessOpen(!easyAccessOpen)}
+              className={`flex items-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium border transition-all duration-150 ${easyAccessOpen
                 ? "bg-[#FEF3C7] border-[#F59E0B] text-[#D97706]"
                 : "bg-transparent border-[#E5E7EB] text-[#374151] hover:bg-[#F3F4F6] hover:border-[#D1D5DB]"
-            }`}
-          >
-            <Zap className={`h-3.5 w-3.5 ${easyAccessOpen ? "text-[#D97706]" : "text-[#9CA3AF]"}`} />
-            Quick Access
-            <ChevronDown
-              className={`h-3.5 w-3.5 transition-transform duration-200 ${
-                easyAccessOpen ? "rotate-180 text-[#D97706]" : "text-[#9CA3AF]"
-              }`}
-            />
-          </button>
-
-          {/* Dropdown Menu */}
-          {easyAccessOpen && (
-            <div className="absolute top-10 right-0 w-[200px] bg-white border border-[#E5E7EB] rounded-[10px] shadow-[0_4px_16px_rgba(0,0,0,0.08)] p-1 z-[100] animate-in fade-in-0 zoom-in-95 duration-150">
-              <div className="px-3 py-1.5 text-[11px] font-semibold text-[#6B7280] uppercase tracking-wider">
-                Quick Links
-              </div>
-              {easyAccessItems.map((item, index) => (
-                <button
-                  key={index}
-                  onClick={() => {
-                    setLocation(item.href);
-                    setEasyAccessOpen(false);
-                  }}
-                  className="w-full flex items-center justify-between px-3 h-9 rounded-md text-[13px] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#111827] transition-colors duration-100"
-                >
-                  <span>{item.label}</span>
-                </button>
-              ))}
-              <div className="h-[1px] bg-[#F3F4F6] my-1" />
-              <button
-                onClick={() => {
-                  setEasyAccessOpen(false);
-                  setCustomizeOpen(true);
-                }}
-                className="w-full text-left px-3 py-2 text-[12px] text-[#6366f1] font-medium hover:bg-[#F9FAFB] transition-colors rounded-b-md"
-              >
-                + Customize Quick Access
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Approvals Dropdown */}
-        {showApprovalsButton && (
-          <div className="relative" ref={approvalsRef}>
-            {/* Approvals Button */}
-            <button
-              onClick={() => setApprovalsOpen(!approvalsOpen)}
-              className={`flex items-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium border transition-all duration-150 ${
-                approvalsOpen
-                  ? "bg-[#EDE9FE] border-[#6366f1] text-[#6366f1]"
-                  : "bg-transparent border-[#E5E7EB] text-[#374151] hover:bg-[#F3F4F6] hover:border-[#D1D5DB]"
-              }`}
-            >
-              Approvals
-              {totalApprovalCount > 0 && (
-                <span className="bg-[#EF4444] text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 min-w-[18px] text-center">
-                  {totalApprovalCount}
-                </span>
-              )}
-              <ChevronDown
-                className={`h-3.5 w-3.5 transition-transform duration-200 ${
-                  approvalsOpen ? "rotate-180 text-[#6366f1]" : "text-[#9CA3AF]"
                 }`}
+            >
+              <Zap className={`h-3.5 w-3.5 ${easyAccessOpen ? "text-[#D97706]" : "text-[#9CA3AF]"}`} />
+              Quick Access
+              <ChevronDown
+                className={`h-3.5 w-3.5 transition-transform duration-200 ${easyAccessOpen ? "rotate-180 text-[#D97706]" : "text-[#9CA3AF]"
+                  }`}
               />
             </button>
 
             {/* Dropdown Menu */}
-            {approvalsOpen && (
-              <div className="absolute top-10 left-0 w-[220px] bg-white border border-[#E5E7EB] rounded-[10px] shadow-[0_4px_16px_rgba(0,0,0,0.08)] p-1 z-[100] animate-in fade-in-0 zoom-in-95 duration-150">
-                {approvalItems.map((item) => (
+            {easyAccessOpen && (
+              <div className="absolute top-10 right-0 w-[200px] bg-white border border-[#E5E7EB] rounded-[10px] shadow-[0_4px_16px_rgba(0,0,0,0.08)] p-1 z-[100] animate-in fade-in-0 zoom-in-95 duration-150">
+                <div className="px-3 py-1.5 text-[11px] font-semibold text-[#6B7280] uppercase tracking-wider">
+                  Quick Links
+                </div>
+                {easyAccessItems.map((item, index) => (
                   <button
-                    key={item.id}
+                    key={index}
                     onClick={() => {
-                      if (item.id === "bom_approvals" && window.location.pathname === "/create-bom") {
-                        window.dispatchEvent(new Event("open-bom-approvals"));
-                      } else {
-                        setLocation(item.href);
-                      }
-                      setApprovalsOpen(false);
+                      setLocation(item.href);
+                      setEasyAccessOpen(false);
                     }}
                     className="w-full flex items-center justify-between px-3 h-9 rounded-md text-[13px] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#111827] transition-colors duration-100"
                   >
                     <span>{item.label}</span>
-                    {item.count > 0 && (
-                      <span className="bg-[#EF4444] text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 min-w-[18px] text-center">
-                        {item.count}
-                      </span>
-                    )}
                   </button>
                 ))}
+                <div className="h-[1px] bg-[#F3F4F6] my-1" />
+                <button
+                  onClick={() => {
+                    setEasyAccessOpen(false);
+                    setCustomizeOpen(true);
+                  }}
+                  className="w-full text-left px-3 py-2 text-[12px] text-[#6366f1] font-medium hover:bg-[#F9FAFB] transition-colors rounded-b-md"
+                >
+                  + Customize Quick Access
+                </button>
               </div>
             )}
           </div>
-        )}
 
-        {/* 1. SEARCH BAR */}
-        <div className="relative w-[280px]" ref={searchRef}>
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-[#9CA3AF] pointer-events-none" />
-          <input
-            type="text"
-            placeholder="Search menus (e.g. Finalize BOQ)..."
-            value={searchQuery}
-            onChange={(e) => {
-              setSearchQuery(e.target.value);
-              setSearchOpen(true);
-            }}
-            onFocus={() => setSearchOpen(true)}
-            className="w-full h-8 pl-8 pr-3 bg-[#F9FAFB] border border-[#E5E7EB] rounded-lg text-[13px] text-[#374151] placeholder-[#9CA3AF] focus:border-[#6366f1] focus:ring-2 focus:ring-[#6366f1]/10 focus:outline-none transition-all"
-          />
-          {searchOpen && searchQuery.length > 0 && (
-            <div className="absolute top-10 left-0 w-full bg-white border border-[#E5E7EB] rounded-[10px] shadow-[0_4px_16px_rgba(0,0,0,0.08)] py-1 max-h-[300px] overflow-y-auto z-[100] animate-in fade-in-0 zoom-in-95 duration-150">
-              {filteredSearchPages.length > 0 ? (
-                filteredSearchPages.map((page, i) => (
-                  <button
-                    key={i}
-                    onClick={() => {
-                      setLocation(page.href);
-                      setSearchOpen(false);
-                      setSearchQuery("");
-                    }}
-                    className="w-full text-left px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#111827] transition-colors"
-                  >
-                    {page.label}
-                  </button>
-                ))
-              ) : (
-                <div className="px-3 py-2 text-[13px] text-[#9CA3AF]">
-                  No results found
+          {/* Approvals Dropdown */}
+          {showApprovalsButton && (
+            <div className="relative" ref={approvalsRef}>
+              {/* Approvals Button */}
+              <button
+                onClick={() => setApprovalsOpen(!approvalsOpen)}
+                className={`flex items-center gap-1.5 h-8 px-3 rounded-lg text-[13px] font-medium border transition-all duration-150 ${approvalsOpen
+                  ? "bg-[#EDE9FE] border-[#6366f1] text-[#6366f1]"
+                  : "bg-transparent border-[#E5E7EB] text-[#374151] hover:bg-[#F3F4F6] hover:border-[#D1D5DB]"
+                  }`}
+              >
+                Approvals
+                {totalApprovalCount > 0 && (
+                  <span className="bg-[#EF4444] text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 min-w-[18px] text-center">
+                    {totalApprovalCount}
+                  </span>
+                )}
+                <ChevronDown
+                  className={`h-3.5 w-3.5 transition-transform duration-200 ${approvalsOpen ? "rotate-180 text-[#6366f1]" : "text-[#9CA3AF]"
+                    }`}
+                />
+              </button>
+
+              {/* Dropdown Menu */}
+              {approvalsOpen && (
+                <div className="absolute top-10 left-0 w-[220px] bg-white border border-[#E5E7EB] rounded-[10px] shadow-[0_4px_16px_rgba(0,0,0,0.08)] p-1 z-[100] animate-in fade-in-0 zoom-in-95 duration-150">
+                  {approvalItems.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        if (item.id === "bom_approvals" && window.location.pathname === "/create-bom") {
+                          window.dispatchEvent(new Event("open-bom-approvals"));
+                        } else {
+                          setLocation(item.href);
+                        }
+                        setApprovalsOpen(false);
+                      }}
+                      className="w-full flex items-center justify-between px-3 h-9 rounded-md text-[13px] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#111827] transition-colors duration-100"
+                    >
+                      <span>{item.label}</span>
+                      {item.count > 0 && (
+                        <span className="bg-[#EF4444] text-white text-[10px] font-bold rounded-full px-1.5 py-0.5 min-w-[18px] text-center">
+                          {item.count}
+                        </span>
+                      )}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
           )}
-        </div>
 
-        {/* 2. NOTIFICATION BELL */}
-        <button
-          onClick={() => console.log("notifications")}
-          className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-[#F3F4F6] transition-colors relative"
-          title="Notifications"
-        >
-          <Bell className="h-4 w-4 text-[#6B7280] hover:text-[#111827] transition-colors" />
-          {alertsCount > 0 && (
-            <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#EF4444] ring-1 ring-white" />
-          )}
-        </button>
-
-        {/* 3. USER AVATAR & DROPDOWN */}
-        <div className="relative" ref={dropdownRef}>
-          <div
-            onClick={() => setDropdownOpen((prev) => !prev)}
-            className="w-7 h-7 rounded-full bg-[#6366f1] text-white flex items-center justify-center text-[11px] font-semibold select-none hover:opacity-85 cursor-pointer uppercase transition-opacity"
-            title={user?.fullName || user?.username || "User profile"}
-          >
-            {initial}
+          {/* 1. SEARCH BAR */}
+          <div className="relative w-[280px]" ref={searchRef}>
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-[#9CA3AF] pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Search menus (e.g. Finalize BOQ)..."
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setSearchOpen(true);
+              }}
+              onFocus={() => setSearchOpen(true)}
+              className="w-full h-8 pl-8 pr-3 bg-[#F9FAFB] border border-[#E5E7EB] rounded-lg text-[13px] text-[#374151] placeholder-[#9CA3AF] focus:border-[#6366f1] focus:ring-2 focus:ring-[#6366f1]/10 focus:outline-none transition-all"
+            />
+            {searchOpen && searchQuery.length > 0 && (
+              <div className="absolute top-10 left-0 w-full bg-white border border-[#E5E7EB] rounded-[10px] shadow-[0_4px_16px_rgba(0,0,0,0.08)] py-1 max-h-[300px] overflow-y-auto z-[100] animate-in fade-in-0 zoom-in-95 duration-150">
+                {filteredSearchPages.length > 0 ? (
+                  filteredSearchPages.map((page, i) => (
+                    <button
+                      key={i}
+                      onClick={() => {
+                        setLocation(page.href);
+                        setSearchOpen(false);
+                        setSearchQuery("");
+                      }}
+                      className="w-full text-left px-3 py-2 text-[13px] text-[#374151] hover:bg-[#F3F4F6] hover:text-[#111827] transition-colors"
+                    >
+                      {page.label}
+                    </button>
+                  ))
+                ) : (
+                  <div className="px-3 py-2 text-[13px] text-[#9CA3AF]">
+                    No results found
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
-          {dropdownOpen && (
-            <div className="absolute right-0 top-10 w-[200px] bg-white border border-[#E5E7EB] rounded-[10px] shadow-[0_4px_16px_rgba(0,0,0,0.08)] py-2 z-50">
-              <div className="px-3 py-1.5 flex flex-col min-w-0">
-                <span className="text-[13px] font-semibold text-[#111827] truncate">
-                  {user?.fullName || user?.name || "User"}
-                </span>
-                <span className="text-[11px] text-[#6B7280] truncate">
-                  {user?.username || user?.email || ""}
-                </span>
-              </div>
-              <div className="h-[1px] bg-[#F3F4F6] my-1" />
-              <div className="px-3 py-1">
-                <span
-                  className={`inline-block text-[9px] font-bold px-2 py-0.5 rounded-full border ${getRoleBadgeClass(
-                    user?.role
-                  )}`}
-                >
-                  {user?.role?.toUpperCase().replace("_", " ") || "USER"}
-                </span>
-              </div>
-              <div className="h-[1px] bg-[#F3F4F6] my-1" />
-              <button
-                onClick={handleLogout}
-                className="w-full text-left px-3 py-1.5 text-[12px] text-[#EF4444] hover:bg-[#F9FAFB] flex items-center gap-2 transition-colors font-medium"
-              >
-                <LogOut className="h-3.5 w-3.5" />
-                <span>Log Out</span>
-              </button>
+          {/* 2. NOTIFICATION BELL */}
+          <button
+            onClick={() => console.log("notifications")}
+            className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-[#F3F4F6] transition-colors relative"
+            title="Notifications"
+          >
+            <Bell className="h-4 w-4 text-[#6B7280] hover:text-[#111827] transition-colors" />
+            {alertsCount > 0 && (
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#EF4444] ring-1 ring-white" />
+            )}
+          </button>
+
+          {/* 3. USER AVATAR & DROPDOWN */}
+          <div className="relative" ref={dropdownRef}>
+            <div
+              onClick={() => setDropdownOpen((prev) => !prev)}
+              className="w-7 h-7 rounded-full bg-[#6366f1] text-white flex items-center justify-center text-[11px] font-semibold select-none hover:opacity-85 cursor-pointer uppercase transition-opacity"
+              title={user?.fullName || user?.username || "User profile"}
+            >
+              {initial}
             </div>
-          )}
+
+            {dropdownOpen && (
+              <div className="absolute right-0 top-10 w-[200px] bg-white border border-[#E5E7EB] rounded-[10px] shadow-[0_4px_16px_rgba(0,0,0,0.08)] py-2 z-50">
+                <div className="px-3 py-1.5 flex flex-col min-w-0">
+                  <span className="text-[13px] font-semibold text-[#111827] truncate">
+                    {user?.fullName || user?.name || "User"}
+                  </span>
+                  <span className="text-[11px] text-[#6B7280] truncate">
+                    {user?.username || user?.email || ""}
+                  </span>
+                </div>
+                <div className="h-[1px] bg-[#F3F4F6] my-1" />
+                <div className="px-3 py-1">
+                  <span
+                    className={`inline-block text-[9px] font-bold px-2 py-0.5 rounded-full border ${getRoleBadgeClass(
+                      user?.role ?? undefined
+                    )}`}
+                  >
+                    {user?.role?.toUpperCase().replace("_", " ") || "USER"}
+                  </span>
+                </div>
+                <div className="h-[1px] bg-[#F3F4F6] my-1" />
+                <button
+                  onClick={handleLogout}
+                  className="w-full text-left px-3 py-1.5 text-[12px] text-[#EF4444] hover:bg-[#F9FAFB] flex items-center gap-2 transition-colors font-medium"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  <span>Log Out</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-    </header>
+      </header>
       {customizeOpen && (
         <div className="fixed inset-0 bg-black/50 z-[200] flex items-center justify-center">
           <div className="bg-white rounded-xl shadow-xl w-[400px] max-h-[80vh] flex flex-col">
@@ -595,8 +604,8 @@ export function Header() {
                 const isSelected = easyAccessItems.some(item => item.href === page.href);
                 return (
                   <label key={i} className="flex items-center gap-3 p-2 hover:bg-[#F9FAFB] rounded-lg cursor-pointer border border-transparent hover:border-[#E5E7EB]">
-                    <input 
-                      type="checkbox" 
+                    <input
+                      type="checkbox"
                       className="rounded border-[#D1D5DB] text-[#6366f1] focus:ring-[#6366f1]"
                       checked={isSelected}
                       onChange={(e) => {

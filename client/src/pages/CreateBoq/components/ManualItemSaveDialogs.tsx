@@ -180,12 +180,22 @@ export function SaveAsWizardDialog({
   // disappearing, so the admin approval view can show a clear diff. ──
   const [deletedIndexes, setDeletedIndexes] = useState<Set<number>>(new Set());
 
-  // Re-initialize when opened
+  // Re-initialize only on the closed → open transition. `preDeletedIndexes`
+  // is a brand-new array reference on every BoqItemCard re-render (it's
+  // recomputed fresh from local state each render), so keying this effect
+  // on it directly — as before — meant ANY parent re-render while the
+  // dialog was already open (typing elsewhere on the card, unrelated state
+  // updates, etc.) would silently reset deletedIndexes back to whatever
+  // preDeletedIndexes was at that moment, discarding any delete/undelete
+  // toggles the user had just made inside this dialog. Guard with a ref so
+  // this only fires once per genuine open. ──────────────────────────────
+  const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       setStep(mode === "save" ? 2 : 1);
       setDeletedIndexes(new Set(preDeletedIndexes || []));
     }
+    wasOpenRef.current = open;
   }, [open, mode, preDeletedIndexes]);
   const [newProductName, setNewProductName] = useState("");
   const [nameError, setNameError] = useState("");

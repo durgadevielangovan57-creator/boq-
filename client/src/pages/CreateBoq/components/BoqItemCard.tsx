@@ -495,10 +495,23 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   // everything else (engine/materialLine rows) gets a unique negative
   // sentinel index to avoid colliding with real step11 positions — the
   // wizard still reads the real position off `_materialIdx` when building
-  // the submit payload. ─────────────────────────────────────────────────
+  // the submit payload.
+  //
+  // IMPORTANT: the sentinel must be derived from the material's own stable
+  // `_materialIdx` (its fixed position in tableData.materialLines), NOT from
+  // this item's position in the combined [...renderLines, ...deletedFromBom,
+  // ...deletedMaterialLines] array. That array's length/order shifts every
+  // time an item is added or removed elsewhere on the card (e.g. adding a
+  // new manual item, or restoring/deleting another material), which was
+  // causing a deleted material's sentinel index to change between renders —
+  // losing the match in wizardPreDeletedIndexes below and in the wizard's
+  // own deletedIndexes state, so the deletion silently stopped showing as
+  // "marked for removal" once anything else on the card changed. Keying off
+  // `_materialIdx` keeps a given material's sentinel identical no matter
+  // what else is added or deleted around it. ─────────────────────────────
   const wizardItems = [...renderLines, ...deletedFromBom, ...deletedMaterialLines].map((it: any, index: number) => ({
     ...it,
-    index: it._s11Idx !== undefined ? it._s11Idx : -1_000_000 - index,
+    index: it._s11Idx !== undefined ? it._s11Idx : -1_000_000 - (it._materialIdx !== undefined ? it._materialIdx : index),
   })) as PendingManualItem[];
   const wizardPreDeletedIndexes = wizardItems
     .filter((it: any) => deletedFromBom.some((i: any) => i._s11Idx === it._s11Idx) || deletedMaterialLines.some((i: any) => i._materialIdx === it._materialIdx))
