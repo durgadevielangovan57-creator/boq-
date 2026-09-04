@@ -1591,6 +1591,32 @@ export async function registerRoutes(
     );
   }
 
+  // Performance fix: materials table was missing indexes on the columns
+  // /api/materials filters and sorts by (approved, shop_id, template_id,
+  // created_at), so as material count grows every load did a full table
+  // scan. These are additive (IF NOT EXISTS) and do not touch any data.
+  try {
+    await query(`CREATE INDEX IF NOT EXISTS idx_materials_approved ON materials (approved)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_materials_shop_id ON materials (shop_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_materials_template_id ON materials (template_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_materials_created_at ON materials (created_at DESC)`);
+    await query(`
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'archive_records') THEN
+          CREATE INDEX IF NOT EXISTS idx_archive_records_module_status ON archive_records (module, status);
+          CREATE INDEX IF NOT EXISTS idx_archive_records_origin_id ON archive_records (origin_id);
+        END IF;
+      END $$;
+    `);
+    console.log("[db] materials/archive_records performance indexes ensured");
+  } catch (err: unknown) {
+    console.warn(
+      "[db] Could not ensure materials performance indexes:",
+      (err as any)?.message || err,
+    );
+  }
+
   // Create vendor_categories table for centralized vendor category management
   try {
     await query(`
@@ -1797,6 +1823,91 @@ export async function registerRoutes(
       "[db] Could not create budget_exceed_logs table:",
       (err as any)?.message || err,
     );
+  }
+
+  // ============================================================
+  // Site-wide performance fix: almost every page filters or joins
+  // by a foreign-key column (project_id, version_id, proposal_id,
+  // po_id, etc.) but Postgres does NOT auto-index those columns
+  // (only the primary key gets one automatically). As data grows,
+  // every page load on every module below was doing a full table
+  // scan. This block adds the missing indexes, additively and
+  // idempotently (CREATE INDEX IF NOT EXISTS never touches or
+  // removes any existing data/column/table). Each statement is
+  // tried independently so a single failure (e.g. a table that
+  // doesn't exist on some installs) never blocks the others or
+  // crashes the server.
+  // ============================================================
+  {
+    const perfIndexes: { name: string; sql: string }[] = [
+      // Sketch plans
+      { name: "idx_sketch_plans_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_sketch_plans_project_id ON sketch_plans (project_id)` },
+      { name: "idx_sketch_plan_items_plan_id", sql: `CREATE INDEX IF NOT EXISTS idx_sketch_plan_items_plan_id ON sketch_plan_items (plan_id)` },
+      { name: "idx_sketch_plan_images_plan_id", sql: `CREATE INDEX IF NOT EXISTS idx_sketch_plan_images_plan_id ON sketch_plan_images (plan_id)` },
+      { name: "idx_sketch_plan_attachments_plan_id", sql: `CREATE INDEX IF NOT EXISTS idx_sketch_plan_attachments_plan_id ON sketch_plan_attachments (plan_id)` },
+      { name: "idx_sketch_plan_locks_plan_id", sql: `CREATE INDEX IF NOT EXISTS idx_sketch_plan_locks_plan_id ON sketch_plan_locks (plan_id)` },
+      // BOQ core (biggest win: BOQ items/versions load on every project open)
+      { name: "idx_boq_items_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_boq_items_project_id ON boq_items (project_id)` },
+      { name: "idx_boq_items_version_id", sql: `CREATE INDEX IF NOT EXISTS idx_boq_items_version_id ON boq_items (version_id)` },
+      { name: "idx_boq_versions_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_boq_versions_project_id ON boq_versions (project_id)` },
+      { name: "idx_boq_history_version_id", sql: `CREATE INDEX IF NOT EXISTS idx_boq_history_version_id ON boq_history (version_id)` },
+      { name: "idx_boq_manual_item_requests_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_boq_manual_item_requests_project_id ON boq_manual_item_requests (project_id)` },
+      // Proposals
+      { name: "idx_proposals_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_proposals_project_id ON proposals (project_id)` },
+      { name: "idx_proposal_items_proposal_id", sql: `CREATE INDEX IF NOT EXISTS idx_proposal_items_proposal_id ON proposal_items (proposal_id)` },
+      { name: "idx_proposal_material_submissions_proposal_id", sql: `CREATE INDEX IF NOT EXISTS idx_proposal_material_submissions_proposal_id ON proposal_material_submissions (proposal_id)` },
+      { name: "idx_proposal_material_submissions_template_id", sql: `CREATE INDEX IF NOT EXISTS idx_proposal_material_submissions_template_id ON proposal_material_submissions (template_id)` },
+      { name: "idx_proposal_material_submissions_shop_id", sql: `CREATE INDEX IF NOT EXISTS idx_proposal_material_submissions_shop_id ON proposal_material_submissions (shop_id)` },
+      // Purchase orders / PO requests
+      { name: "idx_purchase_orders_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_purchase_orders_project_id ON purchase_orders (project_id)` },
+      { name: "idx_purchase_order_items_po_id", sql: `CREATE INDEX IF NOT EXISTS idx_purchase_order_items_po_id ON purchase_order_items (po_id)` },
+      { name: "idx_po_requests_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_po_requests_project_id ON po_requests (project_id)` },
+      { name: "idx_po_request_items_po_request_id", sql: `CREATE INDEX IF NOT EXISTS idx_po_request_items_po_request_id ON po_request_items (po_request_id)` },
+      // Site reports
+      { name: "idx_site_reports_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_site_reports_project_id ON site_reports (project_id)` },
+      { name: "idx_site_report_tasks_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_site_report_tasks_project_id ON site_report_tasks (project_id)` },
+      { name: "idx_site_report_labours_site_report_id", sql: `CREATE INDEX IF NOT EXISTS idx_site_report_labours_site_report_id ON site_report_labours (site_report_id)` },
+      { name: "idx_site_report_media_task_id", sql: `CREATE INDEX IF NOT EXISTS idx_site_report_media_task_id ON site_report_media (task_id)` },
+      { name: "idx_site_report_issues_task_id", sql: `CREATE INDEX IF NOT EXISTS idx_site_report_issues_task_id ON site_report_issues (task_id)` },
+      { name: "idx_site_report_materials_task_id", sql: `CREATE INDEX IF NOT EXISTS idx_site_report_materials_task_id ON site_report_materials (task_id)` },
+      // Email groups
+      { name: "idx_email_group_members_group_id", sql: `CREATE INDEX IF NOT EXISTS idx_email_group_members_group_id ON email_group_members (group_id)` },
+      // Products page (the heavy /api/products query joins/unions these)
+      { name: "idx_step11_products_product_id", sql: `CREATE INDEX IF NOT EXISTS idx_step11_products_product_id ON step11_products (product_id)` },
+      { name: "idx_step11_product_items_step11_product_id", sql: `CREATE INDEX IF NOT EXISTS idx_step11_product_items_step11_product_id ON step11_product_items (step11_product_id)` },
+      { name: "idx_step11_product_items_material_id", sql: `CREATE INDEX IF NOT EXISTS idx_step11_product_items_material_id ON step11_product_items (material_id)` },
+      { name: "idx_product_step3_config_product_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_step3_config_product_id ON product_step3_config (product_id)` },
+      { name: "idx_product_step3_config_items_step3_config_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_step3_config_items_step3_config_id ON product_step3_config_items (step3_config_id)` },
+      { name: "idx_product_step3_config_items_material_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_step3_config_items_material_id ON product_step3_config_items (material_id)` },
+      { name: "idx_product_approvals_product_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_approvals_product_id ON product_approvals (product_id)` },
+      { name: "idx_product_approval_items_approval_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_approval_items_approval_id ON product_approval_items (approval_id)` },
+      { name: "idx_product_approval_items_material_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_approval_items_material_id ON product_approval_items (material_id)` },
+      // Manage Product page: /api/products joins these on LOWER(TRIM(...)),
+      // which a plain column index cannot serve — needs a matching
+      // expression index, or Postgres still has to scan+compute for every row.
+      { name: "idx_material_subcategories_lower_trim_name_cat", sql: `CREATE INDEX IF NOT EXISTS idx_material_subcategories_lower_trim_name_cat ON material_subcategories (LOWER(TRIM(name)), LOWER(TRIM(category)))` },
+      { name: "idx_material_categories_lower_trim_name", sql: `CREATE INDEX IF NOT EXISTS idx_material_categories_lower_trim_name ON material_categories (LOWER(TRIM(name)))` },
+      { name: "idx_products_lower_trim_subcategory", sql: `CREATE INDEX IF NOT EXISTS idx_products_lower_trim_subcategory ON products (LOWER(TRIM(subcategory)))` },
+      { name: "idx_products_lower_trim_category", sql: `CREATE INDEX IF NOT EXISTS idx_products_lower_trim_category ON products (LOWER(TRIM(category)))` },
+      // Speeds up the DISTINCT ON (product_id, config_name) ... ORDER BY
+      // ... created_at DESC pattern used repeatedly for approvals.
+      { name: "idx_product_approvals_product_config_created", sql: `CREATE INDEX IF NOT EXISTS idx_product_approvals_product_config_created ON product_approvals (product_id, config_name, created_at DESC)` },
+      { name: "idx_product_approvals_status", sql: `CREATE INDEX IF NOT EXISTS idx_product_approvals_status ON product_approvals (status)` },
+    ];
+
+    let ok = 0, skipped = 0;
+    for (const idx of perfIndexes) {
+      try {
+        await query(idx.sql);
+        ok++;
+      } catch (e: any) {
+        // Table/column doesn't exist on this install, or already covered
+        // by an existing index/constraint — safe to skip, nothing else
+        // is affected.
+        skipped++;
+      }
+    }
+    console.log(`[db] site-wide performance indexes ensured (${ok} applied, ${skipped} skipped)`);
   }
 
   // GET /api/budget-exceed-logs/:projectId
