@@ -856,6 +856,15 @@ export default function FinalizeBoq() {
   const [newTemplateName, setNewTemplateName] = useState("");
   const [showDisabledVersionsDialog, setShowDisabledVersionsDialog] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Cache of the products/materials catalog used to backfill HSN/SAC codes,
+  // images, etc. onto BOQ items. This catalog is the same regardless of
+  // which version is selected, so there's no reason to re-fetch these two
+  // (slow, full-table) endpoints from scratch every single time
+  // loadBoqItemsAndEdits runs — e.g. every time the auto-sync-from-BOM
+  // effect bumps refreshKey after adding/updating a couple of items. We
+  // fetch it once per page session and reuse it; the manual "Refresh" button
+  // (handleRefreshBomData) clears this cache to force a fresh pull.
+  const catalogCacheRef = useRef<{ productsById: Record<string, any>; materialsById: Record<string, any> } | null>(null);
 
   // Copy BOQ Settings (to another version) dialog state
   const [isCopySettingsDialogOpen, setIsCopySettingsDialogOpen] = useState(false);
@@ -2316,79 +2325,12 @@ export default function FinalizeBoq() {
             }
           }
 
-          try {
-            const [productsResp, materialsResp] = await Promise.all([
-              apiFetch("/api/products"),
-              apiFetch("/api/materials").catch(() => null),
-            ]);
-            const productsById: { [id: string]: any } = {};
-            if (productsResp.ok) {
-              const productsData = await productsResp.json();
-              const productsList: any[] = productsData.products || [];
-              productsList.forEach((p: any) => { productsById[p.id] = p; });
-            }
-            const materialsById: { [id: string]: any } = {};
-            if (materialsResp && materialsResp.ok) {
-              const materialsData = await materialsResp.json();
-              const materialsList: any[] = materialsData.materials || [];
-              materialsList.forEach((m: any) => { materialsById[m.id] = m; });
-            }
-
-            for (const item of items) {
-              let td = item.table_data || {};
-              if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
-              if (td.product_id) {
-                const prod = productsById[td.product_id];
-                if (prod) {
-                  // Update missing HSN/SAC
-                  if (!td.hsn_code && !td.sac_code) {
-                    if (prod.hsn_code) td.hsn_code = prod.hsn_code;
-                    if (prod.sac_code) td.sac_code = prod.sac_code;
-                    if (prod.tax_code_value) {
-                      td.hsn_sac_code = prod.tax_code_value;
-                      td.hsn_sac_type = prod.tax_code_type || null;
-                    }
-                  }
-                  // Always try to attach image if it exists in the catalog but not in table_data
-                  if (prod.image && !td.image) {
-                    td.image = prod.image;
-                  }
-                  item.table_data = td;
-                }
-              } else if (td.material_id) {
-                // Same auto-fill, but for items linked to a Material Template
-                // instead of a catalog Product.
-                const mat = materialsById[td.material_id];
-                if (mat) {
-                  if (!td.hsn_code && !td.sac_code) {
-                    if (mat.hsn_code || mat.template_hsn_code) td.hsn_code = mat.hsn_code || mat.template_hsn_code;
-                    if (mat.sac_code || mat.template_sac_code) td.sac_code = mat.sac_code || mat.template_sac_code;
-                    if (mat.tax_code_value || mat.hsn_sac_code) {
-                      td.hsn_sac_code = mat.tax_code_value || mat.hsn_sac_code;
-                      td.hsn_sac_type = mat.tax_code_type || mat.hsn_sac_type || null;
-                    }
-                  }
-                  if (mat.image && !td.image) {
-                    td.image = mat.image;
-                  }
-                  item.table_data = td;
-                }
-              } else if (!td.image && Array.isArray(td.step11_items) && td.step11_items.length > 0) {
-                // Items added via the "Select Material" picker don't carry a
-                // top-level material_id — the material reference lives on
-                // the first step11 line instead.
-                const firstLine = td.step11_items[0];
-                const lineMatId = firstLine?.material_id || firstLine?.id;
-                const mat = lineMatId ? materialsById[lineMatId] : null;
-                if (mat && mat.image) {
-                  td.image = mat.image;
-                  item.table_data = td;
-                }
-              }
-            }
-          } catch (e) {
-            console.warn("Failed to backfill HSN/SAC codes in FinalizeBoq:", e);
-          }
+          // Apply all the restored template/column/qty/unit/override state
+          // right away — it's derived purely from `items` (already fetched
+          // above), so it must not wait on the products/materials catalog
+          // fetch below. That fetch is only for backfilling HSN/SAC codes
+          // and images; delaying the custom-column template on it made the
+          // whole "applied template" appear to load slowly for no reason.
           if (Object.keys(restoredCols).length > 0) {
             setCustomColumns(restoredCols);
             const firstItemId = Object.keys(restoredCols)[0];
@@ -2470,6 +2412,92 @@ export default function FinalizeBoq() {
           setHideSystemTotalFooter(sysTotalHidden);
           setGrandTotalColumn(restoredGrandTotalCol);
           setHiddenPredefinedCols(restoredHiddenPredefined);
+
+          try {
+            let productsById: { [id: string]: any };
+            let materialsById: { [id: string]: any };
+            if (catalogCacheRef.current) {
+              // Reuse the catalog fetched earlier this session instead of
+              // re-hitting the slow /api/products + /api/materials endpoints
+              // again — this is what makes reloads after auto-sync-from-BOM
+              // (and any other refreshKey-triggered reload) fast.
+              ({ productsById, materialsById } = catalogCacheRef.current);
+            } else {
+              const [productsResp, materialsResp] = await Promise.all([
+                apiFetch("/api/products"),
+                apiFetch("/api/materials").catch(() => null),
+              ]);
+              productsById = {};
+              if (productsResp.ok) {
+                const productsData = await productsResp.json();
+                const productsList: any[] = productsData.products || [];
+                productsList.forEach((p: any) => { productsById[p.id] = p; });
+              }
+              materialsById = {};
+              if (materialsResp && materialsResp.ok) {
+                const materialsData = await materialsResp.json();
+                const materialsList: any[] = materialsData.materials || [];
+                materialsList.forEach((m: any) => { materialsById[m.id] = m; });
+              }
+              catalogCacheRef.current = { productsById, materialsById };
+            }
+
+            for (const item of items) {
+              let td = item.table_data || {};
+              if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
+              if (td.product_id) {
+                const prod = productsById[td.product_id];
+                if (prod) {
+                  // Update missing HSN/SAC
+                  if (!td.hsn_code && !td.sac_code) {
+                    if (prod.hsn_code) td.hsn_code = prod.hsn_code;
+                    if (prod.sac_code) td.sac_code = prod.sac_code;
+                    if (prod.tax_code_value) {
+                      td.hsn_sac_code = prod.tax_code_value;
+                      td.hsn_sac_type = prod.tax_code_type || null;
+                    }
+                  }
+                  // Always try to attach image if it exists in the catalog but not in table_data
+                  if (prod.image && !td.image) {
+                    td.image = prod.image;
+                  }
+                  item.table_data = td;
+                }
+              } else if (td.material_id) {
+                // Same auto-fill, but for items linked to a Material Template
+                // instead of a catalog Product.
+                const mat = materialsById[td.material_id];
+                if (mat) {
+                  if (!td.hsn_code && !td.sac_code) {
+                    if (mat.hsn_code || mat.template_hsn_code) td.hsn_code = mat.hsn_code || mat.template_hsn_code;
+                    if (mat.sac_code || mat.template_sac_code) td.sac_code = mat.sac_code || mat.template_sac_code;
+                    if (mat.tax_code_value || mat.hsn_sac_code) {
+                      td.hsn_sac_code = mat.tax_code_value || mat.hsn_sac_code;
+                      td.hsn_sac_type = mat.tax_code_type || mat.hsn_sac_type || null;
+                    }
+                  }
+                  if (mat.image && !td.image) {
+                    td.image = mat.image;
+                  }
+                  item.table_data = td;
+                }
+              } else if (!td.image && Array.isArray(td.step11_items) && td.step11_items.length > 0) {
+                // Items added via the "Select Material" picker don't carry a
+                // top-level material_id — the material reference lives on
+                // the first step11 line instead.
+                const firstLine = td.step11_items[0];
+                const lineMatId = firstLine?.material_id || firstLine?.id;
+                const mat = lineMatId ? materialsById[lineMatId] : null;
+                if (mat && mat.image) {
+                  td.image = mat.image;
+                  item.table_data = td;
+                }
+              }
+            }
+          } catch (e) {
+            console.warn("Failed to backfill HSN/SAC codes in FinalizeBoq:", e);
+          }
+
         } catch (e) {
           toast({ title: "Error", description: "Failed to parse BOM items response", variant: "destructive" });
           console.error("BOM items parse error:", e);
@@ -2487,6 +2515,10 @@ export default function FinalizeBoq() {
 
   // Refresh both versions list + item data for the current selection
   const handleRefreshBomData = useCallback(async () => {
+    // A manual refresh means the user wants genuinely fresh data, so drop
+    // the cached products/materials catalog too (see catalogCacheRef above)
+    // instead of quietly reusing whatever was fetched earlier.
+    catalogCacheRef.current = null;
     if (selectedProjectId) {
       // Clear items while refreshing to show loading state
       setBoqItems([]);
