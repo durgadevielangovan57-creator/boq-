@@ -2543,17 +2543,24 @@ export default function FinalizeBoq() {
       });
       const data = await resp.json().catch(() => ({}));
       if (resp.ok) {
-        if ((data.added_count || 0) > 0) {
+        const addedN = data.added_count || 0;
+        const updatedN = data.updated_count || 0;
+        const removedN = data.removed_count || 0;
+        if (addedN > 0 || updatedN > 0 || removedN > 0) {
+          const parts: string[] = [];
+          if (addedN > 0) parts.push(`${addedN} item(s) added`);
+          if (updatedN > 0) parts.push(`${updatedN} item(s) updated`);
+          if (removedN > 0) parts.push(`${removedN} item(s) removed`);
           toast({
-            title: "Synced",
-            description: `Added ${data.added_count} item(s) from BOM. Existing items were left unchanged.${data.skipped_count ? ` (${data.skipped_count} already present, skipped.)` : ""}`,
+            title: "Synced from BOM",
+            description: parts.join(", ") + ".",
           });
-          // Reload the current BOQ version's items to show the newly appended rows
+          // Reload the current BOQ version's items to reflect additions/edits/removals
           setRefreshKey(prev => prev + 1);
         } else {
           toast({
             title: "Already up to date",
-            description: `No new items found in the selected BOM version. ${data.skipped_count ? `${data.skipped_count} item(s) already present.` : ""}`,
+            description: `No changes found in the selected BOM version. ${data.skipped_count ? `${data.skipped_count} item(s) already present.` : ""}`,
           });
         }
       } else {
@@ -2567,16 +2574,14 @@ export default function FinalizeBoq() {
     }
   }, [selectedBoqVersionId, selectedBomVersionId, boqVersions, toast]);
 
-  // Auto-sync: whenever a BOQ version is (re)selected/opened, silently pull
-  // in any items that exist in its source BOM version but are missing from
-  // this BOQ draft — e.g. items added to the BOM after the BOQ version was
-  // created (via "edit request" -> add items). This mirrors clicking the
-  // manual "Sync from BOM" button, but happens automatically so the user
-  // doesn't have to remember to click it. It never touches/edits/removes
-  // existing BOQ items (see handleSyncMissingFromBom / server route), so
-  // this is safe to run automatically. Guarded by a ref so it only runs
-  // once per version (not on every refreshKey bump, e.g. after saving a
-  // cell edit), and skipped while a manual sync is already in flight.
+  // Auto-sync: whenever a BOQ version is (re)selected/opened, silently
+  // reconciles this BOQ draft against its source BOM version — appends items
+  // added to the BOM, updates qty/unit/name/category/remarks on items whose
+  // BOM source changed, and archives items whose BOM source was deleted.
+  // Never touches rate/override or any other BOQ-only field (see server
+  // route for the exact field list). Guarded by a ref so it only runs once
+  // per version per page load (not on every refreshKey bump, e.g. after
+  // saving a cell edit), and skipped while a manual sync is already in flight.
   const autoSyncedVersionsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!selectedBoqVersionId) return;

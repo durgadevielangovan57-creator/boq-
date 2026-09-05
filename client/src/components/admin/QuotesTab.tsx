@@ -15,10 +15,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
     Plus, Trash2, Send, BarChart3, ArrowLeft, Search as SearchIcon, Upload, FileSpreadsheet,
-    Download, Link as LinkIcon, Copy, Loader2, FolderKanban, Users, Package, Save, Check, ChevronsUpDown, X, Pencil
+    Download, Link as LinkIcon, Copy, Loader2, FolderKanban, Users, Package, Save, Check, ChevronsUpDown, X, Pencil, Eye
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import apiFetch from "@/lib/api";
 import { MaterialPickerDialog, PickedMaterial } from "./MaterialPickerDialog";
@@ -1752,6 +1753,29 @@ function BomVendorQuoteDetail({ quoteId, onBack }: { quoteId: string; onBack: ()
     );
 }
 
+// Small icon-only action button with a tooltip label — used in the quotes
+// list so every row's action group renders as a single fixed-width row of
+// icons instead of variable-width text buttons that wrap inconsistently
+// between quote types (BOM vendor quotes have fewer actions than standard
+// quotes, so full-text buttons made the two row styles visibly misaligned).
+function ActionIconButton({ label, onClick, variant = "outline", destructive = false }: { label: string; onClick: () => void; variant?: "outline" | "ghost"; destructive?: boolean }) {
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <Button variant={variant} size="icon" className="h-8 w-8" onClick={onClick} aria-label={label}>
+                    {label === "View" && <Eye className="h-3.5 w-3.5" />}
+                    {label === "Copy Link" && <LinkIcon className="h-3.5 w-3.5" />}
+                    {label === "Send" && <Send className="h-3.5 w-3.5" />}
+                    {label === "Compare" && <BarChart3 className="h-3.5 w-3.5" />}
+                    {label === "Edit" && <Pencil className="h-3.5 w-3.5" />}
+                    {label === "Delete" && <Trash2 className={`h-3.5 w-3.5 ${destructive ? "text-destructive" : ""}`} />}
+                </Button>
+            </TooltipTrigger>
+            <TooltipContent>{label}</TooltipContent>
+        </Tooltip>
+    );
+}
+
 export function QuotesTab() {
     const { toast } = useToast();
     const [quotes, setQuotes] = useState<any[]>([]);
@@ -1884,22 +1908,22 @@ export function QuotesTab() {
                                         </TableCell>
                                         <TableCell className="text-right">
                                             {q.quote_kind === "bom_vendor" ? (
-                                                <div className="flex flex-wrap items-center justify-end gap-2">
-                                                    <Button variant="outline" size="sm" onClick={() => setBomDetailId(q.id)}><BarChart3 className="h-3.5 w-3.5 mr-1" /> View</Button>
-                                                    <Button variant="outline" size="sm" onClick={() => {
+                                                <div className="flex items-center justify-end gap-1.5">
+                                                    <ActionIconButton label="View" onClick={() => setBomDetailId(q.id)} />
+                                                    <ActionIconButton label="Copy Link" onClick={() => {
                                                         const link = `${window.location.origin}/quote/bom/${q.open_token}`;
                                                         navigator.clipboard?.writeText(link);
                                                         toast({ title: "Link copied", description: link });
-                                                    }}><LinkIcon className="h-3.5 w-3.5 mr-1" /> Copy Link</Button>
-                                                    <Button variant="ghost" size="icon" onClick={() => remove(q.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                                                    }} />
+                                                    <ActionIconButton label="Delete" variant="ghost" destructive onClick={() => remove(q.id)} />
                                                 </div>
                                             ) : (
-                                                <div className="flex flex-wrap items-center justify-end gap-2">
-                                                    <Button variant="outline" size="sm" onClick={() => setSendTarget(q)}><Send className="h-3.5 w-3.5 mr-1" /> Send</Button>
-                                                    <Button variant="outline" size="sm" onClick={() => copyLink(q.id)}><LinkIcon className="h-3.5 w-3.5 mr-1" /> Copy Link</Button>
-                                                    <Button variant="outline" size="sm" onClick={() => setComparisonId(q.id)}><BarChart3 className="h-3.5 w-3.5 mr-1" /> Compare</Button>
-                                                    <Button variant="outline" size="sm" onClick={() => setEditQuoteId(q.id)}><Pencil className="h-3.5 w-3.5 mr-1" /> Edit</Button>
-                                                    <Button variant="ghost" size="icon" onClick={() => remove(q.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                                                <div className="flex items-center justify-end gap-1.5">
+                                                    <ActionIconButton label="Send" onClick={() => setSendTarget(q)} />
+                                                    <ActionIconButton label="Copy Link" onClick={() => copyLink(q.id)} />
+                                                    <ActionIconButton label="Compare" onClick={() => setComparisonId(q.id)} />
+                                                    <ActionIconButton label="Edit" onClick={() => setEditQuoteId(q.id)} />
+                                                    <ActionIconButton label="Delete" variant="ghost" destructive onClick={() => remove(q.id)} />
                                                 </div>
                                             )}
                                         </TableCell>

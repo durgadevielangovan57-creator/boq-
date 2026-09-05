@@ -6397,17 +6397,107 @@ export async function registerRoutes(
           }
         }
 
+        // Full membership of this BOM version (every id it has ever had, including
+        // items later deleted/archived from the BOM) vs. the "live" subset (still
+        // present and not archived/trashed). Anything a target item was copied from
+        // that belongs to this BOM version but has fallen out of the live set has
+        // since been removed from the BOM — the copy on the BOQ side is stale.
+        const allBomVersionItemIdsRes = await query(
+          `SELECT id FROM boq_items WHERE version_id = $1`,
+          [bom_version_id],
+        );
+        const allBomVersionItemIds = new Set(allBomVersionItemIdsRes.rows.map((r: any) => r.id));
+        const liveBomItemIds = new Set(
+          bomItemsResult.rows
+            .map((r: any) => r.id)
+            .filter((id: string) => !archivedIds.includes(id) && !trashedIds.includes(id)),
+        );
+
+        const removedItems: { id: string; name: string }[] = [];
+        for (const row of existingItemsResult.rows) {
+          const srcId = row.copied_from_item_id;
+          if (!srcId) continue; // not synced from this BOM, e.g. added directly on the BOQ side
+          if (!allBomVersionItemIds.has(srcId)) continue; // came from a different BOM version, leave alone
+          if (liveBomItemIds.has(srcId)) continue; // source item is still live, nothing to do
+          if (archivedIds.includes(row.id) || trashedIds.includes(row.id)) continue; // already archived
+
+          const fullItemRes = await query(`SELECT * FROM boq_items WHERE id = $1`, [row.id]);
+          if (fullItemRes.rows.length === 0) continue;
+          await archiveService.archiveItem("boq_items", row.id, fullItemRes.rows[0]);
+
+          let td = row.table_data;
+          if (typeof td === "string") { try { td = JSON.parse(td); } catch { td = {}; } }
+          const removedName = td?.product_name || td?.item || td?.name || "Unknown Item";
+          removedItems.push({ id: row.id, name: removedName });
+        }
+
+        if (removedItems.length > 0) {
+          const userObj = (req.user as any) || {};
+          for (const removed of removedItems) {
+            await query(
+              `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name) VALUES ($1, $2, $3, $4, $5, $6)`,
+              [targetVersionId, userObj.id || 'system', userObj.fullName || userObj.username || 'System', 'AUTO_REMOVED_FROM_BOM', removed.id, removed.name],
+            );
+          }
+        }
+
         const addedItems: { id: string; name: string }[] = [];
+        const updatedItems: { id: string; name: string }[] = [];
         let skippedCount = 0;
         let nextSortOrder = maxSortOrder + 1;
+
+        // Map source BOM item id -> its existing target row, so items already
+        // synced in can be checked for field changes (qty/unit/name/etc.)
+        // instead of just being left alone.
+        const existingByCopiedFrom = new Map<string, any>();
+        for (const row of existingItemsResult.rows) {
+          if (row.copied_from_item_id) existingByCopiedFrom.set(row.copied_from_item_id, row);
+        }
+        const SYNCED_FIELDS = ['targetRequiredQty', 'requiredUnitType', 'product_name', 'category', 'remarks'];
 
         for (const item of bomItemsResult.rows) {
           // Skip archived/trashed source items
           if (archivedIds.includes(item.id) || trashedIds.includes(item.id)) continue;
 
-          // Already synced into this BOQ version before -> skip, don't touch it
+          // Already synced into this BOQ version before -> check for field
+          // changes (qty, unit, name, category, remarks) and update in place
+          // instead of re-adding. Never touches rate/override — same rule as
+          // syncBomVersionChangesToLinkedBoqs.
           if (alreadyCopiedFromIds.has(item.id)) {
             skippedCount++;
+            const targetRow = existingByCopiedFrom.get(item.id);
+            if (targetRow && !archivedIds.includes(targetRow.id) && !trashedIds.includes(targetRow.id)) {
+              let sourceTd = item.table_data;
+              if (typeof sourceTd === 'string') { try { sourceTd = JSON.parse(sourceTd); } catch { sourceTd = {}; } }
+              let targetTd = targetRow.table_data;
+              if (typeof targetTd === 'string') { try { targetTd = JSON.parse(targetTd); } catch { targetTd = {}; } }
+
+              const changedFields: { field: string; old_value: any; new_value: any }[] = [];
+              const newTd = { ...targetTd };
+              for (const field of SYNCED_FIELDS) {
+                if (sourceTd?.[field] === undefined) continue;
+                if (JSON.stringify(targetTd?.[field]) !== JSON.stringify(sourceTd[field])) {
+                  changedFields.push({ field, old_value: targetTd?.[field], new_value: sourceTd[field] });
+                  newTd[field] = sourceTd[field];
+                }
+              }
+
+              if (changedFields.length > 0) {
+                newTd.bom_synced_at = new Date().toISOString();
+                await query(`UPDATE boq_items SET table_data = $1 WHERE id = $2`, [JSON.stringify(newTd), targetRow.id]);
+                const updatedName = newTd.product_name || newTd.item || newTd.name || "Unknown Item";
+                updatedItems.push({ id: targetRow.id, name: updatedName });
+
+                const userObj = (req.user as any) || {};
+                for (const chg of changedFields) {
+                  await query(
+                    `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name, field_name, old_value, new_value, created_at)
+                     VALUES ($1, $2, $3, 'AUTO_SYNCED_FROM_BOM', $4, $5, $6, $7, $8, NOW())`,
+                    [targetVersionId, userObj.id || 'system', userObj.fullName || userObj.username || 'System', targetRow.id, updatedName, chg.field, JSON.stringify(chg.old_value), JSON.stringify(chg.new_value)],
+                  );
+                }
+              }
+            }
             continue;
           }
 
@@ -6463,10 +6553,14 @@ export async function registerRoutes(
         }
 
         res.json({
-          message: `Synced ${addedItems.length} new item(s) from BOM. ${skippedCount} already present.`,
+          message: `Synced ${addedItems.length} new item(s) from BOM. ${updatedItems.length} item(s) updated. ${removedItems.length} stale item(s) removed.`,
           added_count: addedItems.length,
+          updated_count: updatedItems.length,
           skipped_count: skippedCount,
+          removed_count: removedItems.length,
           added_items: addedItems,
+          updated_items: updatedItems,
+          removed_items: removedItems,
         });
       } catch (err) {
         console.error("POST /api/boq-versions/:id/sync-from-bom error", err);
@@ -7470,15 +7564,30 @@ export async function registerRoutes(
   // already been priced on the Finalize BOQ side.
   async function syncBomVersionChangesToLinkedBoqs(bomVersionId: string, userId?: string, userFullName?: string) {
     try {
+      // NOTE: archiveService.archiveItem() is a SOFT archive — it inserts a row into
+      // archive_records but does NOT remove/mutate the original boq_items row. So a
+      // "deleted" BOM item still physically exists in this table with the same id.
+      // We must exclude archived/trashed ids ourselves, otherwise a deleted BOM item
+      // still shows up as a valid source and looks completely unchanged to the diff
+      // below (its table_data never changed), so nothing happens on the BOQ side.
+      const sourceArchivedIds = await archiveService.getArchivedItemIds('boq_items');
+      const sourceTrashedIds = await archiveService.getTrashedItemIds('boq_items');
+      const removedSourceIds = new Set([...sourceArchivedIds, ...sourceTrashedIds]);
+
       const bomItemsRes = await query(
         `SELECT id, table_data FROM boq_items WHERE version_id = $1 AND user_added IS NOT FALSE`,
         [bomVersionId]
       );
       if (bomItemsRes.rows.length === 0) return;
 
-      const bomItemIds = bomItemsRes.rows.map((r: any) => r.id);
+      // Keep the FULL id list (including deleted/archived ones) for finding linked
+      // BOQ-side items below — we still need to find items copied from an id that
+      // no longer counts as "live", precisely so we can flag them as orphaned.
+      const allBomItemIds = bomItemsRes.rows.map((r: any) => r.id);
+
       const bomItemMap = new Map<string, any>();
       for (const row of bomItemsRes.rows) {
+        if (removedSourceIds.has(row.id)) continue; // deleted from BOM — treat as gone
         let td = row.table_data;
         if (typeof td === 'string') { try { td = JSON.parse(td); } catch { td = {}; } }
         bomItemMap.set(row.id, td || {});
@@ -7490,7 +7599,7 @@ export async function registerRoutes(
         `SELECT id, version_id, table_data, copied_from_item_id
          FROM boq_items
          WHERE copied_from_item_id = ANY($1::text[])`,
-        [bomItemIds]
+        [allBomItemIds]
       );
       if (targetItemsRes.rows.length === 0) return;
 
@@ -7504,7 +7613,34 @@ export async function registerRoutes(
       for (const target of targetItemsRes.rows) {
         if (archivedIds.includes(target.id) || trashedIds.includes(target.id)) continue;
         const sourceTd = bomItemMap.get(target.copied_from_item_id);
-        if (!sourceTd) continue; // source BOM item was itself deleted/archived
+        if (!sourceTd) {
+          // Source BOM item is gone (removed from the BOM and re-approved).
+          // Archive the linked BOQ item so it disappears from Finalize BOQ too,
+          // instead of silently leaving a stale item behind.
+          try {
+            const fullItemRes = await query(`SELECT * FROM boq_items WHERE id = $1`, [target.id]);
+            if (fullItemRes.rows.length > 0) {
+              const archived = await archiveService.archiveItem('boq_items', target.id, fullItemRes.rows[0]);
+              if (archived) {
+                affectedVersionIds.add(target.version_id);
+                try {
+                  let itemName = target.table_data;
+                  if (typeof itemName === 'string') { try { itemName = JSON.parse(itemName); } catch { itemName = {}; } }
+                  await query(
+                    `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name, field_name, old_value, new_value, created_at)
+                     VALUES ($1, $2, $3, 'AUTO_REMOVED_FROM_BOM', $4, $5, NULL, NULL, NULL, NOW())`,
+                    [target.version_id, userId || 'system', userFullName || 'System', target.id, itemName?.product_name || itemName?.item || itemName?.name || "Unknown Item"]
+                  );
+                } catch (hErr) {
+                  console.warn("[bom_boq_sync] Failed to log auto-removal history:", hErr);
+                }
+              }
+            }
+          } catch (delErr) {
+            console.error("[bom_boq_sync] Failed to archive orphaned BOQ item", target.id, delErr);
+          }
+          continue;
+        }
 
         let targetTd = target.table_data;
         if (typeof targetTd === 'string') { try { targetTd = JSON.parse(targetTd); } catch { targetTd = {}; } }
