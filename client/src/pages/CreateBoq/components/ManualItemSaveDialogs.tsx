@@ -157,6 +157,7 @@ export function SaveAsWizardDialog({
   mode = "save_as",
   onSubmitSave,
   preDeletedIndexes,
+  productId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -173,6 +174,10 @@ export function SaveAsWizardDialog({
   mode?: "save_as" | "save";
   onSubmitSave?: (payload: { addedIndexes: number[]; deletedIndexes: number[]; editedItems: { index: number; patch: any }[]; deletedMaterialIndexes?: number[]; editedMaterialIndexes?: { index: number; patch: any }[] }) => void;
   preDeletedIndexes?: number[];
+  /** Only used in "save" mode: the id of the product being edited, so its
+   * saved Step 3 configuration (description, dims, wastage %, unit type)
+   * can be fetched and prefilled instead of starting blank. */
+  productId?: string;
 }) {
   const [step, setStep] = useState<1 | 2>(mode === "save" ? 2 : 1);
   // ── Save mode only: existing materials marked for removal. They stay
@@ -382,7 +387,12 @@ export function SaveAsWizardDialog({
     if (prevOpenRef.current) return;          // already open — skip reset
     prevOpenRef.current = true;
     setStep(mode === "save" ? 2 : 1);
-    setDeletedIndexes(new Set());
+    // NOTE: deletedIndexes is intentionally NOT reset here — the effect
+    // above (wasOpenRef-guarded) already seeds it from preDeletedIndexes
+    // exactly once per genuine open. Resetting it again here to an empty
+    // Set used to silently discard any items pre-marked for removal (via
+    // the trash icon on the main BOM table) before this dialog was ever
+    // opened, so "Submit for Approval" would go out with no deletions.
     setNewProductName("");
     setNameError("");
     setCategory("");
@@ -420,6 +430,38 @@ export function SaveAsWizardDialog({
     });
     setConfigByIndex(initial);
   }, [open, items]);
+
+  // ── Save mode only: the reset above always blanks the top-level
+  // Product Description / Dim A-C / Unit Type / Wastage % fields, since
+  // for "save_as" (a brand-new product) that's correct. But for "save"
+  // (editing an existing product in place) those fields belong to the
+  // product's already-saved Step 3 configuration and should be prefilled,
+  // not left blank. Fetch it once per genuine open, right after the reset
+  // above has run, and fill in the fields it finds. ──────────────────────
+  const prefillFetchedRef = useRef(false);
+  useEffect(() => {
+    if (!open) { prefillFetchedRef.current = false; return; }
+    if (mode !== "save" || !productId) return;
+    if (prefillFetchedRef.current) return;
+    prefillFetchedRef.current = true;
+    (async () => {
+      try {
+        const res = await apiFetch(`/api/product-step3-config/${encodeURIComponent(productId)}`);
+        if (!res.ok) return; // 404 = no saved config yet, leave blank defaults
+        const { config } = await res.json();
+        if (!config) return;
+        setProductDescription(config.description || "");
+        setDimA(config.dim_a !== null && config.dim_a !== undefined ? Number(config.dim_a) : undefined);
+        setDimB(config.dim_b !== null && config.dim_b !== undefined ? Number(config.dim_b) : undefined);
+        setDimC(config.dim_c !== null && config.dim_c !== undefined ? Number(config.dim_c) : undefined);
+        setRequiredUnitType(config.required_unit_type || "Sqft");
+        setBaseRequiredQty(Number(config.base_required_qty || 1));
+        setWastagePctDefault(Number(config.wastage_pct_default || 0));
+      } catch (err) {
+        console.error("Failed to load existing product configuration for prefill:", err);
+      }
+    })();
+  }, [open, mode, productId]);
 
   // All items available to this wizard: the original manual items passed in,
   // plus any brand-new materials brought in via "+ Add Item" (master catalog).
@@ -617,6 +659,12 @@ export function SaveAsWizardDialog({
         supplyRate: cfg.supplyRate,
         installRate: cfg.installRate,
         description: cfg.description || origDescription,
+        // Manage Product / product_approvals store the per-item free-text
+        // description under "location" (step11_product_items.location) too —
+        // mirror it here, same as the save_as payload does, so the approval
+        // review screen (which reads location first) shows the edit instead
+        // of the item's stale original location.
+        location: cfg.description || origDescription,
       };
 
       if (isEngineLine) {
@@ -636,12 +684,30 @@ export function SaveAsWizardDialog({
       return !item || (item as any)._s11Idx !== undefined;
     });
 
+    // Product-level Configuration fields (Unit Type, Description, Dim A-C,
+    // Base Required Qty) are editable in "save" mode too (prefilled from the
+    // product's saved Step 3 config above), but were previously dropped
+    // entirely here — only per-item add/edit/delete was ever submitted. Send
+    // them alongside so the approval screen shows what actually changed, and
+    // so approving actually persists them (see server-side handling of
+    // `productConfig` in the fullEdit branch).
+    const productConfig = {
+      dimA,
+      dimB,
+      dimC,
+      requiredUnitType,
+      baseRequiredQty,
+      wastagePctDefault,
+      description: productDescription,
+    };
+
     onSubmitSave({
       addedIndexes: addedIdx,
       deletedIndexes: step11DeletedIndexes,
       editedItems: editedItemsOut,
       deletedMaterialIndexes: deletedMaterialIdx,
       editedMaterialIndexes: editedMaterialIdx,
+      productConfig,
     } as any);
   };
 
@@ -878,9 +944,27 @@ export function SaveAsWizardDialog({
               </div>
               <div className="space-y-2">
                 <label className="text-xs font-bold uppercase text-muted-foreground invisible">Actions</label>
-                <Dialog open={addItemOpen} onOpenChange={setAddItemOpen}>
+                {/* This picker builds a brand-new material that only ever
+                    exists in this dialog's local state (negative sentinel
+                    index, no real row in tableData.step11_items). That's
+                    fine for "save_as" (which rebuilds the whole item list
+                    from scratch on submit), but "save" (editing an existing
+                    product) treats every index as a real, already-saved
+                    step11_items position — submitting one of these sentinel
+                    indices throws "Item index -N not found" server-side.
+                    The product card's own "+ Add Item" button (outside this
+                    dialog) already adds a real, properly-indexed item before
+                    this wizard even opens, so disable this picker in "save"
+                    mode and point people there instead. */}
+                <Dialog open={mode === "save" ? false : addItemOpen} onOpenChange={(v) => { if (mode !== "save") setAddItemOpen(v); }}>
                   <DialogTrigger asChild>
-                    <Button variant="outline" size="sm" className="w-full h-10 px-4 text-xs font-bold text-primary border-primary hover:bg-primary/10 transition-all flex items-center justify-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={mode === "save"}
+                      title={mode === "save" ? "Use the product card's own \"+ Add Item\" button to add new materials, then Save" : undefined}
+                      className="w-full h-10 px-4 text-xs font-bold text-primary border-primary hover:bg-primary/10 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
                       <Plus className="h-4 w-4" /> Add Item
                     </Button>
                   </DialogTrigger>

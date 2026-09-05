@@ -9189,7 +9189,8 @@ export async function registerRoutes(
     authMiddleware,
     async (req: Request, res: Response) => {
       try {
-        const { type, boqItemId, itemIndexes, newProductName, items, calculatedResults, productConfig, fullEdit, addedIndexes, deletedIndexes, editedItems, deletedMaterialIndexes, editedMaterialIndexes } = req.body;
+        const { type, boqItemId, itemIndexes, newProductName, items, calculatedResults, productConfig: productConfigBody, fullEdit, addedIndexes, deletedIndexes, editedItems, deletedMaterialIndexes, editedMaterialIndexes } = req.body;
+        let productConfig = productConfigBody;
 
         if (type !== "save" && type !== "save_as") {
           res.status(400).json({ message: "type must be 'save' or 'save_as'" });
@@ -9304,8 +9305,18 @@ export async function registerRoutes(
               null,
               JSON.stringify(allTouched),
               JSON.stringify(combinedSnapshot),
-              (deletedMaterialIdx.length > 0 || editedMaterialList.length > 0)
-                ? JSON.stringify({ deletedMaterialIndexes: deletedMaterialIdx, editedMaterialIndexes: editedMaterialList.map(e => Number(e.index)) })
+              (deletedMaterialIdx.length > 0 || editedMaterialList.length > 0 || productConfig)
+                ? JSON.stringify({
+                  ...(deletedMaterialIdx.length > 0 || editedMaterialList.length > 0
+                    ? { deletedMaterialIndexes: deletedMaterialIdx, editedMaterialIndexes: editedMaterialList.map(e => Number(e.index)) }
+                    : {}),
+                  // Product-level Configuration (Unit Type, Description, Dim
+                  // A-C, Base Required Qty) edited alongside the item
+                  // changes — stored here purely for the approval review
+                  // screen and audit trail; see the approve handler below
+                  // for where it's actually persisted to product_step3_config.
+                  ...(productConfig ? { productConfig } : {}),
+                })
                 : null,
               requestedBy,
               requestedByName,
@@ -9552,6 +9563,20 @@ export async function registerRoutes(
         }
         const request = reqRes.rows[0];
         const itemIndexes: number[] = Array.isArray(request.item_indexes) ? request.item_indexes : JSON.parse(request.item_indexes || "[]");
+        // Product-level Configuration (Unit Type, Description, Dim A-C, Base
+        // Required Qty) submitted alongside a fullEdit "save" request — see
+        // POST /api/boq-manual-item-requests above. Parsed once here so both
+        // the step11_products (Approved) and product_step3_config (draft)
+        // updates below can use it.
+        let pendingProductConfig: any = null;
+        try {
+          const parsedCalcResults = typeof request.calculated_results === "string"
+            ? JSON.parse(request.calculated_results || "{}")
+            : (request.calculated_results || {});
+          if (parsedCalcResults && parsedCalcResults.productConfig) {
+            pendingProductConfig = parsedCalcResults.productConfig;
+          }
+        } catch { /* no productConfig on this request — ignore */ }
         const userObj = (req.user as any) || {};
         const approvedBy = userObj.id || "system";
         const approvedByName = userObj.fullName || userObj.username || "System";
@@ -9672,6 +9697,25 @@ export async function registerRoutes(
             ...tableData,
             step11_items: updatedStep11,
             ...(materialLines.length > 0 ? { materialLines: updatedMaterialLines } : {}),
+            // Product-level Configuration (Unit Type, Base Required Qty, Dim
+            // A-C, wastage default) approved alongside the item changes —
+            // merge it into THIS card's own live configBasis snapshot too,
+            // not just the master template (step11_products /
+            // product_step3_config, handled further below). Without this,
+            // the product's on-screen calculation here would keep using its
+            // old dimensions/base qty even after the change was approved —
+            // only the next fresh "+ Add Product" elsewhere would pick it up.
+            ...(pendingProductConfig ? {
+              configBasis: {
+                ...(tableData.configBasis || {}),
+                requiredUnitType: pendingProductConfig.requiredUnitType || tableData.configBasis?.requiredUnitType || "Sqft",
+                baseRequiredQty: pendingProductConfig.baseRequiredQty ?? tableData.configBasis?.baseRequiredQty ?? 1,
+                wastagePctDefault: pendingProductConfig.wastagePctDefault ?? tableData.configBasis?.wastagePctDefault ?? 0,
+                dimA: pendingProductConfig.dimA ?? tableData.configBasis?.dimA,
+                dimB: pendingProductConfig.dimB ?? tableData.configBasis?.dimB,
+                dimC: pendingProductConfig.dimC ?? tableData.configBasis?.dimC,
+              },
+            } : {}),
           };
           await query(`UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`, [JSON.stringify(updatedTableData), computeItemValue(updatedTableData), request.boq_item_id]);
 
@@ -9687,7 +9731,7 @@ export async function registerRoutes(
           //     skipping this table means a deleted material silently reappears
           //     the next time this product is added to a BOM)
           //   - product_approval_items (audit-trail row, if an 'approved' one exists)
-          if (tableData.product_id && (newItemsToInsert.length > 0 || editedItemsToSync.length > 0 || deletedItemsToSync.length > 0)) {
+          if (tableData.product_id && (newItemsToInsert.length > 0 || editedItemsToSync.length > 0 || deletedItemsToSync.length > 0 || pendingProductConfig)) {
             const activeConfigRes = await query(
               `SELECT id, config_name FROM step11_products WHERE product_id = $1 ORDER BY created_at DESC LIMIT 1`,
               [tableData.product_id]
@@ -9709,6 +9753,52 @@ export async function registerRoutes(
             const step3ConfigId: number | null = step3ConfigRes.rowCount && step3ConfigRes.rowCount > 0
               ? step3ConfigRes.rows[0].id
               : null;
+
+            // Persist product-level Configuration edits (Unit Type,
+            // Description, Dim A-C, Base Required Qty) submitted alongside
+            // this request — both onto the live "Approved" config
+            // (step11_products) and the draft/working config
+            // (product_step3_config), mirroring what "Manage Product ->
+            // Edit -> Save" itself writes to those same columns.
+            if (pendingProductConfig) {
+              const pc = pendingProductConfig;
+              if (activeConfigRes.rowCount && activeConfigRes.rowCount > 0) {
+                await query(
+                  `UPDATE step11_products SET
+                     required_unit_type = $1, base_required_qty = $2, wastage_pct_default = $3,
+                     dim_a = $4, dim_b = $5, dim_c = $6, description = $7, updated_at = NOW()
+                   WHERE id = $8`,
+                  [
+                    pc.requiredUnitType || "Sqft",
+                    pc.baseRequiredQty ?? 1,
+                    pc.wastagePctDefault ?? 0,
+                    pc.dimA ?? null,
+                    pc.dimB ?? null,
+                    pc.dimC ?? null,
+                    pc.description ?? null,
+                    activeConfigRes.rows[0].id,
+                  ]
+                );
+              }
+              if (step3ConfigId) {
+                await query(
+                  `UPDATE product_step3_config SET
+                     required_unit_type = $1, base_required_qty = $2, wastage_pct_default = $3,
+                     dim_a = $4, dim_b = $5, dim_c = $6, description = $7, updated_at = NOW()
+                   WHERE id = $8`,
+                  [
+                    pc.requiredUnitType || "Sqft",
+                    pc.baseRequiredQty ?? 1,
+                    pc.wastagePctDefault ?? 0,
+                    pc.dimA ?? null,
+                    pc.dimB ?? null,
+                    pc.dimC ?? null,
+                    pc.description ?? null,
+                    step3ConfigId,
+                  ]
+                );
+              }
+            }
 
             // Matching audit-trail "approved" row, if one exists.
             const approvalRowRes = configNameForSync
@@ -9807,8 +9897,7 @@ export async function registerRoutes(
                      freeze_and_edit = $6, apply_wastage = $7, base_qty = $8, wastage_pct = $9,
                      description = $10
                    WHERE step11_product_id = $11 AND (
-                     ($12::uuid IS NOT NULL AND material_id = $12::uuid) OR
-                     ($12::uuid IS NULL AND material_name = $13)
+                     ($12::text IS NOT NULL AND material_id::text = $12::text) OR material_name = $13
                    )`,
                   [
                     item.qty || 0,
@@ -9833,8 +9922,7 @@ export async function registerRoutes(
                 await query(
                   `DELETE FROM step11_product_items
                    WHERE step11_product_id = $1 AND (
-                     ($2::uuid IS NOT NULL AND material_id = $2::uuid) OR
-                     ($2::uuid IS NULL AND material_name = $3)
+                     ($2::text IS NOT NULL AND material_id::text = $2::text) OR material_name = $3
                    )`,
                   [step11ProductId, materialId || null, item.name || item.title || item.material_name]
                 );

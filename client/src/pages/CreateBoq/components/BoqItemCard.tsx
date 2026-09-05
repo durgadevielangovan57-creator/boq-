@@ -189,9 +189,9 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   // above (additive-only), this lets the user also edit or remove existing
   // materials — nothing changes on the live product until an admin
   // approves the request. ──────────────────────────────────────────────
-  const handleSubmitSaveEdit = async (payload: { addedIndexes: number[]; deletedIndexes: number[]; editedItems: { index: number; patch: any }[]; deletedMaterialIndexes?: number[]; editedMaterialIndexes?: { index: number; patch: any }[] }) => {
+  const handleSubmitSaveEdit = async (payload: { addedIndexes: number[]; deletedIndexes: number[]; editedItems: { index: number; patch: any }[]; deletedMaterialIndexes?: number[]; editedMaterialIndexes?: { index: number; patch: any }[]; productConfig?: any }) => {
     if (isSubmittingSave) return;
-    const { addedIndexes, deletedIndexes, editedItems, deletedMaterialIndexes = [], editedMaterialIndexes = [] } = payload;
+    const { addedIndexes, deletedIndexes, editedItems, deletedMaterialIndexes = [], editedMaterialIndexes = [], productConfig } = payload;
     const totalChanges = addedIndexes.length + deletedIndexes.length + editedItems.length + deletedMaterialIndexes.length + editedMaterialIndexes.length;
     if (totalChanges === 0) {
       toast({ title: "No changes", description: "Nothing was added, edited, or deleted." });
@@ -210,6 +210,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
           editedItems,
           deletedMaterialIndexes,
           editedMaterialIndexes,
+          productConfig,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -1119,6 +1120,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
         existingProductNames={existingProductNamesInVersion}
         onSubmit={() => { }}
         onSubmitSave={handleSubmitSaveEdit}
+        productId={tableData.product_id}
       />
       <SaveAsWizardDialog
         mode="save_as"

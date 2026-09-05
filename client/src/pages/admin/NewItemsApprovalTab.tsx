@@ -423,7 +423,7 @@ export default function NewItemsApprovalTab({ canAct }: { canAct: boolean }) {
                                 </TableCell>
                               )}
                               <TableCell className="font-semibold">{it.title || it.description}</TableCell>
-                              <TableCell className="text-[10px] text-muted-foreground">{it.location || it.description || "-"}</TableCell>
+                              <TableCell className="text-[10px] text-muted-foreground">{it.description || it.location || "-"}</TableCell>
                               <TableCell className="text-[10px] font-medium">{it.unit || "-"}</TableCell>
                               <TableCell className="text-[11px] font-bold text-center">{baseQty}</TableCell>
                               <TableCell className="text-[10px] font-bold">₹{supplyRate.toLocaleString()}</TableCell>
