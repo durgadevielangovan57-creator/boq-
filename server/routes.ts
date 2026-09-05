@@ -8923,6 +8923,87 @@ export async function registerRoutes(
     },
   );
 
+  // GET /api/boq-items/:id/dimensions - Fetch the Sketch a Plan dimensions (L x W x H) saved for this BOM item
+  app.get(
+    "/api/boq-items/:id/dimensions",
+    authMiddleware,
+    async (req: Request, res: Response) => {
+      try {
+        const { id } = req.params;
+
+        const itemRes = await query(
+          "SELECT table_data FROM boq_items WHERE id = $1 LIMIT 1",
+          [id]
+        );
+        if (itemRes.rows.length === 0) {
+          res.status(404).json({ message: "BOM item not found" });
+          return;
+        }
+
+        let tableData = itemRes.rows[0].table_data;
+        if (typeof tableData === "string") {
+          try { tableData = JSON.parse(tableData); } catch { tableData = {}; }
+        }
+
+        let sketchItemId = tableData?.sketch_item_id || null;
+
+        // Fall back to the BOM<->Sketch mapping table if the item's
+        // table_data doesn't carry the sketch_item_id directly.
+        if (!sketchItemId) {
+          const mapRes = await query(
+            "SELECT sketch_item_id FROM bom_item_sketch_item_map WHERE boq_item_id = $1 LIMIT 1",
+            [id]
+          );
+          if (mapRes.rows.length > 0) {
+            sketchItemId = mapRes.rows[0].sketch_item_id;
+          }
+        }
+
+        if (!sketchItemId) {
+          res.json({ found: false });
+          return;
+        }
+
+        const dimRes = await query(
+          `SELECT item_name, length, width, height, dimension_unit, dimensions, unit
+           FROM sketch_plan_items WHERE id = $1 LIMIT 1`,
+          [sketchItemId]
+        );
+
+        if (dimRes.rows.length === 0) {
+          res.json({ found: false });
+          return;
+        }
+
+        const row = dimRes.rows[0];
+        const hasBasicDims = row.length !== null || row.width !== null || row.height !== null;
+
+        // The `dimensions` column holds sub-dimensions (e.g. multiple walls
+        // under one item) as a JSON array of {length, width, height, note}.
+        // Depending on the column type it may come back already parsed
+        // (jsonb) or as a raw string (text) — handle both safely.
+        let parsedDimensions: any = row.dimensions;
+        if (typeof parsedDimensions === "string") {
+          try { parsedDimensions = JSON.parse(parsedDimensions); } catch { parsedDimensions = null; }
+        }
+
+        res.json({
+          found: hasBasicDims || (Array.isArray(parsedDimensions) && parsedDimensions.length > 0),
+          item_name: row.item_name,
+          length: row.length !== null ? Number(row.length) : null,
+          width: row.width !== null ? Number(row.width) : null,
+          height: row.height !== null ? Number(row.height) : null,
+          dimension_unit: row.dimension_unit || "ft",
+          dimensions: parsedDimensions || null,
+          unit: row.unit || null,
+        });
+      } catch (err) {
+        console.error("GET /api/boq-items/:id/dimensions error", err);
+        res.status(500).json({ message: "Failed to fetch dimensions" });
+      }
+    }
+  );
+
   // POST /api/boq-items/refresh - Sync all items in a version with master library (atomic)
   app.post(
     "/api/boq-items/refresh",

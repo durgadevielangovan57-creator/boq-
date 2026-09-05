@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, FileText, Maximize2 } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, FileText, Maximize2, Ruler } from "lucide-react";
 import { fuzzySearch, cn } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -88,6 +88,42 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [amendRatesActive, setAmendRatesActive] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
+  // ── Dimensions popup (new, additive feature) ──────────────────────────
+  // Shows the L x W x H saved for this item in Sketch a Plan, fetched
+  // on-demand when the ruler icon next to the Notes icon is clicked.
+  const [showDimensions, setShowDimensions] = useState(false);
+  const [dimensionsLoading, setDimensionsLoading] = useState(false);
+  const [dimensionsData, setDimensionsData] = useState<{
+    found: boolean;
+    length?: number | null;
+    width?: number | null;
+    height?: number | null;
+    dimension_unit?: string | null;
+    dimensions?: any;
+    unit?: string | null;
+    item_name?: string | null;
+  } | null>(null);
+  const [dimensionsError, setDimensionsError] = useState<string | null>(null);
+
+  const handleOpenDimensions = async () => {
+    setShowDimensions(true);
+    setDimensionsError(null);
+    setDimensionsLoading(true);
+    try {
+      const resp = await apiFetch(`/api/boq-items/${boqItem.id}/dimensions`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setDimensionsData(data);
+      } else {
+        setDimensionsError("Failed to load dimensions.");
+      }
+    } catch (err) {
+      console.error("Failed to fetch dimensions", err);
+      setDimensionsError("Failed to load dimensions.");
+    } finally {
+      setDimensionsLoading(false);
+    }
+  };
   // Step11 items marked for removal via the Trash icon, but NOT yet
   // deleted on the server. They're hidden from the BOM table below
   // (see renderLines) and shown to the Save wizard as "Marked for
@@ -336,7 +372,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
       const roundOff = calculationTarget === 0 ? 0 : (isFrozen ? line.roundOffQty : (isLumpSumLine ? 1 : (line.applyRounding !== false ? Math.ceil(reqQty) : reqQty)));
 
       return {
-        title: line.name, description: line.name, unit: line.unit, shop_name: line.shop_name,
+        title: line.name, description: getEditedValue(itemKey, "description", line.description || line.name), unit: line.unit, shop_name: line.shop_name,
         qtyPerSqf: isLumpSumLine ? 1 : qty, requiredQty: reqQty, roundOff: roundOff,
         rateSqft: rate, amount: Number((roundOff * rate).toFixed(2)), s_no: idx + 1, manual: false,
         // Include individual rates so SaveAs wizard can read them correctly
@@ -691,6 +727,9 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
           <Button variant="ghost" size="sm" className={`h-7 w-7 p-0 ${showNotes ? 'bg-amber-100 text-amber-700' : 'text-slate-400 hover:text-amber-600'}`} title="Sketch Notes" onClick={(e) => { e.stopPropagation(); setShowNotes(!showNotes); }}>
             <FileText className="h-4 w-4" />
           </Button>
+          <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-slate-400 hover:text-indigo-600" title="Dimensions" onClick={(e) => { e.stopPropagation(); handleOpenDimensions(); }}>
+            <Ruler className="h-4 w-4" />
+          </Button>
           <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title={isExpanded ? "Collapse" : "Expand"} onClick={toggle}>
             {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </Button>
@@ -726,6 +765,72 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
           />
         </div>
       )}
+
+      {/* Dimensions Popup (new, additive feature) */}
+      <Dialog open={showDimensions} onOpenChange={setShowDimensions}>
+        <DialogContent className="sm:max-w-[360px]" onClick={(e) => e.stopPropagation()}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Ruler className="h-4 w-4 text-indigo-600" /> Dimensions
+            </DialogTitle>
+            <DialogDescription>
+              Saved for this item in Sketch a Plan.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            {dimensionsLoading ? (
+              <div className="flex items-center gap-2 text-sm text-slate-500 justify-center py-6">
+                <Loader2 className="h-4 w-4 animate-spin" /> Loading...
+              </div>
+            ) : dimensionsError ? (
+              <div className="text-sm text-rose-600 text-center py-4">{dimensionsError}</div>
+            ) : dimensionsData?.found ? (
+              (() => {
+                // Sketch items can carry multiple sub-dimensions (e.g. "Wall A",
+                // "Wall B" under one product). Show each one; fall back to the
+                // single length/width/height when there's no sub-dimensions array.
+                const subDims: any[] = Array.isArray(dimensionsData.dimensions) && dimensionsData.dimensions.length > 0
+                  ? dimensionsData.dimensions
+                  : [{ length: dimensionsData.length, width: dimensionsData.width, height: dimensionsData.height, note: null }];
+                const unit = dimensionsData.dimension_unit || "ft";
+                const hasAny = subDims.some(d => d.length !== null && d.length !== undefined || d.width !== null && d.width !== undefined || d.height !== null && d.height !== undefined);
+
+                if (!hasAny) {
+                  return (
+                    <div className="text-sm text-slate-500 text-center py-4">
+                      No dimensions have been saved for this item in Sketch a Plan.
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="flex flex-col gap-2 py-2">
+                    {subDims.map((d, i) => {
+                      const parts = [d.length, d.width, d.height].filter((v) => v !== null && v !== undefined && v !== "");
+                      if (parts.length === 0) return null;
+                      return (
+                        <div key={i} className="flex flex-col items-center gap-0.5 bg-indigo-50/60 border border-indigo-100 rounded-md py-2.5">
+                          <div className="text-xl font-extrabold text-indigo-700 tracking-wide">
+                            {parts.join(" x ")}
+                            <span className="text-sm font-semibold text-slate-500 ml-1">{unit}</span>
+                          </div>
+                          {d.note && (
+                            <div className="text-xs text-slate-500 px-2 text-center">{d.note}</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="text-sm text-slate-500 text-center py-4">
+                No dimensions have been saved for this item in Sketch a Plan.
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Content Area */}
       {!isCompactView && (
