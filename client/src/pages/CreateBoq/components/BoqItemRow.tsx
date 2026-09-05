@@ -23,6 +23,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from 'xlsx';
 import { DeleteConfirmationDialog } from "../../../components/ui/DeleteConfirmationDialog";
+import { IndicateReasonDialog } from "./IndicateReasonDialog";
 import { ProductAnalysisDialog } from "@/components/ProductAnalysisDialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../../components/ui/tabs";
 import {
@@ -42,7 +43,7 @@ import { Project, BOMVersion, BOMItem, Product, Step11Item, BOMHistory, BOMComme
 import { parseTableData, parseImages, safeJson, VERSION_LABEL } from '../utils';
 import { ChangeShopRateDialog } from './ChangeShopRateDialog';
 
-export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqItem, tableData, isEngineBased, isVersionSubmitted, getEditedValue, updateEditedField, handleDeleteRow, checkBudgetEarly, handleSaveProject, isDraggable, isDragOver, onDragStart, onDragOver, onDrop, mismatch, isCompactView, comments, users, currentUser, onAddComment, selectedVersionId, isBifProd, totalItems, onOrdinalChange, amendRatesActive, onBomShopRateSubmitted, bomShopRateRequests, bomButtonsEnabled }: {
+export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqItem, tableData, isEngineBased, isVersionSubmitted, getEditedValue, updateEditedField, handleDeleteRow, checkBudgetEarly, handleSaveProject, isDraggable, isDragOver, onDragStart, onDragOver, onDrop, mismatch, isCompactView, comments, users, currentUser, onAddComment, selectedVersionId, isBifProd, totalItems, onOrdinalChange, amendRatesActive, onBomShopRateSubmitted, bomShopRateRequests, bomButtonsEnabled, refreshComments }: {
   item: any; itemIdx: number; boqItem: BOMItem; tableData: any; isEngineBased: boolean; isVersionSubmitted: boolean;
   getEditedValue: (k: string, f: string, v: any) => any;
   updateEditedField: (k: string, f: string, v: any) => void;
@@ -68,10 +69,35 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
   onBomShopRateSubmitted?: () => void;
   bomShopRateRequests?: any[];
   bomButtonsEnabled?: boolean;
+  /** Optional: re-fetch the comments list after a reason comment is saved (used by the Indicate reason flow). */
+  refreshComments?: () => void | Promise<void>;
 }) {
   const { toast } = useToast();
   const itemKey = item.itemKey || `${boqItem.id}-manual-${itemIdx}`;
   const [changeShopRateOpen, setChangeShopRateOpen] = useState(false);
+  // ── Indicate reason flow ────────────────────────────────────────────────
+  // Ticking "Indicate" opens a small dialog asking why; the reason is saved
+  // as a comment on this row (so it's visible later via the existing
+  // Comments icon/thread) and only then is the indicate flag actually set.
+  const [showIndicateReasonDialog, setShowIndicateReasonDialog] = useState(false);
+  const handleConfirmIndicateReason = async (reason: string) => {
+    updateEditedField(itemKey, "indicate", true);
+    try {
+      await apiFetch("/api/boq-comments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version_id: selectedVersionId,
+          item_id: itemKey,
+          comment_text: `Indicated — Reason: ${reason}`,
+        }),
+      });
+      await refreshComments?.();
+    } catch (err) {
+      console.error("Failed to save indicate reason", err);
+      toast({ title: "Note", description: "Marked as Indicate, but saving the reason failed.", variant: "destructive" });
+    }
+  };
   // "Change Shop & Rate" targets any BOQ line that points at a real
   // materials.id — this covers both individually-added materials
   // (item.manual === true, added via "+ Add Item") AND materials that come
@@ -176,7 +202,7 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
             <span></span>
             {!isVersionSubmitted && (
               <label className="flex items-center gap-1 text-[10px] text-rose-600 font-bold bg-white px-1.5 py-0.5 rounded border border-rose-200 shadow-sm whitespace-nowrap cursor-pointer">
-                <input type="checkbox" checked={isIndicate} onChange={(e) => updateEditedField(itemKey, "indicate", e.target.checked)} className="cursor-pointer" />
+                <input type="checkbox" checked={isIndicate} onChange={(e) => { if (e.target.checked) { setShowIndicateReasonDialog(true); } else { updateEditedField(itemKey, "indicate", false); } }} className="cursor-pointer" />
                 Indicate
               </label>
             )}
@@ -341,6 +367,12 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
             onSubmitted={onBomShopRateSubmitted}
           />
         )}
+        <IndicateReasonDialog
+          open={showIndicateReasonDialog}
+          onOpenChange={setShowIndicateReasonDialog}
+          onConfirm={handleConfirmIndicateReason}
+          targetLabel={item.title || item.name}
+        />
       </tr>
     );
   }
@@ -419,7 +451,7 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
           </div>
           {!isVersionSubmitted && (
             <label className="flex items-center gap-1 text-[10px] text-rose-600 font-bold bg-white px-1.5 py-0.5 rounded border border-rose-200 shadow-sm whitespace-nowrap cursor-pointer">
-              <input type="checkbox" checked={isIndicate} onChange={(e) => updateEditedField(itemKey, "indicate", e.target.checked)} className="cursor-pointer" />
+              <input type="checkbox" checked={isIndicate} onChange={(e) => { if (e.target.checked) { setShowIndicateReasonDialog(true); } else { updateEditedField(itemKey, "indicate", false); } }} className="cursor-pointer" />
               Indicate
             </label>
           )}
@@ -666,6 +698,12 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
           onSubmitted={onBomShopRateSubmitted}
         />
       )}
+      <IndicateReasonDialog
+        open={showIndicateReasonDialog}
+        onOpenChange={setShowIndicateReasonDialog}
+        onConfirm={handleConfirmIndicateReason}
+        targetLabel={item.title || item.name}
+      />
     </tr>
   );
 }, (prevProps, nextProps) => {

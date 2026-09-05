@@ -42,9 +42,10 @@ import { Project, BOMVersion, BOMItem, Product, Step11Item, BOMHistory, BOMComme
 import { parseTableData, parseImages, safeJson, VERSION_LABEL } from '../utils';
 import { EditableHsnSac } from './EditableHsnSac';
 import { BoqItemRow } from './BoqItemRow';
+import { IndicateReasonDialog } from './IndicateReasonDialog';
 import { SaveConfirmDialog, SaveAsWizardDialog, PendingManualItem } from './ManualItemSaveDialogs';
 
-export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, isVersionSubmitted, expandedProductIds, setExpandedProductIds, getEditedValue, updateEditedField, handleDeleteRow, handleFinalizeProduct, handleAddItem, loadBoqItemsAndEdits, setBoqItems, checkBudgetEarly, handleSaveProject, onCardDragStart, onCardDragOver, onCardDrop, isCardDragOver, mismatches, isCompactView, onSaveAsTemplate, editedFields, comments, users, currentUser, onAddComment, selectedVersionId, totalProducts, onProductOrdinalChange, itemCategoryFilter, bomButtonsEnabled, onAnalysis, onFocusProduct, allProductNames, onBomShopRateChangeSubmitted, bomShopRateRequests }: {
+export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, isVersionSubmitted, expandedProductIds, setExpandedProductIds, getEditedValue, updateEditedField, handleDeleteRow, handleFinalizeProduct, handleAddItem, loadBoqItemsAndEdits, setBoqItems, checkBudgetEarly, handleSaveProject, onCardDragStart, onCardDragOver, onCardDrop, isCardDragOver, mismatches, isCompactView, onSaveAsTemplate, editedFields, comments, users, currentUser, onAddComment, selectedVersionId, totalProducts, onProductOrdinalChange, itemCategoryFilter, bomButtonsEnabled, onAnalysis, onFocusProduct, allProductNames, onBomShopRateChangeSubmitted, bomShopRateRequests, refreshComments }: {
   boqItem: BOMItem; boqIdx: number; isVersionSubmitted: boolean;
   expandedProductIds: Set<string>; setExpandedProductIds: (fn: (p: Set<string>) => Set<string>) => void;
   getEditedValue: (k: string, f: string, v: any) => any;
@@ -79,10 +80,41 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   allProductNames?: string[];
   onBomShopRateChangeSubmitted?: () => void;
   bomShopRateRequests?: any[];
+  /** Optional: re-fetch the comments list after a reason comment is saved (used by the Indicate reason flow). */
+  refreshComments?: () => void | Promise<void>;
 }) {
   const { toast } = useToast();
   const tableData = parseTableData(boqItem.table_data);
   const [localTarget, setLocalTarget] = useState(tableData.targetRequiredQty || 0);
+  // ── Indicate reason flow (product-level) ────────────────────────────────
+  // Same idea as the per-row Indicate: ticking it opens a dialog asking why;
+  // the reason is saved as a comment on this product (visible later via the
+  // existing Comments icon/thread), and only then is indicate actually set
+  // and persisted.
+  const [showIndicateReasonDialog, setShowIndicateReasonDialog] = useState(false);
+  const handleConfirmIndicateReason = async (reason: string) => {
+    updateEditedField(boqItem.id, "indicate", true);
+    try {
+      const updatedTd = { ...tableData, indicate: true };
+      const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
+      if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
+    } catch (err) { console.error("Failed to save indicate", err); }
+    try {
+      await apiFetch("/api/boq-comments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version_id: selectedVersionId,
+          product_id: boqItem.id,
+          comment_text: `Indicated — Reason: ${reason}`,
+        }),
+      });
+      await refreshComments?.();
+    } catch (err) {
+      console.error("Failed to save indicate reason", err);
+      toast({ title: "Note", description: "Marked as Indicate, but saving the reason failed.", variant: "destructive" });
+    }
+  };
   const [showDescTooltip, setShowDescTooltip] = useState(false);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -701,6 +733,10 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
               <label className="flex items-center gap-1 text-[10px] text-rose-600 font-bold bg-white px-1.5 py-0.5 rounded border border-rose-200 shadow-sm cursor-pointer whitespace-nowrap" onClick={e => e.stopPropagation()}>
                 <input type="checkbox" checked={isProductIndicate} onChange={async (e) => {
                   const checked = e.target.checked;
+                  if (checked) {
+                    setShowIndicateReasonDialog(true);
+                    return;
+                  }
                   updateEditedField(boqItem.id, "indicate", checked);
                   try {
                     const updatedTd = { ...tableData, indicate: checked };
@@ -1152,6 +1188,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                           onBomShopRateChangeSubmitted?.();
                         }}
                         bomShopRateRequests={bomShopRateRequests}
+                        refreshComments={refreshComments}
                       />
                     ))
                 }
@@ -1246,6 +1283,13 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
         title="Delete this product?"
         permanentDelete={true}
         requireJustification={!!(boqItem as any).copied_from_item_id}
+      />
+
+      <IndicateReasonDialog
+        open={showIndicateReasonDialog}
+        onOpenChange={setShowIndicateReasonDialog}
+        onConfirm={handleConfirmIndicateReason}
+        targetLabel={productName}
       />
     </div>
   );

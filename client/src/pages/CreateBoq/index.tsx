@@ -1070,13 +1070,33 @@ export default function CreateBom() {
   // Load BOQ items
   const loadBoqItemsAndEdits = useCallback(async () => {
     if (!selectedVersionId) return;
+    const versionAtRequestTime = selectedVersionId;
     try {
-      // Fetch everything in parallel to reduce load time
-      const [materialsRes, res, pr] = await Promise.all([
+      // Fetch the version's items on their own first — this call is cheap
+      // and is the only thing needed to render the list, so don't make it
+      // wait on the much heavier /api/materials and /api/products catalog
+      // queries below. Those are only needed for background enrichment
+      // (HSN/SAC codes, images, shop names), not for showing the items.
+      const res = await apiFetch(`/api/boq-items/version/${encodeURIComponent(selectedVersionId)}`, { headers: {} }).catch(e => { console.warn(e); return null; });
+
+      if (!res || !res.ok) { toast({ title: "Error", description: `Failed to load items (${res?.status || 'network error'})`, variant: "destructive" }); return; }
+      const data = await safeJson(res as unknown as Response);
+      const items: BOMItem[] = data.items || [];
+
+      // Show the items immediately — don't wait on materials/products.
+      setBoqItems(items);
+      loadHistory();
+
+      // Fetch materials/products in the background and use them only to
+      // backfill missing fields on the items already on screen. If the
+      // user has since switched to a different version, skip applying
+      // this stale data.
+      const [materialsRes, pr] = await Promise.all([
         apiFetch("/api/materials").catch(e => { console.warn(e); return null; }),
-        apiFetch(`/api/boq-items/version/${encodeURIComponent(selectedVersionId)}`, { headers: {} }).catch(e => { console.warn(e); return null; }),
         apiFetch("/api/products").catch(e => { console.warn(e); return null; })
       ]);
+
+      if (versionAtRequestTime !== selectedVersionId) return;
 
       let currentMaterialsById: Record<string, any> = {};
       if (materialsRes && materialsRes.ok) {
@@ -1087,15 +1107,12 @@ export default function CreateBom() {
         console.warn("Failed to load materials for rate comparison.");
       }
 
-      if (!res || !res.ok) { toast({ title: "Error", description: `Failed to load items (${res?.status || 'network error'})`, variant: "destructive" }); return; }
-      const data = await safeJson(res as unknown as Response);
-      const items: BOMItem[] = data.items || [];
-
       // Backfill HSN/SAC and Shop Names
       try {
         if (pr && pr.ok) {
           const pd = await pr.json();
           const prodById: Record<string, any> = Object.fromEntries((pd.products || []).map((p: any) => [p.id, p]));
+          let anyBackfilled = false;
           items.forEach(item => {
             const td = parseTableData(item.table_data);
             let needsSave = false;
@@ -1160,6 +1177,7 @@ export default function CreateBom() {
 
             if (needsSave) {
               item.table_data = td;
+              anyBackfilled = true;
               apiFetch(`/api/boq-items/${item.id}`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
@@ -1167,10 +1185,15 @@ export default function CreateBom() {
               }).catch(e => console.error("Auto-save backfill failed", e));
             }
           });
+
+          // Only touch the on-screen items if something was actually
+          // backfilled, and only if the user hasn't switched versions
+          // while this background fetch was in flight.
+          if (anyBackfilled && versionAtRequestTime === selectedVersionId) {
+            setBoqItems([...items]);
+          }
         }
       } catch (e) { console.warn("Backfill error", e); }
-      setBoqItems(items);
-      loadHistory();
     } catch { toast({ title: "Error", description: "Failed to load BOQ items", variant: "destructive" }); }
   }, [selectedVersionId, toast, loadHistory]);
 
@@ -4102,6 +4125,7 @@ export default function CreateBom() {
                                           totalProducts={boqItems.length}
                                           itemCategoryFilter={itemCategoryFilter}
                                           bomButtonsEnabled={bomButtonsEnabled}
+                                          refreshComments={loadComments}
                                           onProductOrdinalChange={(toIdx) => {
                                             if (toIdx === displayIdx) return;
                                             const reordered = [...boqItems];
@@ -5019,6 +5043,7 @@ export default function CreateBom() {
               totalProducts: boqItems.length,
               itemCategoryFilter,
               bomButtonsEnabled,
+              refreshComments: loadComments,
               onProductOrdinalChange: (toIdx) => {
                 if (rawIdx === -1 || toIdx === idx) return;
                 const reordered = [...boqItems];
