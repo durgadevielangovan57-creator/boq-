@@ -120,6 +120,38 @@ async function ensureFormBuilderTables(): Promise<void> {
     await pool.query(`ALTER TABLE et_fb_quotes ADD COLUMN IF NOT EXISTS open_token VARCHAR(64) UNIQUE`);
     await pool.query(`ALTER TABLE et_fb_quote_recipients ADD COLUMN IF NOT EXISTS shop_name VARCHAR(255)`);
 
+    // --- Generate Quote (from Generate BOM) - additive columns only, reuses et_fb_quotes/items ---
+    // quote_kind = 'bom_vendor' identifies quotes created from this new flow.
+    await pool.query(`ALTER TABLE et_fb_quotes ADD COLUMN IF NOT EXISTS bom_project_id VARCHAR(64)`);
+    await pool.query(`ALTER TABLE et_fb_quotes ADD COLUMN IF NOT EXISTS bom_project_name VARCHAR(255)`);
+    await pool.query(`ALTER TABLE et_fb_quotes ADD COLUMN IF NOT EXISTS bom_version_id VARCHAR(64)`);
+    await pool.query(`ALTER TABLE et_fb_quotes ADD COLUMN IF NOT EXISTS bom_version_label VARCHAR(100)`);
+    await pool.query(`ALTER TABLE et_fb_quotes ADD COLUMN IF NOT EXISTS bom_shop_name VARCHAR(255)`);
+    await pool.query(`ALTER TABLE et_fb_quotes ADD COLUMN IF NOT EXISTS submitted_by VARCHAR(255)`);
+    await pool.query(`ALTER TABLE et_fb_quotes ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE et_fb_quote_items ADD COLUMN IF NOT EXISTS unit VARCHAR(50)`);
+    await pool.query(`ALTER TABLE et_fb_quote_items ADD COLUMN IF NOT EXISTS material_id VARCHAR(64)`);
+    await pool.query(`ALTER TABLE et_fb_quote_items ADD COLUMN IF NOT EXISTS original_rate NUMERIC`);
+    await pool.query(`ALTER TABLE et_fb_quote_items ADD COLUMN IF NOT EXISTS vendor_rate NUMERIC`);
+    await pool.query(`ALTER TABLE et_fb_quote_items ADD COLUMN IF NOT EXISTS rate_changed BOOLEAN NOT NULL DEFAULT false`);
+
+    // Full audit trail: every time a vendor changes a material's rate on a bom_vendor quote.
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS et_fb_quote_rate_history (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      quote_id UUID NOT NULL REFERENCES et_fb_quotes(id) ON DELETE CASCADE,
+      item_id UUID NOT NULL REFERENCES et_fb_quote_items(id) ON DELETE CASCADE,
+      material_name TEXT,
+      original_rate NUMERIC,
+      old_rate NUMERIC,
+      new_rate NUMERIC,
+      changed_by VARCHAR(255),
+      submitted BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_et_fb_quote_rate_history_quote ON et_fb_quote_rate_history(quote_id)`);
+
     // 7. Vendor's rate responses per item
     await pool.query(`
     CREATE TABLE IF NOT EXISTS et_fb_quote_responses (
@@ -637,6 +669,190 @@ export async function registerFormBuilderRoutes(app: Express): Promise<void> {
         } catch (err: any) {
             console.error("[fb quotes:open-link]", err);
             res.status(500).json({ message: "Failed to create link" });
+        }
+    });
+
+    // ---------------------------------------------------------------
+    // GENERATE QUOTE (from Generate BOM) - isolated, additive flow.
+    // Internal user picks shops in the BOM page -> one quote per shop is
+    // created here with the current Sale Rate prefilled. Reuses the same
+    // et_fb_quotes/items/open_token infra as the standard Quotes feature.
+    // ---------------------------------------------------------------
+
+    // Internal: create one vendor-wise quote per selected shop from the currently open BOM.
+    app.post("/api/fb/quotes/from-bom", authMiddleware, requireRole(...ADMIN_ROLES), async (req: Request, res: Response) => {
+        const client = await pool.connect();
+        try {
+            const { projectId, projectName, versionId, versionLabel, shops } = req.body || {};
+            if (!Array.isArray(shops) || shops.length === 0) {
+                return res.status(400).json({ message: "At least one shop must be selected" });
+            }
+            const created: { shopName: string; quoteId: string; quoteNumber: string; link: string; materialCount: number; total: number }[] = [];
+
+            await client.query("BEGIN");
+            for (const shop of shops) {
+                const shopName = (shop.shopName || shop.name || "").toString().trim();
+                const materials = Array.isArray(shop.materials) ? shop.materials : [];
+                if (!shopName || materials.length === 0) continue;
+
+                const quoteNumber = `BQ-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 900 + 100)}`;
+                const openToken = crypto.randomBytes(20).toString("hex");
+                const qRes = await client.query(
+                    `INSERT INTO et_fb_quotes
+             (quote_number, title, description, status, quote_kind, created_by, open_token,
+              bom_project_id, bom_project_name, bom_version_id, bom_version_label, bom_shop_name)
+           VALUES ($1,$2,$3,'Sent','bom_vendor',$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+                    [
+                        quoteNumber,
+                        `Vendor Quote - ${shopName}`,
+                        `Auto-generated from Generate BOM for ${projectName || "project"}${versionLabel ? " (" + versionLabel + ")" : ""}.`,
+                        req.user?.id || null,
+                        openToken,
+                        projectId || null,
+                        projectName || null,
+                        versionId || null,
+                        versionLabel || null,
+                        shopName,
+                    ]
+                );
+                const quoteId = qRes.rows[0].id;
+                let total = 0;
+                let sortOrder = 0;
+                for (const m of materials) {
+                    const qty = Number(m.quantity ?? m.qty ?? 0) || 0;
+                    const rate = Number(m.rate ?? m.saleRate ?? 0) || 0;
+                    total += qty * rate;
+                    await client.query(
+                        `INSERT INTO et_fb_quote_items
+               (quote_id, item_name, description, uom, quantity, sort_order, unit, material_id, original_rate, vendor_rate)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)`,
+                        [
+                            quoteId,
+                            m.name || m.itemName || "Unnamed material",
+                            m.spec || m.description || null,
+                            m.unit || "",
+                            qty,
+                            sortOrder++,
+                            m.unit || "",
+                            m.materialId || null,
+                            rate,
+                        ]
+                    );
+                }
+                created.push({ shopName, quoteId, quoteNumber, link: `/quote/bom/${openToken}`, materialCount: materials.length, total });
+            }
+            await client.query("COMMIT");
+
+            if (created.length === 0) {
+                return res.status(400).json({ message: "No valid shops/materials to generate quotes for" });
+            }
+            res.status(201).json({ quotes: created });
+        } catch (err: any) {
+            await client.query("ROLLBACK");
+            console.error("[fb quotes:from-bom]", err);
+            res.status(500).json({ message: "Failed to generate vendor quotes" });
+        } finally {
+            client.release();
+        }
+    });
+
+    // Admin: full rate-change audit trail for a bom_vendor quote (survives navigation/refresh).
+    app.get("/api/fb/quotes/:id/history", authMiddleware, requireRole(...ADMIN_ROLES), async (req: Request, res: Response) => {
+        try {
+            const result = await query(
+                `SELECT * FROM et_fb_quote_rate_history WHERE quote_id = $1 ORDER BY created_at DESC`,
+                [req.params.id]
+            );
+            res.json({ history: result.rows });
+        } catch (err: any) {
+            console.error("[fb quotes:history]", err);
+            res.status(500).json({ message: "Failed to load rate change history" });
+        }
+    });
+
+    // ---------------------------------------------------------------
+    // GENERATE QUOTE - Public vendor link (no login required)
+    // ---------------------------------------------------------------
+
+    // Vendor opens {app}/quote/bom/:token - sees only their shop's materials/rates.
+    app.get("/api/fb/public/quotes/bom/:token", async (req: Request, res: Response) => {
+        try {
+            const quoteRes = await query(
+                `SELECT * FROM et_fb_quotes WHERE open_token = $1 AND quote_kind = 'bom_vendor'`,
+                [req.params.token]
+            );
+            const quote = quoteRes.rows[0];
+            if (!quote) return res.status(404).json({ message: "This quote link is invalid or has expired." });
+
+            if (quote.status === "Sent") {
+                await query(`UPDATE et_fb_quotes SET status = 'Viewed', updated_at = now() WHERE id = $1`, [quote.id]);
+                quote.status = "Viewed";
+            }
+            const itemsRes = await query(`SELECT * FROM et_fb_quote_items WHERE quote_id = $1 ORDER BY sort_order ASC`, [quote.id]);
+            res.json({ quote, items: itemsRes.rows });
+        } catch (err: any) {
+            console.error("[fb public bom-quote:get]", err);
+            res.status(500).json({ message: "Failed to load quote" });
+        }
+    });
+
+    // Vendor: change a single material's rate. Saved immediately so nothing is lost,
+    // and every change is written to the audit trail (who/what/when).
+    app.post("/api/fb/public/quotes/bom/:token/save-rate", async (req: Request, res: Response) => {
+        try {
+            const { itemId, vendorRate, changedBy } = req.body || {};
+            const quoteRes = await query(`SELECT * FROM et_fb_quotes WHERE open_token = $1 AND quote_kind = 'bom_vendor'`, [req.params.token]);
+            const quote = quoteRes.rows[0];
+            if (!quote) return res.status(404).json({ message: "This quote link is invalid or has expired." });
+            if (quote.status === "Submitted") return res.status(400).json({ message: "This quote has already been submitted and can no longer be edited." });
+
+            const itemRes = await query(`SELECT * FROM et_fb_quote_items WHERE id = $1 AND quote_id = $2`, [itemId, quote.id]);
+            const item = itemRes.rows[0];
+            if (!item) return res.status(404).json({ message: "Material not found on this quote" });
+
+            const newRate = Number(vendorRate);
+            if (!isFinite(newRate) || newRate < 0) return res.status(400).json({ message: "Enter a valid rate" });
+
+            const originalRate = Number(item.original_rate) || 0;
+            const changed = Math.abs(newRate - originalRate) > 0.0001;
+
+            await query(
+                `UPDATE et_fb_quote_items SET vendor_rate = $1, rate_changed = $2 WHERE id = $3`,
+                [newRate, changed, itemId]
+            );
+            await query(
+                `INSERT INTO et_fb_quote_rate_history (quote_id, item_id, material_name, original_rate, old_rate, new_rate, changed_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+                [quote.id, itemId, item.item_name, originalRate, item.vendor_rate, newRate, changedBy || quote.bom_shop_name]
+            );
+            if (quote.status !== "Vendor Updated" && quote.status !== "Submitted") {
+                await query(`UPDATE et_fb_quotes SET status = 'Vendor Updated', updated_at = now() WHERE id = $1`, [quote.id]);
+            }
+            res.json({ message: "Rate saved", changed });
+        } catch (err: any) {
+            console.error("[fb public bom-quote:save-rate]", err);
+            res.status(500).json({ message: "Failed to save rate" });
+        }
+    });
+
+    // Vendor: final "Check & Submit". Locks the quote from further casual edits.
+    app.post("/api/fb/public/quotes/bom/:token/submit", async (req: Request, res: Response) => {
+        try {
+            const { submittedBy } = req.body || {};
+            const quoteRes = await query(`SELECT * FROM et_fb_quotes WHERE open_token = $1 AND quote_kind = 'bom_vendor'`, [req.params.token]);
+            const quote = quoteRes.rows[0];
+            if (!quote) return res.status(404).json({ message: "This quote link is invalid or has expired." });
+            if (quote.status === "Submitted") return res.status(400).json({ message: "This quote has already been submitted." });
+
+            await query(
+                `UPDATE et_fb_quotes SET status = 'Submitted', submitted_by = $1, submitted_at = now(), updated_at = now() WHERE id = $2`,
+                [submittedBy || quote.bom_shop_name || null, quote.id]
+            );
+            await query(`UPDATE et_fb_quote_rate_history SET submitted = true WHERE quote_id = $1`, [quote.id]);
+            res.json({ message: "Quote submitted" });
+        } catch (err: any) {
+            console.error("[fb public bom-quote:submit]", err);
+            res.status(500).json({ message: "Failed to submit quote" });
         }
     });
 

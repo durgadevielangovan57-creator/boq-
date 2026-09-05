@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import html2pdf from "html2pdf.js";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -251,17 +252,17 @@ function CreateQuoteDialog({ open, onOpenChange, onCreated }: { open: boolean; o
                                                 <TableCell className="min-w-[160px]"><Input value={it.spec} onChange={(e) => setItem(idx, { spec: e.target.value })} placeholder="Specification" /></TableCell>
                                                 <TableCell className="min-w-[100px]"><Input value={it.uom} onChange={(e) => setItem(idx, { uom: e.target.value })} placeholder="e.g. Kg" /></TableCell>
                                                 <TableCell className="min-w-[100px]">
-                                                    <Input 
-                                                        type="number" 
+                                                    <Input
+                                                        type="number"
                                                         min="0"
                                                         onKeyDown={(e) => ["-", "e", "E", "+"].includes(e.key) && e.preventDefault()}
                                                         onWheel={(e) => (e.target as HTMLInputElement).blur()}
-                                                        value={it.quantity} 
+                                                        value={it.quantity}
                                                         onChange={(e) => {
                                                             const val = parseFloat(e.target.value);
                                                             if (val < 0) return;
                                                             setItem(idx, { quantity: e.target.value })
-                                                        }} 
+                                                        }}
                                                     />
                                                 </TableCell>
                                                 <TableCell>
@@ -551,17 +552,17 @@ function EditQuoteDialog({ quoteId, onOpenChange, onSaved }: { quoteId: string; 
                                                 <TableCell className="min-w-[160px]"><Input value={it.spec} onChange={(e) => setItem(idx, { spec: e.target.value })} placeholder="Specification" /></TableCell>
                                                 <TableCell className="min-w-[100px]"><Input value={it.uom} onChange={(e) => setItem(idx, { uom: e.target.value })} placeholder="e.g. Kg" /></TableCell>
                                                 <TableCell className="min-w-[100px]">
-                                                    <Input 
-                                                        type="number" 
+                                                    <Input
+                                                        type="number"
                                                         min="0"
                                                         onKeyDown={(e) => ["-", "e", "E", "+"].includes(e.key) && e.preventDefault()}
                                                         onWheel={(e) => (e.target as HTMLInputElement).blur()}
-                                                        value={it.quantity} 
+                                                        value={it.quantity}
                                                         onChange={(e) => {
                                                             const val = parseFloat(e.target.value);
                                                             if (val < 0) return;
                                                             setItem(idx, { quantity: e.target.value });
-                                                        }} 
+                                                        }}
                                                     />
                                                 </TableCell>
                                                 <TableCell>
@@ -1381,6 +1382,376 @@ const pdfTdStyle: CSSProperties = {
 };
 
 // Drop this in as a tab anywhere (e.g. inside Form Builder) - no page/Layout wrapper of its own.
+// ------------------------------------------------------------------
+// BOM Vendor Quote detail (admin review) - for quote_kind === 'bom_vendor'
+// quotes created via Generate BOM -> Generate Quote. Shows original vs
+// vendor-updated rates, full audit trail, and export/share options.
+// ------------------------------------------------------------------
+function BomVendorQuoteDetail({ quoteId, onBack }: { quoteId: string; onBack: () => void }) {
+    const { toast } = useToast();
+    const [quote, setQuote] = useState<any>(null);
+    const [items, setItems] = useState<any[]>([]);
+    const [history, setHistory] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [downloading, setDownloading] = useState(false);
+    const pdfRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        setLoading(true);
+        Promise.all([
+            apiFetch(`/api/fb/quotes/${quoteId}`).then((r) => r.json()),
+            apiFetch(`/api/fb/quotes/${quoteId}/history`).then((r) => r.json()),
+        ])
+            .then(([q, h]) => { setQuote(q.quote); setItems(q.items || []); setHistory(h.history || []); })
+            .finally(() => setLoading(false));
+    }, [quoteId]);
+
+    const num = (v: any) => Number(v) || 0;
+    const money = (n: number) => `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+
+    const totals = items.reduce((acc, it) => {
+        const qty = num(it.quantity);
+        acc.original += qty * num(it.original_rate);
+        acc.vendor += qty * num(it.vendor_rate);
+        return acc;
+    }, { original: 0, vendor: 0 });
+
+    const getLink = () => `${window.location.origin}/quote/bom/${quote?.open_token}`;
+
+    const copyLink = () => {
+        navigator.clipboard?.writeText(getLink());
+        toast({ title: "Link copied", description: getLink() });
+    };
+
+    const sendWhatsApp = () => {
+        const text = `Quote ${quote?.quote_number} for ${quote?.bom_project_name || "your project"} - ${quote?.bom_shop_name}. Please review and submit your rates: ${getLink()}`;
+        window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+    };
+
+    // Header fill / border colors shared between the header band and the
+    // "changed rate" emphasis, kept consistent with the PDF template below.
+    const XL_HEADER_FILL = "FF1E293B";
+    const XL_BORDER = "FFCBD5E1";
+    const XL_AMBER = "FFB45309";
+    const XL_RED = "FFDC2626";
+    const XL_GREEN = "FF16A34A";
+    const XL_STRIPE = "FFF8FAFC";
+
+    const thinBorder = (color: string) => ({
+        top: { style: "thin" as const, color: { argb: color } },
+        left: { style: "thin" as const, color: { argb: color } },
+        bottom: { style: "thin" as const, color: { argb: color } },
+        right: { style: "thin" as const, color: { argb: color } },
+    });
+
+    const downloadExcel = async () => {
+        const wb = new ExcelJS.Workbook();
+        wb.creator = "BOQ App";
+        wb.created = new Date();
+        const ws = wb.addWorksheet("Quote", { pageSetup: { fitToPage: true, fitToWidth: 1, orientation: "portrait" } });
+
+        ws.columns = [
+            { width: 36 }, { width: 10 }, { width: 15 }, { width: 15 }, { width: 14 }, { width: 14 },
+        ];
+
+        ws.mergeCells("A1:F1");
+        ws.getCell("A1").value = `Vendor Quote — ${quote?.bom_shop_name || ""}`;
+        ws.getCell("A1").font = { bold: true, size: 14 };
+
+        ws.mergeCells("A2:F2");
+        ws.getCell("A2").value = `Project: ${quote?.bom_project_name || "-"}   |   BOM Version: ${quote?.bom_version_label || "-"}`;
+        ws.getCell("A2").font = { size: 10, color: { argb: "FF64748B" } };
+
+        ws.mergeCells("A3:F3");
+        ws.getCell("A3").value = `Quote Ref: ${quote?.quote_number || "-"}   |   Date: ${quote?.created_at ? new Date(quote.created_at).toLocaleDateString() : "-"}   |   Status: ${quote?.status || "-"}`;
+        ws.getCell("A3").font = { size: 10, color: { argb: "FF64748B" } };
+
+        ws.addRow([]);
+
+        const headerRow = ws.addRow(["Material", "Qty", "Original Rate", "Vendor Rate", "Difference", "Status"]);
+        headerRow.height = 20;
+        headerRow.eachCell((cell) => {
+            cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+            cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: XL_HEADER_FILL } };
+            cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+            cell.border = thinBorder("FF334155");
+        });
+        headerRow.getCell(1).alignment = { vertical: "middle", horizontal: "left" };
+
+        items.forEach((it, idx) => {
+            const originalRate = num(it.original_rate);
+            const vendorRate = num(it.vendor_rate);
+            const diff = vendorRate - originalRate;
+            const row = ws.addRow([
+                `${it.item_name}${it.unit ? ` (${it.unit})` : ""}`,
+                num(it.quantity),
+                originalRate,
+                vendorRate,
+                diff,
+                it.rate_changed ? "Updated" : "No Change",
+            ]);
+            row.eachCell((cell, colNumber) => {
+                cell.border = thinBorder(XL_BORDER);
+                cell.alignment = { vertical: "middle", horizontal: colNumber === 1 ? "left" : "center" };
+                if (colNumber >= 3 && colNumber <= 5) cell.numFmt = '"₹"#,##0.00';
+                if (idx % 2 === 1) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: XL_STRIPE } };
+            });
+            row.getCell(5).font = { color: { argb: diff > 0 ? XL_RED : diff < 0 ? XL_GREEN : "FF334155" } };
+            if (it.rate_changed) row.getCell(6).font = { bold: true, color: { argb: XL_AMBER } };
+        });
+
+        const totalRow = ws.addRow(["Total", "", totals.original, totals.vendor, totals.vendor - totals.original, ""]);
+        ws.mergeCells(`A${totalRow.number}:B${totalRow.number}`);
+        totalRow.eachCell((cell, colNumber) => {
+            cell.font = { bold: true };
+            cell.border = thinBorder("FF1E293B");
+            cell.alignment = { vertical: "middle", horizontal: colNumber === 1 ? "right" : "center" };
+            if (colNumber >= 3 && colNumber <= 5) cell.numFmt = '"₹"#,##0.00';
+        });
+
+        ws.views = [{ state: "frozen", ySplit: headerRow.number }];
+
+        const buf = await wb.xlsx.writeBuffer();
+        const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${quote?.quote_number || "quote"}_${quote?.bom_shop_name || ""}.xlsx`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const downloadPdf = () => {
+        const el = pdfRef.current;
+        if (!el) return;
+        setDownloading(true);
+        const pdfOptions: any = {
+            margin: [10, 8, 10, 8],
+            filename: `${quote?.quote_number || "quote"}_${quote?.bom_shop_name || ""}.pdf`,
+            image: { type: "jpeg", quality: 1.0 },
+            html2canvas: {
+                scale: 3,
+                useCORS: true,
+                backgroundColor: "#ffffff",
+                scrollX: 0,
+                scrollY: 0,
+                windowWidth: el.scrollWidth,
+                windowHeight: el.scrollHeight,
+            },
+            jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+            pagebreak: { mode: ["css", "legacy"] },
+        };
+        html2pdf()
+            .set(pdfOptions)
+            .from(el)
+            .save()
+            .then(() => setDownloading(false))
+            .catch(() => setDownloading(false));
+    };
+
+    // Print-only template rendered off-screen and captured by html2pdf. Using
+    // a purpose-built table with inline styles (rather than screenshotting the
+    // on-screen shadcn <Table>) is what actually gives the exported PDF real
+    // borders, a colored header band, and consistent alignment — the on-screen
+    // table relies on Tailwind/theme CSS variables that html2canvas often
+    // fails to rasterize faithfully.
+    const bomPdfTable = (
+        <div style={{ position: "absolute", left: "-9999px", top: "-9999px" }}>
+            <div ref={pdfRef} style={{ width: "850px", background: "#ffffff", padding: "24px", fontFamily: "Arial, Helvetica, sans-serif", color: "#000000" }}>
+                <div style={{ textAlign: "center", marginBottom: "18px", borderBottom: "2px solid #000000", paddingBottom: "12px" }}>
+                    <div style={{ fontSize: "20px", fontWeight: 700, marginBottom: "4px" }}>{quote?.quote_number} — {quote?.bom_shop_name}</div>
+                    <div style={{ fontSize: "11px", color: "#333333" }}>
+                        {quote?.bom_project_name || "-"}{quote?.bom_version_label ? ` • ${quote.bom_version_label}` : ""} • {quote?.created_at ? new Date(quote.created_at).toLocaleDateString() : "-"} • Status: {quote?.status || "-"}
+                    </div>
+                </div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                    <thead>
+                        <tr>
+                            <th style={{ ...pdfThStyle, textAlign: "left", width: "34%" }}>Material</th>
+                            <th style={{ ...pdfThStyle, textAlign: "center", width: "8%" }}>Qty</th>
+                            <th style={{ ...pdfThStyle, textAlign: "center", width: "16%" }}>Original Rate</th>
+                            <th style={{ ...pdfThStyle, textAlign: "center", width: "16%" }}>Vendor Rate</th>
+                            <th style={{ ...pdfThStyle, textAlign: "center", width: "14%" }}>Difference</th>
+                            <th style={{ ...pdfThStyle, textAlign: "center", width: "12%" }}>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {items.map((it, idx) => {
+                            const diff = num(it.vendor_rate) - num(it.original_rate);
+                            return (
+                                <tr key={it.id} style={{ background: it.rate_changed ? "#fffbeb" : idx % 2 === 0 ? "#ffffff" : "#f8fafc", pageBreakInside: "avoid", breakInside: "avoid" }}>
+                                    <td style={{ ...pdfTdStyle, textAlign: "left", fontWeight: 600 }}>{it.item_name} <span style={{ fontWeight: 400, color: "#64748b" }}>({it.unit || "-"})</span></td>
+                                    <td style={{ ...pdfTdStyle, textAlign: "center" }}>{num(it.quantity)}</td>
+                                    <td style={{ ...pdfTdStyle, textAlign: "center" }}>{money(num(it.original_rate))}</td>
+                                    <td style={{ ...pdfTdStyle, textAlign: "center", fontWeight: 700 }}>{money(num(it.vendor_rate))}</td>
+                                    <td style={{ ...pdfTdStyle, textAlign: "center", color: diff > 0 ? "#dc2626" : diff < 0 ? "#16a34a" : "#334155" }}>
+                                        {diff === 0 ? "₹0" : `${diff > 0 ? "+" : ""}${money(diff)}`}
+                                    </td>
+                                    <td style={{ ...pdfTdStyle, textAlign: "center", fontWeight: it.rate_changed ? 700 : 400, color: it.rate_changed ? "#b45309" : "#334155" }}>
+                                        {it.rate_changed ? "Updated" : "No Change"}
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                    <tfoot>
+                        <tr style={{ background: "#f1f5f9" }}>
+                            <td style={{ ...pdfTdStyle, textAlign: "right", fontWeight: 700, borderTop: "2px solid #1e293b" }} colSpan={2}>Total</td>
+                            <td style={{ ...pdfTdStyle, textAlign: "center", fontWeight: 700, borderTop: "2px solid #1e293b" }}>{money(totals.original)}</td>
+                            <td style={{ ...pdfTdStyle, textAlign: "center", fontWeight: 700, borderTop: "2px solid #1e293b" }}>{money(totals.vendor)}</td>
+                            <td style={{ ...pdfTdStyle, textAlign: "center", fontWeight: 700, borderTop: "2px solid #1e293b" }}>{money(totals.vendor - totals.original)}</td>
+                            <td style={{ ...pdfTdStyle, borderTop: "2px solid #1e293b" }} />
+                        </tr>
+                    </tfoot>
+                </table>
+                {quote?.status === "Submitted" && (
+                    <div style={{ marginTop: "10px", fontSize: "10px", color: "#555555" }}>
+                        Submitted by {quote?.submitted_by || "-"} on {quote?.submitted_at ? new Date(quote.submitted_at).toLocaleString() : "-"}
+                    </div>
+                )}
+                {history.length > 0 && (
+                    <>
+                        <div style={{ fontSize: "13px", fontWeight: 700, marginTop: "22px", marginBottom: "8px" }}>Rate Change History</div>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
+                            <thead>
+                                <tr>
+                                    <th style={{ ...pdfThStyle, textAlign: "left" }}>Material</th>
+                                    <th style={{ ...pdfThStyle, textAlign: "center" }}>Old Rate</th>
+                                    <th style={{ ...pdfThStyle, textAlign: "center" }}>New Rate</th>
+                                    <th style={{ ...pdfThStyle, textAlign: "left" }}>Changed By</th>
+                                    <th style={{ ...pdfThStyle, textAlign: "left" }}>When</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {history.map((h, idx) => (
+                                    <tr key={h.id} style={{ background: idx % 2 === 0 ? "#ffffff" : "#f8fafc" }}>
+                                        <td style={pdfTdStyle}>{h.material_name}</td>
+                                        <td style={{ ...pdfTdStyle, textAlign: "center" }}>{money(num(h.old_rate))}</td>
+                                        <td style={{ ...pdfTdStyle, textAlign: "center", fontWeight: 700 }}>{money(num(h.new_rate))}</td>
+                                        <td style={pdfTdStyle}>{h.changed_by || "-"}</td>
+                                        <td style={pdfTdStyle}>{new Date(h.created_at).toLocaleString()}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </>
+                )}
+            </div>
+        </div>
+    );
+
+    if (loading) return <div className="py-10 text-center text-muted-foreground">Loading...</div>;
+    if (!quote) return <div className="py-10 text-center text-muted-foreground">Quote not found.</div>;
+
+    return (
+        <div className="space-y-4">
+            <div className="flex items-center justify-between">
+                <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="h-4 w-4 mr-1" /> Back to Quotes</Button>
+                <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={copyLink}><LinkIcon className="h-3.5 w-3.5 mr-1" /> Copy Link</Button>
+                    <Button variant="outline" size="sm" onClick={sendWhatsApp}>Send via WhatsApp</Button>
+                    <Button variant="outline" size="sm" onClick={downloadExcel}><Download className="h-3.5 w-3.5 mr-1" /> Excel</Button>
+                    <Button variant="outline" size="sm" onClick={downloadPdf} disabled={downloading}>
+                        {downloading ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />} PDF
+                    </Button>
+                </div>
+            </div>
+
+            <div>
+                <Card className="tg-card">
+                    <CardHeader>
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <CardTitle>{quote.quote_number} — {quote.bom_shop_name}</CardTitle>
+                                <CardDescription>
+                                    {quote.bom_project_name}{quote.bom_version_label ? ` • ${quote.bom_version_label}` : ""} • {new Date(quote.created_at).toLocaleDateString()}
+                                </CardDescription>
+                            </div>
+                            <Badge variant={quote.status === "Submitted" ? "default" : "secondary"}>{quote.status}</Badge>
+                        </div>
+                        {quote.status === "Submitted" && (
+                            <p className="text-xs text-muted-foreground pt-1">
+                                Submitted by <span className="font-semibold">{quote.submitted_by}</span> on {quote.submitted_at ? new Date(quote.submitted_at).toLocaleString() : "-"}
+                            </p>
+                        )}
+                    </CardHeader>
+                    <CardContent>
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>Material</TableHead>
+                                    <TableHead className="text-right">Qty</TableHead>
+                                    <TableHead className="text-right">Original Rate</TableHead>
+                                    <TableHead className="text-right">Vendor Rate</TableHead>
+                                    <TableHead className="text-right">Difference</TableHead>
+                                    <TableHead>Status</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {items.map((it) => {
+                                    const diff = num(it.vendor_rate) - num(it.original_rate);
+                                    return (
+                                        <TableRow key={it.id} className={it.rate_changed ? "bg-amber-50" : ""}>
+                                            <TableCell className="font-medium">{it.item_name} <span className="text-xs text-muted-foreground">({it.unit || "-"})</span></TableCell>
+                                            <TableCell className="text-right">{num(it.quantity)}</TableCell>
+                                            <TableCell className="text-right">{money(num(it.original_rate))}</TableCell>
+                                            <TableCell className="text-right font-semibold">{money(num(it.vendor_rate))}</TableCell>
+                                            <TableCell className={`text-right ${diff > 0 ? "text-red-600" : diff < 0 ? "text-green-600" : ""}`}>
+                                                {diff === 0 ? "₹0" : `${diff > 0 ? "+" : ""}${money(diff)}`}
+                                            </TableCell>
+                                            <TableCell>{it.rate_changed ? <Badge variant="outline" className="text-amber-700 border-amber-400">Updated</Badge> : <Badge variant="outline">No Change</Badge>}</TableCell>
+                                        </TableRow>
+                                    );
+                                })}
+                            </TableBody>
+                        </Table>
+                        <div className="flex justify-end gap-6 pt-3 text-sm">
+                            <span className="text-muted-foreground">Original Total: <span className="font-semibold text-foreground">{money(totals.original)}</span></span>
+                            <span className="text-muted-foreground">Vendor Total: <span className="font-semibold text-foreground">{money(totals.vendor)}</span></span>
+                        </div>
+                    </CardContent>
+                </Card>
+            </div>
+
+            <Card className="tg-card">
+                <CardHeader>
+                    <CardTitle className="text-base">Rate Change History</CardTitle>
+                    <CardDescription>Every vendor rate edit, who made it, and when. Stays available after refresh.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                    {history.length === 0 ? (
+                        <p className="text-sm text-muted-foreground py-4 text-center">No rate changes yet.</p>
+                    ) : (
+                        <Table>
+                            <TableHeader>
+                                <TableRow>
+                                    <TableHead>Material</TableHead>
+                                    <TableHead className="text-right">Old Rate</TableHead>
+                                    <TableHead className="text-right">New Rate</TableHead>
+                                    <TableHead>Changed By</TableHead>
+                                    <TableHead>When</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {history.map((h) => (
+                                    <TableRow key={h.id}>
+                                        <TableCell>{h.material_name}</TableCell>
+                                        <TableCell className="text-right">{money(num(h.old_rate))}</TableCell>
+                                        <TableCell className="text-right font-semibold">{money(num(h.new_rate))}</TableCell>
+                                        <TableCell>{h.changed_by || "-"}</TableCell>
+                                        <TableCell>{new Date(h.created_at).toLocaleString()}</TableCell>
+                                    </TableRow>
+                                ))}
+                            </TableBody>
+                        </Table>
+                    )}
+                </CardContent>
+            </Card>
+            {createPortal(bomPdfTable, document.body)}
+        </div>
+    );
+}
+
 export function QuotesTab() {
     const { toast } = useToast();
     const [quotes, setQuotes] = useState<any[]>([]);
@@ -1389,6 +1760,7 @@ export function QuotesTab() {
     const [projectQuoteOpen, setProjectQuoteOpen] = useState(false);
     const [sendTarget, setSendTarget] = useState<any>(null);
     const [comparisonId, setComparisonId] = useState<string | null>(null);
+    const [bomDetailId, setBomDetailId] = useState<string | null>(null);
     const [editQuoteId, setEditQuoteId] = useState<string | null>(null);
 
     // Bumped on every load() call so a slow/late-arriving response from an
@@ -1461,6 +1833,10 @@ export function QuotesTab() {
         return <QuoteComparisonView quoteId={comparisonId} onBack={() => setComparisonId(null)} />;
     }
 
+    if (bomDetailId) {
+        return <BomVendorQuoteDetail quoteId={bomDetailId} onBack={() => setBomDetailId(null)} />;
+    }
+
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-end gap-2">
@@ -1499,19 +1875,33 @@ export function QuotesTab() {
                                         <TableCell>{q.title}</TableCell>
                                         <TableCell>
                                             <Badge variant="outline" className="text-xs">
-                                                {q.quote_kind === "project_comparison" ? "Project Comparison" : "Standard"}
+                                                {q.quote_kind === "project_comparison" ? "Project Comparison" : q.quote_kind === "bom_vendor" ? "Vendor Quote (BOM)" : "Standard"}
                                             </Badge>
                                         </TableCell>
                                         <TableCell><Badge variant={q.status === "Draft" ? "secondary" : "default"}>{q.status}</Badge></TableCell>
-                                        <TableCell>{q.recipient_count || 0} / {q.submitted_count || 0}</TableCell>
+                                        <TableCell>
+                                            {q.quote_kind === "bom_vendor" ? (q.bom_shop_name || "-") : `${q.recipient_count || 0} / ${q.submitted_count || 0}`}
+                                        </TableCell>
                                         <TableCell className="text-right">
-                                            <div className="flex flex-wrap items-center justify-end gap-2">
-                                                <Button variant="outline" size="sm" onClick={() => setSendTarget(q)}><Send className="h-3.5 w-3.5 mr-1" /> Send</Button>
-                                                <Button variant="outline" size="sm" onClick={() => copyLink(q.id)}><LinkIcon className="h-3.5 w-3.5 mr-1" /> Copy Link</Button>
-                                                <Button variant="outline" size="sm" onClick={() => setComparisonId(q.id)}><BarChart3 className="h-3.5 w-3.5 mr-1" /> Compare</Button>
-                                                <Button variant="outline" size="sm" onClick={() => setEditQuoteId(q.id)}><Pencil className="h-3.5 w-3.5 mr-1" /> Edit</Button>
-                                                <Button variant="ghost" size="icon" onClick={() => remove(q.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
-                                            </div>
+                                            {q.quote_kind === "bom_vendor" ? (
+                                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                                    <Button variant="outline" size="sm" onClick={() => setBomDetailId(q.id)}><BarChart3 className="h-3.5 w-3.5 mr-1" /> View</Button>
+                                                    <Button variant="outline" size="sm" onClick={() => {
+                                                        const link = `${window.location.origin}/quote/bom/${q.open_token}`;
+                                                        navigator.clipboard?.writeText(link);
+                                                        toast({ title: "Link copied", description: link });
+                                                    }}><LinkIcon className="h-3.5 w-3.5 mr-1" /> Copy Link</Button>
+                                                    <Button variant="ghost" size="icon" onClick={() => remove(q.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                                                </div>
+                                            ) : (
+                                                <div className="flex flex-wrap items-center justify-end gap-2">
+                                                    <Button variant="outline" size="sm" onClick={() => setSendTarget(q)}><Send className="h-3.5 w-3.5 mr-1" /> Send</Button>
+                                                    <Button variant="outline" size="sm" onClick={() => copyLink(q.id)}><LinkIcon className="h-3.5 w-3.5 mr-1" /> Copy Link</Button>
+                                                    <Button variant="outline" size="sm" onClick={() => setComparisonId(q.id)}><BarChart3 className="h-3.5 w-3.5 mr-1" /> Compare</Button>
+                                                    <Button variant="outline" size="sm" onClick={() => setEditQuoteId(q.id)}><Pencil className="h-3.5 w-3.5 mr-1" /> Edit</Button>
+                                                    <Button variant="ghost" size="icon" onClick={() => remove(q.id)}><Trash2 className="h-4 w-4 text-destructive" /></Button>
+                                                </div>
+                                            )}
                                         </TableCell>
                                     </TableRow>
                                 ))

@@ -17,6 +17,7 @@ import VendorRegistration from "@/pages/VendorRegistration";
 import ClientRegistration from "@/pages/ClientRegistration";
 import PublicQuoteFill from "@/pages/PublicQuoteFill";
 import PublicQuoteFillOpen from "@/pages/PublicQuoteFillOpen";
+import PublicBomQuote from "@/pages/PublicBomQuote";
 import PublicTenderFill from "@/pages/PublicTenderFill";
 import PrintSummarySheet from "@/pages/PrintSummarySheet";
 
@@ -97,6 +98,7 @@ function Router() {
       <Route path="/register/vendor/:token" component={VendorRegistration} />
       <Route path="/register/client/:token" component={ClientRegistration} />
       <Route path="/q/open/:token" component={PublicQuoteFillOpen} />
+      <Route path="/quote/bom/:token" component={PublicBomQuote} />
       <Route path="/q/:token" component={PublicQuoteFill} />
       <Route path="/t/open/:token" component={PublicTenderFill} />
       <Route path="/admin/summary-print/:linkId" component={PrintSummarySheet} />

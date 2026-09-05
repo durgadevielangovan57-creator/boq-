@@ -24,6 +24,7 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from 'xlsx';
 import { DeleteConfirmationDialog } from "../../components/ui/DeleteConfirmationDialog";
 import { ProductAnalysisDialog } from "@/components/ProductAnalysisDialog";
+import { GenerateQuoteDialog } from "./components/GenerateQuoteDialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import {
   Table,
@@ -1872,6 +1873,91 @@ export default function CreateBom() {
 
   const getEditedValue = (itemKey: string, field: string, original: any) =>
     editedFields[itemKey]?.[field] ?? original;
+
+  // ── Generate Quote: group the current BOM's materials by shop ──────────────
+  // Mirrors the same rate/qty resolution used by the Excel/PDF export above
+  // (engine materialLines use supplyRate+installRate, manual step11 rows use
+  // supply_rate+install_rate) so the "Sale Rate" prefilled into a vendor quote
+  // always matches what's shown elsewhere on this page. Purely additive/local —
+  // does not touch boqItems or any existing state.
+  const bomShopGroups = useMemo(() => {
+    type QuoteMaterial = { materialId: string | null; name: string; unit: string; quantity: number; rate: number };
+    const groups: Record<string, QuoteMaterial[]> = {};
+
+    boqItems.forEach((boqItem) => {
+      const td = parseTableData(boqItem.table_data);
+      const step11Items: any[] = Array.isArray(td.step11_items) ? td.step11_items : [];
+      const isEngineBased = !!(td.materialLines && td.targetRequiredQty !== undefined);
+      const targetQtyEngine = td.targetRequiredQty || 1;
+
+      const pushLine = (shopName: string, name: string, unit: string, qty: number, rate: number, materialId: string | null) => {
+        const shop = (shopName || "").toString().trim();
+        if (!shop || !name || !(qty > 0)) return;
+        if (!groups[shop]) groups[shop] = [];
+        const existing = groups[shop].find((m) => (materialId && m.materialId === materialId) || (!materialId && m.name === name && m.unit === unit));
+        if (existing) { existing.quantity += qty; if (rate > 0) existing.rate = rate; }
+        else groups[shop].push({ materialId, name, unit, quantity: qty, rate });
+      };
+
+      if (isEngineBased) {
+        let boqResult: any;
+        try { boqResult = computeBoq(td.configBasis || { requiredUnitType: "Sqft", baseRequiredQty: 1, wastagePctDefault: 0 }, td.materialLines || [], targetQtyEngine); } catch { boqResult = { computed: [] }; }
+        (boqResult.computed || []).forEach((line: any, idx: number) => {
+          const itemKey = `${boqItem.id}-engine-${idx}`;
+          const isFrozen = line.freezeAndEdit || line.freeze_and_edit;
+          const qty = Number(getEditedValue(itemKey, "qty", line.perUnitQty));
+          const sRate = Number(getEditedValue(itemKey, "supply_rate", line.supplyRate));
+          const iRate = Number(getEditedValue(itemKey, "install_rate", line.installRate));
+          let rate = Number(getEditedValue(itemKey, "rate", sRate + iRate)) || (sRate + iRate);
+          const amendStatus = (line.rate_amendment_status === 'approved' || line.rate_amendment_status === 'rejected')
+            ? line.rate_amendment_status
+            : getEditedValue(itemKey, "rate_amendment_status", line.rate_amendment_status);
+          if (line.original_rate !== undefined && line.original_rate !== null && amendStatus !== 'approved') rate = Number(line.original_rate);
+          const isLumpSum = (line.unit || "").toLowerCase() === "ls";
+          const reqQty = isFrozen ? line.roundOffQty : (isLumpSum ? 1 : Number((qty * targetQtyEngine).toFixed(2)));
+          const roundOff = isFrozen ? line.roundOffQty : (isLumpSum ? 1 : (line.applyRounding !== false ? Math.ceil(reqQty) : reqQty));
+          pushLine(line.shop_name, line.name, line.unit, Number(roundOff) || 0, rate, line.id || line.materialId || null);
+        });
+        step11Items.forEach((it: any, s11Idx: number) => {
+          if (!it?.manual) return;
+          if (td.materialLines?.some((ml: any) => (ml.id || ml.materialId) === it.id)) return;
+          const itemKey = `${boqItem.id}-manual-${s11Idx}`;
+          const qty = Number(getEditedValue(itemKey, "qty", it.qtyPerSqf ?? it.qty ?? 0)) || 0;
+          const sRate = Number(getEditedValue(itemKey, "supply_rate", it.supply_rate ?? 0)) || 0;
+          const iRate = Number(getEditedValue(itemKey, "install_rate", it.install_rate ?? 0)) || 0;
+          const rate = Number(getEditedValue(itemKey, "rate", sRate + iRate)) || (sRate + iRate);
+          const u = getEditedValue(itemKey, "unit", it.unit || "nos");
+          const isLumpSum = u.toLowerCase() === "ls";
+          const displayQty = isLumpSum ? 1 : qty;
+          pushLine(it.shop_name || it.shopName, it.title || it.name, u, displayQty, rate, it.id || it.materialId || null);
+        });
+      } else {
+        const target = td.targetRequiredQty || 1;
+        step11Items.forEach((it: any, s11Idx: number) => {
+          const itemKey = it.itemKey || `${boqItem.id}-${s11Idx}`;
+          const baseQty = Number(getEditedValue(itemKey, "qty", it.qtyPerSqf ?? it.qty ?? 0)) || 0;
+          const u = getEditedValue(itemKey, "unit", it.unit || "nos");
+          const isLumpSum = u.toLowerCase() === "ls";
+          const isManual = it.manual || !td.materialLines;
+          const scaledQty = isManual ? (isLumpSum ? 1 : baseQty) : (isLumpSum ? 1 : Number((baseQty * target).toFixed(2)));
+          const roundOff = (it.applyRounding !== false && !isManual && !isLumpSum) ? Math.ceil(scaledQty) : scaledQty;
+          const sRate = Number(getEditedValue(itemKey, "supply_rate", it.supply_rate ?? 0)) || 0;
+          const iRate = Number(getEditedValue(itemKey, "install_rate", it.install_rate ?? 0)) || 0;
+          const rate = Number(getEditedValue(itemKey, "rate", sRate + iRate)) || (sRate + iRate);
+          pushLine(it.shop_name || it.shopName, it.title || it.name, u, Number(roundOff) || 0, rate, it.id || it.materialId || null);
+        });
+      }
+    });
+
+    return Object.entries(groups).map(([shopName, materials]) => ({
+      shopName,
+      materials,
+      materialCount: materials.length,
+      total: materials.reduce((sum, m) => sum + m.quantity * m.rate, 0),
+    })).sort((a, b) => a.shopName.localeCompare(b.shopName));
+  }, [boqItems, editedFields]);
+
+  const [showGenerateQuoteDialog, setShowGenerateQuoteDialog] = useState(false);
 
   // ── Budget Helpers ──────────────────────────────────────────────────────────
 
@@ -4206,6 +4292,10 @@ export default function CreateBom() {
                       )}
                       <Button onClick={handleDownloadExcel} variant="outline" disabled={boqItems.length === 0}>Download Excel</Button>
                       <Button onClick={handleDownloadPdf} variant="outline" disabled={boqItems.length === 0}>Download PDF</Button>
+                      <Button onClick={() => setShowGenerateQuoteDialog(true)} variant="outline" className="border-purple-300 text-purple-700 hover:bg-purple-50 font-bold" disabled={bomShopGroups.length === 0}>
+                        <Store className="h-4 w-4 mr-2" />
+                        Generate Quote
+                      </Button>
                     </div>
                     {rateAmendmentSummary.hasDraft && (
                       <div className="col-span-full flex items-center gap-2 mt-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold">
@@ -4229,6 +4319,16 @@ export default function CreateBom() {
                 </Card>
               )}
             </TabsContent>
+
+            <GenerateQuoteDialog
+              open={showGenerateQuoteDialog}
+              onOpenChange={setShowGenerateQuoteDialog}
+              shopGroups={bomShopGroups}
+              projectId={selectedProjectId}
+              projectName={selectedProject?.name}
+              versionId={selectedVersionId}
+              versionLabel={selectedVersion ? `V${selectedVersion.version_number}` : undefined}
+            />
 
             <Dialog open={approvalsModalOpen} onOpenChange={setApprovalsModalOpen}>
               <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto">
