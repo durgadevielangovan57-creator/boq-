@@ -164,6 +164,7 @@ export default function AdminDashboard() {
   const {
     shops,
     materials,
+    products: contextProducts,
     addShop,
     addMaterial,
     user,
@@ -474,23 +475,23 @@ export default function AdminDashboard() {
     })();
   }, []);
 
-  // Load products from API on mount
+  // Seed products from the global store instead of independently re-fetching
+  // /api/products here. The app's DataProvider (client/src/lib/store.tsx)
+  // already fetches the full products catalog once on app load — that query
+  // is heavy (unindexed multi-join), so having this page fire an identical
+  // second copy of it on every mount just doubles the load on the database
+  // for no benefit, and competes with other queries (like the simple
+  // material-templates list on this same page) for the connection pool,
+  // making everything on the page feel slower to appear. `contextProducts`
+  // only populates once on app load (see store.tsx), so this seeds local
+  // state once when it becomes available; all the local add/edit/delete
+  // handling below (setProducts) continues to work exactly as before.
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch('/api/products');
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.products) {
-            const mapped = data.products.map((p: any) => mapProduct(p));
-            setProducts(mapped.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || "")));
-          }
-        }
-      } catch (e) {
-        console.warn('load products failed', e);
-      }
-    })();
-  }, []);
+    if (contextProducts && contextProducts.length > 0) {
+      const mapped = contextProducts.map((p: any) => mapProduct(p));
+      setProducts(mapped.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || "")));
+    }
+  }, [contextProducts]);
 
   // normalize product object from server (snake_case) to camelCase
   const mapProduct = (p: any) => ({
@@ -4687,9 +4688,9 @@ export default function AdminDashboard() {
                                 onCheckedChange={() =>
                                   toggleSelectAllMaterialRequests(
                                     materialRequests
-                           
-                           
-                                    .filter((r: any) => r.status === "pending")
+
+
+                                      .filter((r: any) => r.status === "pending")
                                       .map((r: any) => r.id)
                                   )
                                 }

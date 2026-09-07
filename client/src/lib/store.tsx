@@ -216,37 +216,56 @@ export function DataProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true;
     (async () => {
-      try {
-        const s = await getJSON('/api/shops');
-        if (mounted && s?.shops) {
-          setShops(s.shops.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || "")));
-        }
-      } catch (e) { console.warn('load shops failed', e); }
-      try {
-        const m = await getJSON('/api/materials');
-        if (mounted && m?.materials) {
-          const normalized = m.materials.map(normalizeMaterial);
-          setMaterials(normalized.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || "")));
-        }
-      } catch (e) { console.warn('load materials failed', e); }
-      try {
-        const p = await getJSON('/api/products');
-        if (mounted && p?.products) {
-          setProducts(p.products.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || "")));
-        }
-      } catch (e) { console.warn('load products failed', e); }
-      // load server-side pending approval lists into central state
-      try {
-        const ps = await getJSON('/api/shops-pending-approval');
-        if (mounted && ps?.shops) setApprovalRequests(ps.shops);
-      } catch (e) { console.warn('load pending shops failed', e); }
-      // load server-side pending approval list (unified)
-      await refreshPendingApprovals();
-      // load support messages
-      try {
-        const sm = await getJSON('/api/support-messages');
-        if (mounted && sm?.messages) setSupportMessages(sm.messages);
-      } catch (e) { console.warn('load support messages failed', e); }
+      // These six calls are all independent of each other, so fire them all
+      // at once instead of awaiting each one in turn. Previously this was a
+      // strict chain (shops, THEN materials, THEN products, THEN ...), so
+      // e.g. materials — which pages like Create Item depend on — couldn't
+      // even start loading until the shops call finished, and had to wait
+      // even longer to render because the heavy products call was awaited
+      // right after it, before the component ever got a chance to update.
+      // Promise.allSettled lets each one populate the screen as soon as its
+      // own response comes back, and one endpoint failing doesn't stop the
+      // others from being applied.
+      const [shopsRes, materialsRes, productsRes, pendingShopsRes, , supportRes] = await Promise.allSettled([
+        getJSON('/api/shops'),
+        getJSON('/api/materials'),
+        getJSON('/api/products'),
+        getJSON('/api/shops-pending-approval'),
+        refreshPendingApprovals(),
+        getJSON('/api/support-messages'),
+      ]);
+      if (!mounted) return;
+
+      if (shopsRes.status === 'fulfilled' && shopsRes.value?.shops) {
+        setShops(shopsRes.value.shops.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || "")));
+      } else if (shopsRes.status === 'rejected') {
+        console.warn('load shops failed', shopsRes.reason);
+      }
+
+      if (materialsRes.status === 'fulfilled' && materialsRes.value?.materials) {
+        const normalized = materialsRes.value.materials.map(normalizeMaterial);
+        setMaterials(normalized.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || "")));
+      } else if (materialsRes.status === 'rejected') {
+        console.warn('load materials failed', materialsRes.reason);
+      }
+
+      if (productsRes.status === 'fulfilled' && productsRes.value?.products) {
+        setProducts(productsRes.value.products.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || "")));
+      } else if (productsRes.status === 'rejected') {
+        console.warn('load products failed', productsRes.reason);
+      }
+
+      if (pendingShopsRes.status === 'fulfilled' && pendingShopsRes.value?.shops) {
+        setApprovalRequests(pendingShopsRes.value.shops);
+      } else if (pendingShopsRes.status === 'rejected') {
+        console.warn('load pending shops failed', pendingShopsRes.reason);
+      }
+
+      if (supportRes.status === 'fulfilled' && supportRes.value?.messages) {
+        setSupportMessages(supportRes.value.messages);
+      } else if (supportRes.status === 'rejected') {
+        console.warn('load support messages failed', supportRes.reason);
+      }
     })();
     return () => { mounted = false };
   }, []);

@@ -14,7 +14,6 @@ import { Package, Plus, Loader2, AlertTriangle } from "lucide-react";
 import { postJSON } from "@/lib/api";
 
 interface MaterialTemplate { id: string; name: string; code: string; category?: string; subcategory?: string; vendor_category?: string; created_at: string; image?: string; }
-interface Shop { id: string; name: string; vendorCategory?: string; }
 
 const UNIT_OPTIONS = ["pcs", "kg", "meter", "sqft", "cum", "litre", "set", "nos", "Meters", "Square feet", "Numbers", "Square Meter", "Bags", "Running feet", "Running meter", "LS", "BOX", "LTR", "CQM", "cft", "ml", "DOZ", "PKT", "Man labour", "Points", "Roll", "Days", "Inches", "Hours", "Percentage", "Length", "Panel", "Drum", "Ft", "1 Pkt", "Job", "Units"];
 const Required = () => <span className="text-red-500 ml-1">*</span>;
@@ -22,7 +21,7 @@ const EMPTY_FORM = { rate: "", unit: "", brandname: "", modelnumber: "", categor
 
 export default function ManageMaterials() {
   const { toast } = useToast();
-  const { user } = useData();
+  const { user, shops, products } = useData();
   const [templates, setTemplates] = useState<MaterialTemplate[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(true);
   const [templatesSearch, setTemplatesSearch] = useState("");
@@ -30,9 +29,7 @@ export default function ManageMaterials() {
   const [vendorCategories, setVendorCategories] = useState<string[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [subcategories, setSubcategories] = useState<string[]>([]);
-  const [products, setProducts] = useState<any[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<MaterialTemplate | null>(null);
-  const [shops, setShops] = useState<Shop[]>([]);
   const [selectedShop, setSelectedShop] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
@@ -44,7 +41,13 @@ export default function ManageMaterials() {
   const [editingEntryIndex, setEditingEntryIndex] = useState<number | null>(null);
   const [formData, setFormData] = useState({ ...EMPTY_FORM });
 
-  useEffect(() => { loadMaterialTemplates(); loadShops(); loadCategories(); loadProducts(); }, []);
+  // `shops` and `products` come straight from the global store (useData())
+  // above instead of being fetched here — the store already loads both on
+  // app start, and /api/products in particular is a heavy query, so having
+  // this page independently re-fetch it too just doubled the load on the
+  // database on every visit for no benefit. Only load what's specific to
+  // this page: material templates and material categories.
+  useEffect(() => { loadMaterialTemplates(); loadCategories(); }, []);
   useEffect(() => { if (templates.length > 0) loadVendorCategories(); }, [templates]);
   useEffect(() => { setPage(0); }, [templatesSearch, selectedVendorCategory]);
 
@@ -71,9 +74,7 @@ export default function ManageMaterials() {
     finally { setLoadingTemplates(false); }
   };
 
-  const loadShops = async () => { try { setShops((await (await fetch("/api/shops")).json()).shops || []); } catch { } };
   const loadCategories = async () => { try { setCategories((await (await fetch("/api/material-categories")).json()).categories || []); } catch { } };
-  const loadProducts = async () => { try { setProducts((await (await fetch("/api/products")).json()).products || []); } catch { setProducts([]); } };
   const loadVendorCategories = async () => { setVendorCategories(Array.from(new Set(templates.map(t => t.vendor_category).filter(Boolean))) as string[]); };
 
   const loadSubcategories = async (category: string) => {
