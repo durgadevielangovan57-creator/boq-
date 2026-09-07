@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, Zap, Store } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, Zap, Store, FolderOpen, SlidersHorizontal, Settings } from "lucide-react";
 import { fuzzySearch, cn } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -38,6 +38,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import { Textarea } from "../../components/ui/textarea";
 import { Checkbox } from "../../components/ui/checkbox";
+import { Tooltip, TooltipTrigger, TooltipContent } from "../../components/ui/tooltip";
 import { useData } from "../../lib/store";
 
 import { Project, BOMVersion, BOMItem, Product, Step11Item, BOMHistory, BOMComment, User, PROJECT_STATUSES, getProjectStatusMeta } from './types';
@@ -57,6 +58,46 @@ import { VersionHistoryModal } from '@/components/ui/VersionHistoryModal';
 
 
 // ─── Small UI Components ───────────────────────────────────────────────────────
+
+// Compact icon-only button used for version actions (History, Delete, New
+// Version, Refresh, etc). Shows its label in a tooltip on hover so the
+// header stays compact without hiding what each button does.
+function HeaderIconButton({
+  icon: Icon,
+  label,
+  onClick,
+  disabled,
+  colorClass = "bg-white border-slate-200 text-slate-400 hover:text-blue-600 hover:border-blue-200",
+  spinning = false,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  colorClass?: string;
+  spinning?: boolean;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className={cn(
+            "h-9 w-9 shadow-sm shrink-0 transition-colors border",
+            colorClass
+          )}
+          onClick={onClick}
+          disabled={disabled}
+        >
+          <Icon className={cn("h-4 w-4", spinning && "animate-spin")} />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 
 
@@ -102,6 +143,16 @@ export default function CreateBom() {
       sessionStorage.removeItem('bom_selectedVersionId');
     }
   }, [selectedVersionId]);
+
+  // Live refs so in-flight requests can tell, when they resolve, whether the
+  // user has since switched to a different project/version. Unlike a plain
+  // closure variable, `.current` always reflects the latest selection —
+  // these are what the async loaders below check before applying data.
+  const selectedProjectIdRef = useRef(selectedProjectId);
+  useEffect(() => { selectedProjectIdRef.current = selectedProjectId; }, [selectedProjectId]);
+  const selectedVersionIdRef = useRef(selectedVersionId);
+  useEffect(() => { selectedVersionIdRef.current = selectedVersionId; }, [selectedVersionId]);
+
   const selectedProject = projects.find(p => p.id === selectedProjectId);
   const selectedVersion = versions.find(v => v.id === selectedVersionId);
   const [history, setHistory] = useState<BOMHistory[]>([]);
@@ -135,6 +186,39 @@ export default function CreateBom() {
   const [ignoredPpMismatches, setIgnoredPpMismatches] = useState<Set<string>>(new Set());
   const [projectStatusFilter, setProjectStatusFilter] = useState<string>("all");
   const [projectSearchTerm, setProjectSearchTerm] = useState("");
+
+  // Collapsed by default — Load Template / Import Approved Proposals /
+  // Compare are used far less often than Add Product / Add Item, so they
+  // live behind this "Advanced Options" toggle instead of cluttering the
+  // header.
+  const [showAdvancedActions, setShowAdvancedActions] = useState(false);
+
+  // --- UI-only state for the "Project Filters" dropdown (same pattern as Finalize BOQ) ---
+  const [isStatusFilterOpen, setIsStatusFilterOpen] = useState(false);
+  const [statusFilterSearch, setStatusFilterSearch] = useState("");
+  const statusFilterRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isStatusFilterOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (statusFilterRef.current && !statusFilterRef.current.contains(e.target as Node)) {
+        setIsStatusFilterOpen(false);
+      }
+    };
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsStatusFilterOpen(false);
+    };
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [isStatusFilterOpen]);
+
+  useEffect(() => {
+    if (!isStatusFilterOpen) setStatusFilterSearch("");
+  }, [isStatusFilterOpen]);
   const [productCategoryOrder, setProductCategoryOrder] = useState<string[]>([]);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -977,11 +1061,17 @@ export default function CreateBom() {
   useEffect(() => {
     if (!selectedProjectId) { setVersions([]); setSelectedVersionId(null); setBoqItems([]); return; }
 
+    const projectIdAtRequestTime = selectedProjectId;
+
     // Fetch all versions (including approved ones)
     apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId)}?type=bom`, { headers: {} })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!data) return;
+        // The user may have already switched to a different project while
+        // this request was in flight — if so, drop this (now stale)
+        // response instead of letting it overwrite what's on screen.
+        if (selectedProjectIdRef.current !== projectIdAtRequestTime) return;
         let list: BOMVersion[] = data.versions || [];
         // Purchase team only sees approved versions. Finance team is still
         // read-only (see isReadOnlyMode below) but should also see draft
@@ -1007,6 +1097,7 @@ export default function CreateBom() {
     apiFetch(`/api/proposals?projectId=${encodeURIComponent(selectedProjectId)}&status=approved`, { headers: {} })
       .then(r => r.ok ? r.json() : [])
       .then(async d => {
+        if (selectedProjectIdRef.current !== projectIdAtRequestTime) return;
         const list = Array.isArray(d) ? d : (d.proposals || []);
         const approved = list.filter((p: any) => p.status === 'approved');
         setApprovedProposals(approved);
@@ -1018,6 +1109,7 @@ export default function CreateBom() {
               const res = await apiFetch(`/api/proposals/${prop.id}/items`);
               if (res.ok) {
                 const items = await res.json();
+                if (selectedProjectIdRef.current !== projectIdAtRequestTime) return;
                 setProposalItemsPreview(prev => ({ ...prev, [prop.id]: items }));
               }
             } catch (err) { console.error("Prefetch failed", err); }
@@ -1084,6 +1176,15 @@ export default function CreateBom() {
       const data = await safeJson(res as unknown as Response);
       const items: BOMItem[] = data.items || [];
 
+      // The user may have already switched to a different version while
+      // this request was in flight (e.g. rapidly switching projects) — if
+      // so, this response is stale and must not overwrite what's on
+      // screen for the version now selected. selectedVersionIdRef always
+      // holds the live selection, unlike the `selectedVersionId` closure
+      // variable below which is fixed at whatever it was when this call
+      // started.
+      if (selectedVersionIdRef.current !== versionAtRequestTime) return;
+
       // Show the items immediately — don't wait on materials/products.
       setBoqItems(items);
       loadHistory();
@@ -1097,7 +1198,7 @@ export default function CreateBom() {
         apiFetch("/api/products").catch(e => { console.warn(e); return null; })
       ]);
 
-      if (versionAtRequestTime !== selectedVersionId) return;
+      if (versionAtRequestTime !== selectedVersionIdRef.current) return;
 
       let currentMaterialsById: Record<string, any> = {};
       if (materialsRes && materialsRes.ok) {
@@ -1190,7 +1291,7 @@ export default function CreateBom() {
           // Only touch the on-screen items if something was actually
           // backfilled, and only if the user hasn't switched versions
           // while this background fetch was in flight.
-          if (anyBackfilled && versionAtRequestTime === selectedVersionId) {
+          if (anyBackfilled && versionAtRequestTime === selectedVersionIdRef.current) {
             setBoqItems([...items]);
           }
         }
@@ -3389,36 +3490,143 @@ export default function CreateBom() {
                   <div className="flex flex-col gap-4">
                     {/* Top Row: Selectors & Actions */}
                     {/* Row 1: Project Filters */}
-                    <div className="flex items-center gap-3 p-1.5 bg-slate-50 rounded-lg border border-slate-200 w-full">
+                    <div className="flex flex-wrap items-center gap-3 p-1.5 bg-slate-50 rounded-lg border border-slate-200 w-full" ref={statusFilterRef}>
                       <Label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold ml-2 whitespace-nowrap">Project Filters:</Label>
-                      <div className="flex flex-wrap gap-1.5">
-                        {PROJECT_STATUSES.map(s => (
-                          <button
-                            key={s.value}
-                            onClick={() => setProjectStatusFilter(s.value)}
-                            className={cn(
-                              "px-2 py-1 text-[9px] font-bold uppercase rounded-md transition-all border border-transparent",
-                              projectStatusFilter === s.value ? "bg-white text-blue-600 shadow-sm border-blue-100 ring-1 ring-blue-50/50" : "text-slate-500 hover:bg-slate-100"
-                            )}
-                          >
-                            {s.label}
-                          </button>
-                        ))}
+                      <div className="relative inline-block">
                         <button
-                          onClick={() => setProjectStatusFilter("all")}
+                          type="button"
+                          onClick={() => setIsStatusFilterOpen(o => !o)}
+                          aria-haspopup="listbox"
+                          aria-expanded={isStatusFilterOpen}
                           className={cn(
-                            "px-2 py-1 text-[9px] font-bold uppercase rounded-md transition-all border border-transparent",
-                            projectStatusFilter === "all" ? "bg-white text-blue-600 shadow-sm border-blue-100 ring-1 ring-blue-50/50" : "text-slate-500 hover:bg-slate-100"
+                            "flex items-center gap-2 pl-3 pr-2.5 py-2 rounded-[14px] border text-[11px] font-bold uppercase tracking-wide transition-all duration-200",
+                            "bg-white/80 backdrop-blur-md border-slate-200 text-slate-600 shadow-sm hover:shadow-md hover:border-blue-200 hover:text-blue-600",
+                            isStatusFilterOpen && "border-blue-300 ring-2 ring-blue-100 text-blue-600 shadow-md"
                           )}
                         >
-                          All
+                          <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                          <span>Project Filters</span>
+                          <span className="flex items-center gap-1 ml-0.5 px-1.5 py-0.5 rounded-md bg-blue-50 text-blue-600 text-[9px] font-extrabold normal-case tracking-normal">
+                            {projectStatusFilter === "all" ? "All" : getProjectStatusMeta(projectStatusFilter).label}
+                          </span>
+                          <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform duration-200", isStatusFilterOpen && "rotate-180")} />
                         </button>
+
+                        <div
+                          role="listbox"
+                          aria-label="Project status filters"
+                          className={cn(
+                            "absolute z-50 mt-2 w-72 origin-top-left rounded-[14px] border border-white/60",
+                            "bg-white/90 backdrop-blur-xl shadow-2xl shadow-slate-300/50 ring-1 ring-black/5",
+                            "transition-all duration-200 ease-out",
+                            isStatusFilterOpen
+                              ? "opacity-100 scale-100 translate-y-0 pointer-events-auto"
+                              : "opacity-0 scale-95 -translate-y-1 pointer-events-none"
+                          )}
+                        >
+                          <div className="p-2 border-b border-slate-100">
+                            <div className="relative">
+                              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
+                              <input
+                                type="text"
+                                value={statusFilterSearch}
+                                onChange={(e) => setStatusFilterSearch(e.target.value)}
+                                placeholder="Search project status..."
+                                aria-label="Search project status"
+                                className="w-full pl-8 pr-7 py-1.5 text-[11px] rounded-lg border border-slate-200 bg-slate-50/70 focus:bg-white focus:border-blue-300 focus:ring-2 focus:ring-blue-100 outline-none transition-all"
+                              />
+                              {statusFilterSearch && (
+                                <button
+                                  type="button"
+                                  onClick={() => setStatusFilterSearch("")}
+                                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500 transition-colors"
+                                  aria-label="Clear search"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="max-h-64 overflow-y-auto p-1.5 space-y-0.5">
+                            {"all".includes(statusFilterSearch.toLowerCase()) && (
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={projectStatusFilter === "all"}
+                                onClick={() => { setProjectStatusFilter("all"); setIsStatusFilterOpen(false); }}
+                                className={cn(
+                                  "w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors",
+                                  projectStatusFilter === "all" ? "bg-blue-50 text-blue-600" : "text-slate-600 hover:bg-slate-50"
+                                )}
+                              >
+                                <span className="flex items-center gap-2">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+                                  All
+                                </span>
+                                {projectStatusFilter === "all" && <Check className="h-3.5 w-3.5" />}
+                              </button>
+                            )}
+
+                            {PROJECT_STATUSES.filter(s => s.label.toLowerCase().includes(statusFilterSearch.toLowerCase())).map(s => (
+                              <button
+                                key={s.value}
+                                type="button"
+                                role="option"
+                                aria-selected={projectStatusFilter === s.value}
+                                onClick={() => { setProjectStatusFilter(s.value); setIsStatusFilterOpen(false); }}
+                                className={cn(
+                                  "w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors",
+                                  projectStatusFilter === s.value ? "bg-blue-50 text-blue-600" : "text-slate-600 hover:bg-slate-50"
+                                )}
+                              >
+                                <span className="flex items-center gap-2">
+                                  <span className={cn("h-1.5 w-1.5 rounded-full", s.color.replace("100", "500").replace("200", "500").split(" ")[0])} />
+                                  {s.label}
+                                </span>
+                                {projectStatusFilter === s.value && <Check className="h-3.5 w-3.5" />}
+                              </button>
+                            ))}
+
+                            {!"all".includes(statusFilterSearch.toLowerCase()) &&
+                              PROJECT_STATUSES.filter(s => s.label.toLowerCase().includes(statusFilterSearch.toLowerCase())).length === 0 && (
+                                <div className="px-2.5 py-4 text-center text-[10px] text-slate-400">No matching status</div>
+                              )}
+                          </div>
+                        </div>
                       </div>
+
+                      {selectedProjectId && (() => {
+                        const selProj = projects.find(p => p.id === selectedProjectId);
+                        return (
+                          <div className="flex items-center gap-2 ml-auto">
+                            <span className="text-[10px] text-slate-500 font-bold uppercase whitespace-nowrap">Project Status:</span>
+                            <select
+                              className="text-xs border border-slate-200 rounded px-2 py-1 bg-white font-semibold focus:ring-1 ring-blue-400 outline-none disabled:bg-slate-50 disabled:text-slate-500"
+                              value={selProj?.project_status || 'started'}
+                              disabled={isReadOnlyMode}
+                              onChange={async (e) => {
+                                const newStatus = e.target.value;
+                                try {
+                                  await apiFetch(`/api/boq-projects/${selectedProjectId}`, {
+                                    method: 'PUT',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ project_status: newStatus }),
+                                  });
+                                  setProjects(prev => prev.map(p => p.id === selectedProjectId ? { ...p, project_status: newStatus } : p));
+                                } catch (err) { console.error('Failed to update project status', err); }
+                              }}
+                            >
+                              {PROJECT_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                            </select>
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     {/* Row 2: Select Project & Version Actions */}
-                    <div className="flex flex-wrap items-end gap-x-6 gap-y-4">
-                      <div className="flex-[2] min-w-[350px] space-y-1">
+                    <div className="flex flex-wrap items-start gap-x-6 gap-y-4">
+                      <div className="w-[260px] shrink-0 space-y-1">
                         <Label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold ml-1">Select Project</Label>
                         <Select onValueChange={v => setSelectedProjectId(v || null)} value={selectedProjectId || ""}>
                           <SelectTrigger className="w-full bg-slate-50 border-slate-200 h-9 px-3 hover:bg-slate-100/50 transition-colors">
@@ -3464,9 +3672,9 @@ export default function CreateBom() {
                       </div>
 
                       {selectedProjectId && (
-                        <div className="flex-[3] min-w-[500px] space-y-1.5 text-slate-900">
+                        <div className="flex-1 min-w-[500px] space-y-1.5 text-slate-900">
                           <Label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold ml-1">Version & Actions</Label>
-                          <div className="flex flex-wrap gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <div className="flex gap-1">
                               <Select value={selectedVersionId || ""} onValueChange={setSelectedVersionId}>
                                 <SelectTrigger className="flex-1 min-w-[140px] bg-slate-50 border-slate-200 h-9 px-3">
@@ -3506,7 +3714,7 @@ export default function CreateBom() {
                                       <Button
                                         variant="outline"
                                         size="icon"
-                                        className="h-9 w-9 border-slate-200 text-slate-400 hover:text-green-600 hover:border-green-200 shadow-sm shrink-0"
+                                        className="h-9 w-9 border border-amber-200 bg-amber-50 text-amber-500 hover:text-amber-600 hover:border-amber-300 shadow-sm shrink-0"
                                         title="Mark this as Last Final — it will also become available in Finalize BOQ"
                                         onClick={async () => {
                                           if (!confirm("Mark this version as the Last Final version? It will also become available in Finalize BOQ.")) return;
@@ -3536,36 +3744,10 @@ export default function CreateBom() {
 
                               })()}
                             </div>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-9 px-3 bg-white border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-blue-600 gap-2 font-semibold"
-                              title="View History"
-                              onClick={() => setShowHistoryModal(true)}
-                              disabled={!selectedVersionId}
-                            >
-                              <History className="h-4 w-4" />
-                              <span>History</span>
-                            </Button>
-                            {(user?.role === 'admin' || user?.role === 'software_team') && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-9 px-3 bg-white border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-red-600 gap-2 font-semibold"
-                                title="Delete Version"
-                                onClick={handleDeleteVersion}
-                                disabled={!selectedVersionId}
-                              >
-                                <XCircle className="h-4 w-4" />
-                                <span>Delete</span>
-                              </Button>
-                            )}
                             {!isReadOnlyMode && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-9 px-3 bg-white border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-emerald-600 gap-2 font-semibold"
-                                title="New Version"
+                              <HeaderIconButton
+                                icon={Clock}
+                                label="New Version"
                                 onClick={() => {
                                   if (versions.length > 0) {
                                     const last = versions[0];
@@ -3574,102 +3756,102 @@ export default function CreateBom() {
                                     handleCreateNewVersion(false);
                                   }
                                 }}
-                              >
-                                <Clock className="h-4 w-4" />
-                                <span>New Version</span>
-                              </Button>
+                                colorClass="bg-emerald-50 border-emerald-200 text-emerald-600 hover:text-emerald-700 hover:border-emerald-300"
+                              />
+                            )}
+                            <HeaderIconButton
+                              icon={History}
+                              label="View History"
+                              onClick={() => setShowHistoryModal(true)}
+                              disabled={!selectedVersionId}
+                              colorClass="bg-blue-50 border-blue-200 text-blue-600 hover:text-blue-700 hover:border-blue-300"
+                            />
+                            {(user?.role === 'admin' || user?.role === 'software_team') && (
+                              <HeaderIconButton
+                                icon={Trash2}
+                                label="Delete Version"
+                                onClick={handleDeleteVersion}
+                                disabled={!selectedVersionId}
+                                colorClass="bg-red-50 border-red-200 text-red-600 hover:text-red-700 hover:border-red-300"
+                              />
+                            )}
+                            {!isReadOnlyMode && (
+                              <HeaderIconButton
+                                icon={isRefreshingCategories ? Loader2 : RefreshCw}
+                                label={isRefreshingCategories ? "Refreshing..." : "Refresh: detect and update any item categories that changed in the master product library"}
+                                onClick={handleRefreshCategories}
+                                disabled={!selectedVersionId || isRefreshingCategories || boqItems.length === 0}
+                                spinning={isRefreshingCategories}
+                                colorClass="bg-teal-50 border-teal-200 text-teal-600 hover:text-teal-700 hover:border-teal-300"
+                              />
+                            )}
+                            <Button onClick={handleAddProduct} className="bg-primary text-white h-9 px-5 text-xs font-bold shadow-sm ml-1" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}>
+                              {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
+                              + Add Product
+                            </Button>
+
+                            <Button onClick={handleAddProductManual} variant="outline" className="border-slate-200 h-9 px-5 text-xs font-bold shadow-sm bg-white" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}>
+                              {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
+                              + Add Item
+                            </Button>
+
+                            {!isReadOnlyMode && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    onClick={() => setShowAdvancedActions(o => !o)}
+                                    variant="outline"
+                                    size="icon"
+                                    className={cn(
+                                      "h-9 w-9 border bg-purple-50 border-purple-200 text-purple-600 shadow-sm shrink-0 ml-1 transition-colors hover:text-purple-700 hover:border-purple-300",
+                                      showAdvancedActions && "border-purple-400 ring-2 ring-purple-100 text-purple-700"
+                                    )}
+                                  >
+                                    <Settings className="h-4 w-4" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom">Advanced Options</TooltipContent>
+                              </Tooltip>
                             )}
                           </div>
                         </div>
                       )}
                     </div>
 
-                    {/* Row 3: Project Status & Actions */}
-                    <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
-                      {selectedProjectId && (() => {
-                        const selProj = projects.find(p => p.id === selectedProjectId);
-                        return (
-                          <div className="flex items-center gap-2">
-                            <span className="text-[10px] text-slate-500 font-bold uppercase">Project Status:</span>
-                            <select
-                              className="text-xs border border-slate-200 rounded px-2 py-1 bg-white font-semibold focus:ring-1 ring-blue-400 outline-none disabled:bg-slate-50 disabled:text-slate-500"
-                              value={selProj?.project_status || 'started'}
-                              disabled={isReadOnlyMode}
-                              onChange={async (e) => {
-                                const newStatus = e.target.value;
-                                try {
-                                  await apiFetch(`/api/boq-projects/${selectedProjectId}`, {
-                                    method: 'PUT',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ project_status: newStatus }),
-                                  });
-                                  setProjects(prev => prev.map(p => p.id === selectedProjectId ? { ...p, project_status: newStatus } : p));
-                                } catch (err) { console.error('Failed to update project status', err); }
-                              }}
-                            >
-                              {PROJECT_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-                            </select>
-                          </div>
-                        );
-                      })()}
+                    {/* Advanced actions — used occasionally, tucked away behind the toggle above */}
+                    {!isReadOnlyMode && showAdvancedActions && (
+                      <div className="flex flex-wrap items-center gap-2 p-2 bg-slate-50 border border-slate-200 rounded-lg animate-in fade-in slide-in-from-top-1 duration-150">
+                        <span className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mr-1 whitespace-nowrap">Advanced:</span>
+                        <Button onClick={() => setShowTemplateManager(true)} variant="outline" className="border-slate-200 h-9 px-4 text-xs font-bold shadow-sm bg-white flex items-center gap-2" disabled={isVersionSubmitted || !selectedVersionId}>
+                          <History className="h-4 w-4" /> Load Template
+                        </Button>
 
-                      {!isReadOnlyMode && (
-                        <div className="flex gap-2 h-9 ml-auto">
-                          <Button onClick={() => setShowTemplateManager(true)} variant="outline" className="border-slate-200 h-full px-4 text-xs font-bold shadow-sm bg-white flex items-center gap-2" disabled={isVersionSubmitted || !selectedVersionId}>
-                            <History className="h-4 w-4" /> Load Template
-                          </Button>
-
-                          {approvedProposals.length > 0 && (
-                            <Button
-                              onClick={() => {
-                                setSelectedProposalImportIds([]);
-                                setShowProposalImportDialog(true);
-                              }}
-                              variant="outline"
-                              className="border-emerald-200 h-full px-4 text-xs font-bold shadow-sm bg-white flex items-center gap-2 text-emerald-700 hover:bg-emerald-50"
-                              disabled={isVersionSubmitted || !selectedVersionId}
-                            >
-                              <CheckCircle2 className="h-4 w-4" /> Import Approved Proposals ({approvedProposals.length})
-                            </Button>
-                          )}
-                          <Button onClick={findDuplicatesInBOM} variant="outline" className="border-amber-200 h-full px-4 text-xs font-bold shadow-sm bg-amber-50 text-amber-700 hover:bg-amber-100 flex items-center gap-2" disabled={!selectedProjectId}>
-                            <AlertTriangle className="h-4 w-4" /> Check Duplicates
-                          </Button>
+                        {approvedProposals.length > 0 && (
                           <Button
-                            onClick={handleRefreshCategories}
+                            onClick={() => {
+                              setSelectedProposalImportIds([]);
+                              setShowProposalImportDialog(true);
+                            }}
                             variant="outline"
-                            className="border-emerald-200 h-full px-4 text-xs font-bold shadow-sm bg-emerald-50 text-emerald-700 hover:bg-emerald-100 flex items-center gap-2"
-                            disabled={!selectedVersionId || isRefreshingCategories || boqItems.length === 0}
-                            title="Refresh: detect and update any item categories that changed in the master product library"
+                            className="border-emerald-200 h-9 px-4 text-xs font-bold shadow-sm bg-white flex items-center gap-2 text-emerald-700 hover:bg-emerald-50"
+                            disabled={isVersionSubmitted || !selectedVersionId}
                           >
-                            {isRefreshingCategories
-                              ? <Loader2 className="h-4 w-4 animate-spin" />
-                              : <RefreshCw className="h-4 w-4" />}
-                            {isRefreshingCategories ? "Refreshing..." : "Refresh"}
+                            <CheckCircle2 className="h-4 w-4" /> Import Approved Proposals ({approvedProposals.length})
                           </Button>
-                          <Button onClick={() => setShowCompareDialog(true)} variant="outline" className="border-blue-200 h-full px-4 text-xs font-bold shadow-sm bg-blue-50 text-blue-700 hover:bg-blue-100 flex items-center gap-2" disabled={!selectedProjectId}>
-                            <ChevronsUpDown className="h-4 w-4" /> Compare
-                          </Button>
-                          <Button onClick={handleAddProduct} className="bg-primary text-white h-full px-5 text-xs font-bold shadow-sm" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}>
-                            {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
-                            + Add Product
-                          </Button>
-
-                          <Button onClick={handleAddProductManual} variant="outline" className="border-slate-200 h-full px-5 text-xs font-bold shadow-sm bg-white" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}>
-                            {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
-                            + Add Item
-                          </Button>
-
-                        </div>
-                      )}
-                    </div>
-
-
+                        )}
+                        <Button onClick={() => setShowCompareDialog(true)} variant="outline" className="border-blue-200 h-9 px-4 text-xs font-bold shadow-sm bg-blue-50 text-blue-700 hover:bg-blue-100 flex items-center gap-2" disabled={!selectedProjectId}>
+                          <ChevronsUpDown className="h-4 w-4" /> Compare
+                        </Button>
+                        <Button onClick={findDuplicatesInBOM} variant="outline" className="border-amber-200 h-9 px-4 text-xs font-bold shadow-sm bg-amber-50 text-amber-700 hover:bg-amber-100 flex items-center gap-2" disabled={!selectedProjectId}>
+                          <AlertTriangle className="h-4 w-4" /> Check Duplicates
+                        </Button>
+                      </div>
+                    )}
 
                     {/* Row 4: Project Info Summary & Comment */}
                     {selectedVersion && (
-                      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 py-2.5 px-4 bg-slate-50/50 border border-slate-100 rounded-lg overflow-hidden">
-                        <div className="flex items-center gap-2 min-w-fit">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5 px-4 bg-slate-50/50 border border-slate-100 rounded-lg overflow-hidden">
+                        <div className="flex items-center gap-2 min-w-fit border border-blue-100 bg-white rounded-lg px-3 py-1.5">
                           <div className="p-1.5 bg-blue-50 rounded text-blue-600"><Briefcase className="h-3.5 w-3.5" /></div>
                           <div className="flex flex-col">
                             <span className="text-[10px] leading-none text-slate-400 font-bold uppercase tracking-tight">Client</span>
@@ -3677,9 +3859,7 @@ export default function CreateBom() {
                           </div>
                         </div>
 
-                        <div className="hidden md:block w-px h-6 bg-slate-200" />
-
-                        <div className="flex items-center gap-2 min-w-fit">
+                        <div className="flex items-center gap-2 min-w-fit border border-indigo-100 bg-white rounded-lg px-3 py-1.5">
                           <div className="p-1.5 bg-indigo-50 rounded text-indigo-600"><MapPin className="h-3.5 w-3.5" /></div>
                           <div className="flex flex-col">
                             <span className="text-[10px] leading-none text-slate-400 font-bold uppercase tracking-tight">Location</span>
@@ -3687,9 +3867,7 @@ export default function CreateBom() {
                           </div>
                         </div>
 
-                        <div className="hidden md:block w-px h-6 bg-slate-200" />
-
-                        <div className="flex items-center gap-2 min-w-fit">
+                        <div className="flex items-center gap-2 min-w-fit border border-emerald-100 bg-white rounded-lg px-3 py-1.5">
                           <div className="p-1.5 bg-emerald-50 rounded text-emerald-600"><IndianRupee className="h-3.5 w-3.5" /></div>
                           <div className="flex flex-col">
                             <span className="text-[10px] leading-none text-slate-400 font-bold uppercase tracking-tight">Budget</span>
