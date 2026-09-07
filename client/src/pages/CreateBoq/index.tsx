@@ -1494,16 +1494,20 @@ export default function CreateBom() {
       if (td.materialLines) {
         td.materialLines.forEach((ml: any, idx: number) => {
           const latest = materialsById[ml.id || ml.materialId];
-          if (latest && latest.rate > ml.supplyRate) {
-            list.push({ boqItemId: boqItem.id, type: 'materialLine', index: idx, old: ml.supplyRate, new: latest.rate, name: ml.materialName || ml.name || latest.name || "Material", productName });
+          const oldRate = Number(ml.supplyRate) || 0;
+          const newRate = latest ? Number(latest.rate) || 0 : oldRate;
+          if (latest && Math.abs(newRate - oldRate) > 0.005) {
+            list.push({ boqItemId: boqItem.id, type: 'materialLine', index: idx, old: oldRate, new: newRate, name: ml.materialName || ml.name || latest.name || "Material", productName });
           }
         });
       }
       if (td.step11_items) {
         td.step11_items.forEach((s11: any, idx: number) => {
           const latest = materialsById[s11.id];
-          if (latest && latest.rate > (s11.supply_rate || 0)) {
-            list.push({ boqItemId: boqItem.id, type: 'step11', index: idx, old: (s11.supply_rate || 0), new: latest.rate, name: s11.title || latest.name || "Item", productName });
+          const oldRate = Number(s11.supply_rate) || 0;
+          const newRate = latest ? Number(latest.rate) || 0 : oldRate;
+          if (latest && Math.abs(newRate - oldRate) > 0.005) {
+            list.push({ boqItemId: boqItem.id, type: 'step11', index: idx, old: oldRate, new: newRate, name: s11.title || latest.name || "Item", productName });
           }
         });
       }

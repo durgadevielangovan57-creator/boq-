@@ -1434,6 +1434,48 @@ export async function registerRoutes(
       )
     `);
     console.log("[db] step11_products and items tables ensured");
+  } catch (err: unknown) {
+    console.warn(
+      "[db] Could not create step11_products/step11_product_items tables:",
+      (err as any)?.message || err,
+    );
+  }
+
+  // Ensure boq_price_update_audit table exists — records every Update/Ignore
+  // decision made from Finalize BOQ -> Price Updates, including the result of
+  // syncing the rate across Manage Product, BOQ, and BOM (never Manage Materials).
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS boq_price_update_audit (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        project_id VARCHAR(100),
+        project_name VARCHAR(255),
+        material_id VARCHAR(100),
+        material_name VARCHAR(255),
+        product_id VARCHAR(100),
+        product_name VARCHAR(255),
+        shop_id VARCHAR(100),
+        shop_name VARCHAR(255),
+        previous_rate DECIMAL(15,2),
+        new_rate DECIMAL(15,2),
+        action VARCHAR(20) NOT NULL,
+        manage_product_status VARCHAR(30),
+        boq_status VARCHAR(30),
+        bom_status VARCHAR(30),
+        boq_id VARCHAR(100),
+        boq_version_id VARCHAR(100),
+        boq_version_number INTEGER,
+        bom_id VARCHAR(100),
+        bom_version_id VARCHAR(100),
+        bom_version_number INTEGER,
+        user_id VARCHAR(100),
+        user_name VARCHAR(255),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_boq_price_update_audit_boq_version_id ON boq_price_update_audit (boq_version_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_boq_price_update_audit_project_id ON boq_price_update_audit (project_id)`);
+    console.log("[db] boq_price_update_audit table ensured");
     // Ensure columns added after initial schema
     const addCols = [
       "ALTER TABLE step11_product_items ADD COLUMN IF NOT EXISTS apply_wastage BOOLEAN DEFAULT TRUE",
@@ -7218,6 +7260,314 @@ export async function registerRoutes(
       } catch (err) {
         console.error("GET /api/boq-versions/:versionId/price-changes error", err);
         res.status(500).json({ message: "Failed to check for price changes" });
+      }
+    }
+  );
+
+  // Applies a material's new catalog rate to a single material line inside a
+  // boq_items.table_data blob (materialLines and/or step11_items), mirroring
+  // the field-touching convention already used by the bom-rate-changes
+  // approve/reject routes above. Returns true if any line was actually changed.
+  function applyMaterialRateToTableData(tableData: any, materialId: string, newRate: number): boolean {
+    if (!tableData) return false;
+    let changed = false;
+    const matches = (line: any) => line && (String(line.id) === String(materialId) || String(line.materialId) === String(materialId));
+    const applyLine = (line: any) => {
+      const installRate = Number(line.installRate ?? line.install_rate ?? 0) || 0;
+      if (line.supplyRate !== undefined) line.supplyRate = newRate;
+      if (line.supply_rate !== undefined) line.supply_rate = newRate;
+      if (line.rateSqft !== undefined) line.rateSqft = newRate;
+      line.rate = newRate + installRate;
+      const qtyVal = line.requiredQty ?? line.qty ?? line.perUnitQty ?? line.baseQty;
+      if (qtyVal !== undefined) {
+        line.amount = (line.rate || 0) * (Number(qtyVal) || 0);
+      }
+      changed = true;
+      return line;
+    };
+    if (Array.isArray(tableData.materialLines)) {
+      tableData.materialLines = tableData.materialLines.map((line: any) => (matches(line) ? applyLine(line) : line));
+    }
+    if (Array.isArray(tableData.step11_items)) {
+      tableData.step11_items = tableData.step11_items.map((line: any) => (matches(line) ? applyLine(line) : line));
+    }
+    return changed;
+  }
+
+  // POST /api/boq-versions/:versionId/price-changes/resolve - Centralized
+  // "Finalize BOQ -> Price Updates -> Update/Ignore" action. For each
+  // { itemId, materialId } change:
+  //   - "update": syncs the material's current catalog rate into Manage
+  //     Product (step11_products/step11_product_items), the BOQ item, and
+  //     the linked BOM item (via copied_from_item_id) — and nothing else.
+  //     Manage Materials is never written to; the materials table is only
+  //     ever read here as the source of the new rate.
+  //   - "ignore": records the decision, changes nothing.
+  // A full audit row is written for every change, either way.
+  app.post(
+    "/api/boq-versions/:versionId/price-changes/resolve",
+    authMiddleware,
+    async (req: Request, res: Response) => {
+      try {
+        const { versionId } = req.params;
+        const action: "update" | "ignore" = req.body?.action === "ignore" ? "ignore" : "update";
+        const changes: Array<{ itemId: string; materialId: string }> = Array.isArray(req.body?.changes) ? req.body.changes : [];
+
+        if (changes.length === 0) {
+          res.status(400).json({ message: "changes[] is required" });
+          return;
+        }
+
+        const userId = req.user?.id || null;
+        const userName = (req.user as any)?.fullName || req.user?.username || null;
+
+        const boqVerRes = await query(
+          `SELECT id, project_id, project_name, version_number, source_version_id FROM boq_versions WHERE id = $1`,
+          [versionId]
+        );
+        const boqVersion = boqVerRes.rows[0];
+
+        const results: any[] = [];
+
+        for (const change of changes) {
+          const { itemId, materialId } = change || {};
+          if (!itemId || !materialId) continue;
+
+          try {
+            const itemRes = await query(
+              `SELECT id, project_id, version_id, table_data, copied_from_item_id FROM boq_items WHERE id = $1 AND version_id = $2`,
+              [itemId, versionId]
+            );
+            if (itemRes.rows.length === 0) {
+              results.push({ itemId, materialId, error: "BOQ item not found" });
+              continue;
+            }
+            const boqItem = itemRes.rows[0];
+            let tableData = boqItem.table_data;
+            if (typeof tableData === "string") { try { tableData = JSON.parse(tableData); } catch { tableData = {}; } }
+            tableData = tableData || {};
+
+            // Find the material line for its current (pre-update) values.
+            const allLines = [
+              ...(Array.isArray(tableData.materialLines) ? tableData.materialLines : []),
+              ...(Array.isArray(tableData.step11_items) ? tableData.step11_items : []),
+            ];
+            const line = allLines.find((l: any) => l && (String(l.id) === String(materialId) || String(l.materialId) === String(materialId)));
+            const oldRate = Number(line?.supplyRate ?? line?.supply_rate ?? line?.rate ?? 0);
+            const productId = tableData.product_id || null;
+            const itemName = tableData.product_name || tableData.item || tableData.name || tableData.category_name || "Unknown Item";
+
+            const matRes = await query(`SELECT id, name, rate, shop_id FROM materials WHERE id = $1`, [materialId]);
+            const material = matRes.rows[0];
+            const newRate = material ? Number(material.rate) : oldRate;
+            const materialName = material?.name || line?.name || "Unknown Material";
+
+            let shopName: string | null = null;
+            if (material?.shop_id) {
+              const shopRes = await query(`SELECT name FROM shops WHERE id = $1`, [material.shop_id]);
+              shopName = shopRes.rows[0]?.name || null;
+            }
+
+            let productName: string | null = null;
+            if (productId) {
+              const prodRes = await query(`SELECT name FROM products WHERE id = $1`, [productId]);
+              productName = prodRes.rows[0]?.name || tableData.product_name || null;
+            }
+
+            let manageProductStatus = "Not Updated";
+            let boqStatus = "Not Updated";
+            let bomStatus = "Not Updated";
+            let bomItemId: string | null = null;
+            let bomVersionId: string | null = null;
+            let bomVersionNumber: number | null = null;
+
+            if (action === "update") {
+              // 1. BOQ. Strip the frontend's cached total before recomputing —
+              // computeItemValue() short-circuits to that stale cache when
+              // present, which would silently re-save the OLD total even
+              // though the rate inside the line just changed.
+              delete tableData.frontend_computed_value;
+              if (applyMaterialRateToTableData(tableData, materialId, newRate)) {
+                await query(
+                  `UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`,
+                  [JSON.stringify(tableData), computeItemValue(tableData), boqItem.id]
+                );
+                boqStatus = "Updated";
+              }
+
+              // 2. BOM. Primary link is copied_from_item_id, but that's only
+              // set on items that arrived via the explicit "sync from BOM"
+              // action — plenty of legitimate BOQ items (added directly on
+              // the BOQ page, or from older data) never get that column set.
+              // So on top of the direct link, ALSO scan every item in the
+              // linked BOM version for the same material and patch every
+              // match. This is idempotent (only lines that actually contain
+              // the material get touched) and covers a material appearing on
+              // more than one BOM line.
+              const bomItemIdsToUpdate = new Set<string>();
+              let bomVersionIdForScan: string | null = boqVersion?.source_version_id || null;
+
+              if (boqItem.copied_from_item_id) {
+                bomItemIdsToUpdate.add(boqItem.copied_from_item_id);
+                const linkedRes = await query(`SELECT version_id FROM boq_items WHERE id = $1`, [boqItem.copied_from_item_id]);
+                if (linkedRes.rows[0]?.version_id) bomVersionIdForScan = linkedRes.rows[0].version_id;
+              }
+
+              if (bomVersionIdForScan) {
+                const bomCandidatesRes = await query(
+                  `SELECT id, table_data FROM boq_items WHERE version_id = $1`,
+                  [bomVersionIdForScan]
+                );
+                for (const cand of bomCandidatesRes.rows) {
+                  let candTd = cand.table_data;
+                  if (typeof candTd === "string") { try { candTd = JSON.parse(candTd); } catch { candTd = {}; } }
+                  candTd = candTd || {};
+                  const candLines = [
+                    ...(Array.isArray(candTd.materialLines) ? candTd.materialLines : []),
+                    ...(Array.isArray(candTd.step11_items) ? candTd.step11_items : []),
+                  ];
+                  const hasMaterial = candLines.some((l: any) => l && (String(l.id) === String(materialId) || String(l.materialId) === String(materialId)));
+                  if (hasMaterial) bomItemIdsToUpdate.add(cand.id);
+                }
+              }
+
+              for (const bomId of bomItemIdsToUpdate) {
+                const bomItemRes = await query(
+                  `SELECT id, table_data, version_id FROM boq_items WHERE id = $1`,
+                  [bomId]
+                );
+                if (bomItemRes.rows.length === 0) continue;
+                const bomItem = bomItemRes.rows[0];
+                let bomTableData = bomItem.table_data;
+                if (typeof bomTableData === "string") { try { bomTableData = JSON.parse(bomTableData); } catch { bomTableData = {}; } }
+                bomTableData = bomTableData || {};
+                delete bomTableData.frontend_computed_value;
+                if (applyMaterialRateToTableData(bomTableData, materialId, newRate)) {
+                  await query(
+                    `UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`,
+                    [JSON.stringify(bomTableData), computeItemValue(bomTableData), bomItem.id]
+                  );
+                  bomStatus = "Updated";
+                  bomItemId = bomItemId || bomItem.id;
+                  bomVersionId = bomVersionId || bomItem.version_id;
+                }
+              }
+              if (bomVersionId) {
+                const bomVerRes = await query(`SELECT version_number FROM boq_versions WHERE id = $1`, [bomVersionId]);
+                bomVersionNumber = bomVerRes.rows[0]?.version_number ?? null;
+              }
+
+              // 3. Manage Product (step11_products / step11_product_items) —
+              // the SAME config(s) Manage Product's own Price Update reads/
+              // writes. A product can have MORE THAN ONE saved configuration
+              // (e.g. per-location variants under different config_name
+              // values), so every config for this product_id that actually
+              // contains the material must be updated — not just the single
+              // most-recently-created one. Never touches Manage Materials.
+              if (productId) {
+                const allConfigsRes = await query(
+                  `SELECT id FROM step11_products WHERE product_id = $1`,
+                  [productId]
+                );
+                let anyConfigUpdated = false;
+                for (const cfg of allConfigsRes.rows) {
+                  const step11ProductId = cfg.id;
+                  // Match by material_id whenever the row actually has one —
+                  // only fall back to matching by name for legacy/manual rows
+                  // with no id link. Matching by name as an OR (regardless of
+                  // whether id is present) is what let two different
+                  // materials that just happen to share a display name
+                  // (e.g. two test materials both called "testing 2", one in
+                  // kg, one in pcs) clobber each other's rate.
+                  const updRes = await query(
+                    `UPDATE step11_product_items SET
+                       supply_rate = $1, rate = $1 + COALESCE(install_rate, 0),
+                       amount = COALESCE(qty, 0) * ($1 + COALESCE(install_rate, 0))
+                     WHERE step11_product_id = $2
+                       AND (
+                         (material_id IS NOT NULL AND material_id::text = $3::text)
+                         OR (material_id IS NULL AND material_name = $4)
+                       )`,
+                    [newRate, step11ProductId, materialId, materialName]
+                  );
+                  if ((updRes.rowCount || 0) > 0) {
+                    await query(
+                      `UPDATE step11_products SET total_cost = (
+                         SELECT COALESCE(SUM(qty * (COALESCE(supply_rate, 0) + COALESCE(install_rate, 0))), 0)
+                         FROM step11_product_items WHERE step11_product_id = $1
+                       ), updated_at = NOW() WHERE id = $1`,
+                      [step11ProductId]
+                    );
+                    anyConfigUpdated = true;
+                  }
+                }
+                if (anyConfigUpdated) manageProductStatus = "Updated";
+              }
+
+              // Recalculate affected totals on both versions.
+              await recalculateProjectValue(boqItem.project_id, versionId);
+              if (bomVersionId) await recalculateProjectValue(boqItem.project_id, bomVersionId);
+            }
+
+            await query(
+              `INSERT INTO boq_price_update_audit (
+                 project_id, project_name, material_id, material_name, product_id, product_name,
+                 shop_id, shop_name, previous_rate, new_rate, action,
+                 manage_product_status, boq_status, bom_status,
+                 boq_id, boq_version_id, boq_version_number,
+                 bom_id, bom_version_id, bom_version_number,
+                 user_id, user_name
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+              [
+                boqItem.project_id, boqVersion?.project_name || null,
+                materialId, materialName, productId, productName,
+                material?.shop_id || null, shopName,
+                oldRate, newRate, action === "update" ? "Updated" : "Ignored",
+                action === "update" ? manageProductStatus : "Not Updated",
+                action === "update" ? boqStatus : "Not Updated",
+                action === "update" ? bomStatus : "Not Updated",
+                boqItem.id, versionId, boqVersion?.version_number ?? null,
+                bomItemId, bomVersionId, bomVersionNumber,
+                userId, userName,
+              ]
+            );
+
+            results.push({
+              itemId, materialId, itemName, materialName, oldRate, newRate, action,
+              manageProductStatus: action === "update" ? manageProductStatus : "Not Updated",
+              boqStatus: action === "update" ? boqStatus : "Not Updated",
+              bomStatus: action === "update" ? bomStatus : "Not Updated",
+            });
+          } catch (innerErr) {
+            console.error("price-changes/resolve item error", itemId, materialId, innerErr);
+            results.push({ itemId, materialId, error: "Failed to process this change" });
+          }
+        }
+
+        res.json({ success: true, action, results });
+      } catch (err) {
+        console.error("POST /api/boq-versions/:versionId/price-changes/resolve error", err);
+        res.status(500).json({ message: "Failed to resolve price change(s)" });
+      }
+    }
+  );
+
+  // GET /api/boq-versions/:versionId/price-changes/audit - Mandatory audit
+  // trail for every Update/Ignore decision made on this BOQ version.
+  app.get(
+    "/api/boq-versions/:versionId/price-changes/audit",
+    authMiddleware,
+    async (req: Request, res: Response) => {
+      try {
+        const { versionId } = req.params;
+        const auditRes = await query(
+          `SELECT * FROM boq_price_update_audit WHERE boq_version_id = $1 ORDER BY created_at DESC`,
+          [versionId]
+        );
+        res.json({ audit: auditRes.rows });
+      } catch (err) {
+        console.error("GET /api/boq-versions/:versionId/price-changes/audit error", err);
+        res.status(500).json({ message: "Failed to fetch price update audit" });
       }
     }
   );

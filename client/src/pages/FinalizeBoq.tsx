@@ -1119,6 +1119,28 @@ export default function FinalizeBoq() {
     return () => clearInterval(interval);
   }, [checkPriceChanges]);
 
+  // NEW: Price Update audit trail — every Update/Ignore decision made from
+  // this dialog, who made it, and whether Manage Product/BOQ/BOM were synced.
+  const [priceUpdateAudit, setPriceUpdateAudit] = useState<any[]>([]);
+  const [isLoadingPriceAudit, setIsLoadingPriceAudit] = useState(false);
+  const [priceDialogTab, setPriceDialogTab] = useState<"pending" | "history">("pending");
+
+  const loadPriceUpdateAudit = React.useCallback(async () => {
+    if (!activeVersionId) return;
+    setIsLoadingPriceAudit(true);
+    try {
+      const resp = await apiFetch(`/api/boq-versions/${activeVersionId}/price-changes/audit`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setPriceUpdateAudit(Array.isArray(data.audit) ? data.audit : []);
+      }
+    } catch (e) {
+      console.error("Failed to load price update audit trail:", e);
+    } finally {
+      setIsLoadingPriceAudit(false);
+    }
+  }, [activeVersionId]);
+
   const filteredBoqItems = React.useMemo(() => {
     // Use SAME category resolution as Generate BOM: category_name first, then category
     const getItemCategory = (item: BOMItem): string => {
@@ -1534,6 +1556,67 @@ export default function FinalizeBoq() {
       setIsBomViewLoading(false);
     }
   };
+
+  // ── Finalize BOQ -> Price Updates -> Update/Ignore ─────────────────────
+  // Centralized action: "update" syncs a material's current catalog rate
+  // into Manage Product, this BOQ item, and its linked BOM item in one call
+  // (never touching Manage Materials); "ignore" just records the decision.
+  const [isResolvingPriceChange, setIsResolvingPriceChange] = useState(false);
+
+  const resolvePriceChanges = React.useCallback(async (
+    changes: Array<{ itemId: string; materialId: string }>,
+    action: "update" | "ignore"
+  ) => {
+    if (!activeVersionId || changes.length === 0) return;
+    setIsResolvingPriceChange(true);
+    try {
+      const resp = await apiFetch(`/api/boq-versions/${activeVersionId}/price-changes/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, changes }),
+      });
+      if (resp.ok) {
+        toast({
+          title: action === "update" ? "Rate(s) Updated" : "Change(s) Ignored",
+          description: action === "update"
+            ? `${changes.length} material rate${changes.length > 1 ? "s" : ""} synced across Manage Product, BOQ, and BOM.`
+            : `${changes.length} price change${changes.length > 1 ? "s" : ""} marked as ignored.`,
+        });
+        // Refresh the BOQ table in place (lighter than a full version reload).
+        try {
+          const itemsResp = await apiFetch(`/api/boq-items/version/${encodeURIComponent(activeVersionId)}`);
+          if (itemsResp.ok) {
+            const data = await itemsResp.json();
+            setBoqItems(data.items || []);
+          }
+        } catch (e) {
+          console.error("Failed to refresh BOQ items after price update:", e);
+        }
+        // Refresh the BOM View panel too, if it's open on the linked version.
+        if (isBomViewOpen && linkedBomVersion) {
+          try {
+            const bomResp = await apiFetch(`/api/boq-items/version/${encodeURIComponent(linkedBomVersion.id)}`);
+            if (bomResp.ok) {
+              const bomData = await bomResp.json();
+              setBomViewItems(bomData.items || []);
+            }
+          } catch (e) {
+            console.error("Failed to refresh BOM View after price update:", e);
+          }
+        }
+        await checkPriceChanges();
+        // Keep the history dialog fresh if it's already open/was opened before.
+        loadPriceUpdateAudit();
+      } else {
+        toast({ title: "Error", description: "Failed to process the price change(s).", variant: "destructive" });
+      }
+    } catch (e) {
+      console.error("Failed to resolve price change(s):", e);
+      toast({ title: "Error", description: "Failed to process the price change(s).", variant: "destructive" });
+    } finally {
+      setIsResolvingPriceChange(false);
+    }
+  }, [activeVersionId, isBomViewOpen, linkedBomVersion, checkPriceChanges, loadPriceUpdateAudit, toast]);
 
   const snapshot = (activeVersion as any)?.last_template_snapshot;
   const getIsModified = (itemId: string, field: string, currentValue: any) => {
@@ -6077,41 +6160,165 @@ export default function FinalizeBoq() {
           </DialogContent>
         </Dialog>
 
-        {/* NEW: Price Update details — lists every material whose master-catalog
-            rate no longer matches what was captured on this BOQ, from -> to. */}
-        <Dialog open={isPriceChangesDialogOpen} onOpenChange={setIsPriceChangesDialogOpen}>
-          <DialogContent className="max-w-[600px]">
+        {/* NEW: Price Updates dialog — "Pending Changes" tab lists every material
+            whose master-catalog rate no longer matches what was captured on this
+            BOQ; "History" tab is the mandatory audit trail of every Update/Ignore
+            decision made here, who made it, and what was synced. */}
+        <Dialog
+          open={isPriceChangesDialogOpen}
+          onOpenChange={(open) => {
+            setIsPriceChangesDialogOpen(open);
+            if (open && priceDialogTab === "history") loadPriceUpdateAudit();
+          }}
+        >
+          <DialogContent className="max-w-[700px]">
             <DialogHeader>
               <DialogTitle className="text-lg font-bold flex items-center gap-2">
                 <TrendingUp className="w-5 h-5 text-red-500" />
                 Material Price Updates
               </DialogTitle>
               <DialogDescription className="text-xs">
-                These materials' rates have changed in the catalog since they were added to this BOQ. Update the item(s) below if the new rate should be reflected here.
+                {priceDialogTab === "pending"
+                  ? "These materials' rates have changed in the catalog since they were added to this BOQ. Update the item(s) below if the new rate should be reflected here."
+                  : "Every Update or Ignore decision made on this BOQ's price changes, with who made it and what was synced."}
               </DialogDescription>
             </DialogHeader>
-            <div className="max-h-[400px] overflow-y-auto -mx-1 px-1 space-y-2 py-2">
-              {priceChanges.length === 0 ? (
-                <div className="text-center text-slate-500 py-8 text-sm">No price changes detected.</div>
-              ) : (
-                priceChanges.map((c, idx) => (
-                  <div key={`${c.itemId}-${c.materialId}-${idx}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
-                    <div className="min-w-0">
-                      <div className="text-[12px] font-bold text-slate-800 truncate">{c.materialName}</div>
-                      <div className="text-[10px] text-slate-500 truncate">in {c.itemName}</div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0 text-[12px] font-bold">
-                      <span className="text-slate-400 line-through">₹{c.oldRate.toLocaleString()}</span>
-                      <span className="text-slate-300">→</span>
-                      <span className={c.newRate > c.oldRate ? "text-red-600" : "text-green-600"}>₹{c.newRate.toLocaleString()}</span>
-                    </div>
-                  </div>
-                ))
-              )}
+
+            <div className="flex items-center gap-1 border-b border-slate-200 -mx-1 px-1">
+              <button
+                type="button"
+                onClick={() => setPriceDialogTab("pending")}
+                className={`px-3 py-2 text-[11px] font-bold uppercase tracking-wide border-b-2 -mb-px ${priceDialogTab === "pending" ? "border-amber-600 text-amber-700" : "border-transparent text-slate-400 hover:text-slate-600"}`}
+              >
+                Pending Changes{priceChanges.length > 0 ? ` (${priceChanges.length})` : ""}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setPriceDialogTab("history"); loadPriceUpdateAudit(); }}
+                className={`px-3 py-2 text-[11px] font-bold uppercase tracking-wide border-b-2 -mb-px flex items-center gap-1.5 ${priceDialogTab === "history" ? "border-amber-600 text-amber-700" : "border-transparent text-slate-400 hover:text-slate-600"}`}
+              >
+                <History className="w-3.5 h-3.5" />
+                History
+              </button>
             </div>
-            <DialogFooter className="bg-slate-50 border-t p-4 -m-6 mt-4">
-              <Button onClick={() => setIsPriceChangesDialogOpen(false)} className="bg-slate-800 text-white font-bold h-9 px-6 uppercase text-[11px]">Close</Button>
-            </DialogFooter>
+
+            {priceDialogTab === "pending" ? (
+              <>
+                <div className="max-h-[400px] overflow-y-auto -mx-1 px-1 space-y-2 py-2">
+                  {priceChanges.length === 0 ? (
+                    <div className="text-center text-slate-500 py-8 text-sm">No price changes detected.</div>
+                  ) : (
+                    priceChanges.map((c, idx) => (
+                      <div key={`${c.itemId}-${c.materialId}-${idx}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <div className="text-[12px] font-bold text-slate-800 truncate">{c.materialName}</div>
+                          <div className="text-[10px] text-slate-500 truncate">in {c.itemName}</div>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div className="flex items-center gap-2 text-[12px] font-bold">
+                            <span className="text-slate-400 line-through">₹{c.oldRate.toLocaleString()}</span>
+                            <span className="text-slate-300">→</span>
+                            <span className={c.newRate > c.oldRate ? "text-red-600" : "text-green-600"}>₹{c.newRate.toLocaleString()}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-[10px] px-2 text-slate-500 hover:bg-slate-100 font-bold"
+                              disabled={isResolvingPriceChange}
+                              onClick={() => resolvePriceChanges([{ itemId: c.itemId, materialId: c.materialId }], "ignore")}
+                            >
+                              Ignore
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-[10px] px-2 border-amber-300 text-amber-700 hover:bg-amber-100 font-bold bg-white"
+                              disabled={isResolvingPriceChange}
+                              onClick={() => resolvePriceChanges([{ itemId: c.itemId, materialId: c.materialId }], "update")}
+                            >
+                              Update
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <DialogFooter className="bg-slate-50 border-t p-4 -m-6 mt-4 flex items-center justify-between sm:justify-between">
+                  <Button
+                    variant="outline"
+                    className="h-9 px-4 font-bold uppercase text-[11px] border-slate-300"
+                    disabled={priceChanges.length === 0 || isResolvingPriceChange}
+                    onClick={() => resolvePriceChanges(priceChanges.map(c => ({ itemId: c.itemId, materialId: c.materialId })), "ignore")}
+                  >
+                    Ignore All
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      className="bg-amber-600 hover:bg-amber-700 text-white font-bold h-9 px-6 uppercase text-[11px]"
+                      disabled={priceChanges.length === 0 || isResolvingPriceChange}
+                      onClick={() => resolvePriceChanges(priceChanges.map(c => ({ itemId: c.itemId, materialId: c.materialId })), "update")}
+                    >
+                      {isResolvingPriceChange ? "Updating..." : "Update All"}
+                    </Button>
+                    <Button onClick={() => setIsPriceChangesDialogOpen(false)} className="bg-slate-800 text-white font-bold h-9 px-6 uppercase text-[11px]">Close</Button>
+                  </div>
+                </DialogFooter>
+              </>
+            ) : (
+              <>
+                <div className="max-h-[450px] overflow-y-auto -mx-1 px-1 py-2">
+                  {isLoadingPriceAudit ? (
+                    <div className="text-center text-slate-500 py-8 text-sm">Loading history...</div>
+                  ) : priceUpdateAudit.length === 0 ? (
+                    <div className="text-center text-slate-500 py-8 text-sm">No price update decisions have been recorded yet.</div>
+                  ) : (
+                    <table className="w-full text-[11px]">
+                      <thead className="sticky top-0 bg-white">
+                        <tr className="text-left text-slate-500 uppercase text-[9px] border-b border-slate-200">
+                          <th className="py-2 pr-2">Material</th>
+                          <th className="py-2 pr-2">Shop</th>
+                          <th className="py-2 pr-2">Rate</th>
+                          <th className="py-2 pr-2">Action</th>
+                          <th className="py-2 pr-2">Product</th>
+                          <th className="py-2 pr-2">BOQ</th>
+                          <th className="py-2 pr-2">BOM</th>
+                          <th className="py-2 pr-2">By</th>
+                          <th className="py-2 pr-2">When</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {priceUpdateAudit.map((row: any, idx: number) => (
+                          <tr key={row.id || idx} className="border-b border-slate-100">
+                            <td className="py-2 pr-2 font-bold text-slate-800">{row.material_name}</td>
+                            <td className="py-2 pr-2 text-slate-500">{row.shop_name || "—"}</td>
+                            <td className="py-2 pr-2">
+                              <span className="text-slate-400 line-through">₹{Number(row.previous_rate).toLocaleString()}</span>
+                              {" → "}
+                              <span className="font-bold">₹{Number(row.new_rate).toLocaleString()}</span>
+                            </td>
+                            <td className="py-2 pr-2">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${row.action === "Updated" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>
+                                {row.action}
+                              </span>
+                            </td>
+                            <td className="py-2 pr-2 text-slate-500">{row.manage_product_status}</td>
+                            <td className="py-2 pr-2 text-slate-500">{row.boq_status}</td>
+                            <td className="py-2 pr-2 text-slate-500">{row.bom_status}</td>
+                            <td className="py-2 pr-2 text-slate-500">{row.user_name || "—"}</td>
+                            <td className="py-2 pr-2 text-slate-500 whitespace-nowrap">{row.created_at ? new Date(row.created_at).toLocaleString() : "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+                <DialogFooter className="bg-slate-50 border-t p-4 -m-6 mt-4">
+                  <Button onClick={() => setIsPriceChangesDialogOpen(false)} className="bg-slate-800 text-white font-bold h-9 px-6 uppercase text-[11px]">Close</Button>
+                </DialogFooter>
+              </>
+            )}
           </DialogContent>
         </Dialog>
         {/* BOM Items Section — one card+table per product */}
@@ -6168,9 +6375,8 @@ export default function FinalizeBoq() {
                 )}
                 <button
                   type="button"
-                  onClick={() => priceChanges.length > 0 && setIsPriceChangesDialogOpen(true)}
-                  disabled={priceChanges.length === 0}
-                  title={priceChanges.length > 0 ? `${priceChanges.length} material price change(s) detected — click to view` : "No material price changes detected"}
+                  onClick={() => { setPriceDialogTab("pending"); setIsPriceChangesDialogOpen(true); }}
+                  title={priceChanges.length > 0 ? `${priceChanges.length} material price change(s) detected — click to view` : "Click to view price update history"}
                   className={`flex items-center gap-2 h-11 px-4 rounded-lg border text-[11px] font-bold uppercase tracking-wide shrink-0 ${priceChanges.length > 0
                     ? "price-update-blink bg-red-500 border-red-600 text-white shadow-md cursor-pointer"
                     : "bg-slate-50 border-slate-200 text-slate-400 cursor-default"
