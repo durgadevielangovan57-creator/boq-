@@ -1001,7 +1001,7 @@ export default function AdminDashboard() {
   const [showMaterialsList, setShowMaterialsList] = useState(false);
   const [showProductsList, setShowProductsList] = useState(false);
 
-  const filteredShops = localShops.filter((s: any) => {
+  const filteredShops = useMemo(() => localShops.filter((s: any) => {
     // text search
     if (shopSearch) {
       if (!fuzzySearch(shopSearch, [s.name || "", s.location || "", s.city || ""])) return false;
@@ -1014,8 +1014,17 @@ export default function AdminDashboard() {
     }
 
     return true;
-  });
-  const filteredMaterials = localMaterials.filter((m: any) => {
+  }), [localShops, shopSearch, shopVendorCategoryFilter]);
+  // filteredMaterials is memoized because localMaterials can run into the
+  // thousands of rows, and this filter previously re-ran from scratch,
+  // synchronously, on every single render of this page — including
+  // renders triggered by completely unrelated state elsewhere in this
+  // component. localShops is normally a much smaller list, so re-filtering
+  // it unmemoized was cheap enough to go unnoticed; re-filtering the full
+  // materials catalog on every keystroke/render was the actual cause of
+  // materials feeling slower to show than shops even though both loaded
+  // from the store at the same time.
+  const filteredMaterials = useMemo(() => localMaterials.filter((m: any) => {
     // text search
     if (materialSearch) {
       if (!fuzzySearch(materialSearch, [m.name || "", m.code || ""])) return false;
@@ -1046,7 +1055,7 @@ export default function AdminDashboard() {
     }
 
     return true;
-  });
+  }), [localMaterials, materialSearch, materialCategoryFilter, materialSubcategoryFilter]);
 
   // SUPPORT MESSAGES STATE moved to top
 

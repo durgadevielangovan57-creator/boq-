@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, Zap, Store, FolderOpen, SlidersHorizontal, Settings } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, Zap, Store, FolderOpen, SlidersHorizontal, Settings, Package } from "lucide-react";
 import { fuzzySearch, cn } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -521,6 +521,37 @@ export default function CreateBom() {
     const interval = setInterval(() => { fetchBomShopRateRequests(); }, 15000);
     return () => clearInterval(interval);
   }, [hasPendingBomShopRateChanges, fetchBomShopRateRequests]);
+
+  // ── Generate BOM: Save / Save As status indicators ──────────────────────
+  // Lets each product card show "Awaiting Approval / Approved / Rejected"
+  // for its own Save As request, the same way Change Shop & Rate already
+  // shows a pending pill on the card. Purely additive — reads from the
+  // existing boq_manual_item_requests table via a version-scoped GET.
+  const [manualItemRequests, setManualItemRequests] = useState<any[]>([]);
+  const fetchManualItemRequests = useCallback(async () => {
+    if (!selectedVersionId) { setManualItemRequests([]); return; }
+    try {
+      const res = await apiFetch(`/api/boq-manual-item-requests?version_id=${selectedVersionId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setManualItemRequests(data.requests || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch Save/Save As request statuses", err);
+    }
+  }, [selectedVersionId]);
+
+  useEffect(() => {
+    fetchManualItemRequests();
+  }, [fetchManualItemRequests]);
+
+  const hasPendingManualItemRequests = manualItemRequests.some((r) => r.status === "pending");
+
+  useEffect(() => {
+    if (!hasPendingManualItemRequests) return;
+    const interval = setInterval(() => { fetchManualItemRequests(); }, 15000);
+    return () => clearInterval(interval);
+  }, [hasPendingManualItemRequests, fetchManualItemRequests]);
 
 
 
@@ -3445,57 +3476,69 @@ export default function CreateBom() {
       <Layout>
         <div className="space-y-6 pb-24 md:pb-32">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2">
-              <h1 className="text-2xl font-semibold font-outfit text-slate-900 tracking-tight flex items-center gap-2">
-                Generate BOM
-                {activeTab === 'approvals' && <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100 border-blue-200 uppercase tracking-widest text-[10px]">Approvals View</Badge>}
-                {user?.role === 'admin' && (
-                  <div className="flex items-center gap-2 ml-4">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase">Modification:</span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className={`h-6 px-2 text-[10px] font-bold ${bomButtonsEnabled ? 'border-green-200 bg-green-50 text-green-700 hover:bg-green-100' : 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100'}`}
-                      onClick={toggleBomButtons}
-                    >
-                      {bomButtonsEnabled ? 'Enabled' : 'Disabled'}
-                    </Button>
-                  </div>
-                )}
-              </h1>
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2 rounded-2xl border border-purple-200/90 bg-gradient-to-r from-purple-100/90 via-purple-50 to-indigo-100/80 p-5 shadow-sm relative overflow-visible" style={{ minHeight: '90px' }}>
+              {/* Subtle Light Purple Ambient Glow */}
+              <div className="absolute -top-10 -right-10 h-36 w-36 rounded-full bg-purple-200/50 blur-2xl pointer-events-none" />
+
+              <div className="flex items-center gap-4 relative z-10">
+                <div className="hidden sm:flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg shadow-indigo-500/30">
+                  <Store className="h-6 w-6 text-white" />
+                </div>
+                <h1 className="text-[26px] font-extrabold font-outfit text-slate-900 tracking-tight flex flex-wrap items-center gap-3">
+                  Generate BOM
+                  {activeTab === 'approvals' && <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100 border-blue-200 uppercase tracking-widest text-[10px]">Approvals View</Badge>}
+                  {user?.role === 'admin' && (
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className={`h-7 px-3 rounded-full text-[11px] font-bold border flex items-center gap-1.5 ${bomButtonsEnabled ? 'border-emerald-100 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' : 'border-red-100 bg-red-50 text-red-700 hover:bg-red-100'}`}
+                        onClick={toggleBomButtons}
+                      >
+                        <span className={`h-1.5 w-1.5 rounded-full ${bomButtonsEnabled ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                        Modification: {bomButtonsEnabled ? 'Enabled' : 'Disabled'}
+                      </Button>
+                    </div>
+                  )}
+                </h1>
+              </div>
 
               {(user?.role === 'admin' || user?.role === 'software_team') && (
-                <div className="flex items-center gap-2">
-                  <div className="px-5 py-1.5 text-xs font-bold bg-white text-blue-600 shadow-sm rounded-md border border-slate-200">
+                <div className="flex items-center gap-2.5 relative z-10">
+                  <div className="px-5 py-2 text-xs font-bold bg-white text-indigo-600 shadow-sm rounded-xl border border-slate-200 flex items-center gap-2">
+                    <Settings className="h-3.5 w-3.5" />
                     BOM Builder
                   </div>
                   <Button
                     variant="outline"
-                    className="px-5 py-1.5 h-auto text-xs font-bold bg-white hover:bg-slate-50 text-slate-700 shadow-sm border-slate-200 flex items-center gap-2"
+                    className="px-5 py-2 h-auto rounded-xl text-xs font-bold bg-gradient-to-r from-indigo-600 to-violet-600 text-white border-0 shadow-lg shadow-indigo-500/25 hover:opacity-95 hover:-translate-y-0.5 transition-all flex items-center gap-2"
                     onClick={() => { setApprovalsModalOpen(true); fetchApprovals(); }}
                   >
+                    <Users className="h-3.5 w-3.5" />
                     Approvals
                     {(approvals.length > 0 || rateChangeRequests.filter(r => r.status === 'pending').length > 0) && (
-                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-blue-600 text-[10px] text-white font-bold">
+                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-white/25 text-[10px] text-white font-bold">
                         {approvals.length + rateChangeRequests.filter(r => r.status === 'pending').length}
                       </span>
                     )}
                   </Button>
                 </div>
               )}
+
+
             </div>
 
             <TabsContent value="bom" className="space-y-6 mt-0">
 
               {/* Project Selector */}
               {/* Project & Version Selector (Compact & Professional) */}
-              <Card className="border-slate-200 shadow-sm overflow-hidden">
-                <CardContent className="p-4 bg-white">
+              <Card className="border-slate-200/70 rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,.04),0_8px_24px_-12px_rgba(15,23,42,.08)] overflow-hidden">
+                <CardContent className="p-5 bg-white">
                   <div className="flex flex-col gap-4">
                     {/* Top Row: Selectors & Actions */}
                     {/* Row 1: Project Filters */}
                     <div className="flex flex-wrap items-center gap-3 p-1.5 bg-slate-50 rounded-lg border border-slate-200 w-full" ref={statusFilterRef}>
-                      <Label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold ml-2 whitespace-nowrap">Project Filters:</Label>
+                      <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-2 whitespace-nowrap">Project Filters:</Label>
                       <div className="relative inline-block">
                         <button
                           type="button"
@@ -3631,7 +3674,7 @@ export default function CreateBom() {
                     {/* Row 2: Select Project & Version Actions */}
                     <div className="flex flex-wrap items-start gap-x-6 gap-y-4">
                       <div className="w-[260px] shrink-0 space-y-1">
-                        <Label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold ml-1">Select Project</Label>
+                        <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Select Project</Label>
                         <Select onValueChange={v => setSelectedProjectId(v || null)} value={selectedProjectId || ""}>
                           <SelectTrigger className="w-full bg-slate-50 border-slate-200 h-9 px-3 hover:bg-slate-100/50 transition-colors">
                             <SelectValue placeholder={projects.length === 0 ? "No projects" : "Choose from filtered list..."} />
@@ -3677,7 +3720,7 @@ export default function CreateBom() {
 
                       {selectedProjectId && (
                         <div className="flex-1 min-w-[500px] space-y-1.5 text-slate-900">
-                          <Label className="text-[10px] uppercase tracking-wider text-slate-500 font-bold ml-1">Version & Actions</Label>
+                          <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Version & Actions</Label>
                           <div className="flex flex-wrap items-center gap-2">
                             <div className="flex gap-1">
                               <Select value={selectedVersionId || ""} onValueChange={setSelectedVersionId}>
@@ -3780,26 +3823,6 @@ export default function CreateBom() {
                               />
                             )}
                             {!isReadOnlyMode && (
-                              <HeaderIconButton
-                                icon={isRefreshingCategories ? Loader2 : RefreshCw}
-                                label={isRefreshingCategories ? "Refreshing..." : "Refresh: detect and update any item categories that changed in the master product library"}
-                                onClick={handleRefreshCategories}
-                                disabled={!selectedVersionId || isRefreshingCategories || boqItems.length === 0}
-                                spinning={isRefreshingCategories}
-                                colorClass="bg-teal-50 border-teal-200 text-teal-600 hover:text-teal-700 hover:border-teal-300"
-                              />
-                            )}
-                            <Button onClick={handleAddProduct} className="bg-primary text-white h-9 px-5 text-xs font-bold shadow-sm ml-1" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}>
-                              {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
-                              + Add Product
-                            </Button>
-
-                            <Button onClick={handleAddProductManual} variant="outline" className="border-slate-200 h-9 px-5 text-xs font-bold shadow-sm bg-white" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}>
-                              {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
-                              + Add Item
-                            </Button>
-
-                            {!isReadOnlyMode && (
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <Button
@@ -3807,7 +3830,7 @@ export default function CreateBom() {
                                     variant="outline"
                                     size="icon"
                                     className={cn(
-                                      "h-9 w-9 border bg-purple-50 border-purple-200 text-purple-600 shadow-sm shrink-0 ml-1 transition-colors hover:text-purple-700 hover:border-purple-300",
+                                      "h-9 w-9 border bg-purple-50 border-purple-200 text-purple-600 shadow-sm shrink-0 transition-colors hover:text-purple-700 hover:border-purple-300",
                                       showAdvancedActions && "border-purple-400 ring-2 ring-purple-100 text-purple-700"
                                     )}
                                   >
@@ -3817,6 +3840,26 @@ export default function CreateBom() {
                                 <TooltipContent side="bottom">Advanced Options</TooltipContent>
                               </Tooltip>
                             )}
+                            {!isReadOnlyMode && (
+                              <HeaderIconButton
+                                icon={isRefreshingCategories ? Loader2 : RefreshCw}
+                                label={isRefreshingCategories ? "Refreshing..." : "Refresh: detect and update any item categories that changed in the master product library"}
+                                onClick={handleRefreshCategories}
+                                disabled={!selectedVersionId || isRefreshingCategories || boqItems.length === 0}
+                                spinning={isRefreshingCategories}
+                                colorClass="bg-teal-50 border-teal-200 text-teal-600 hover:text-teal-700 hover:border-teal-300"
+                              />
+                            )}
+
+                            <Button onClick={handleAddProduct} className="bg-primary text-white h-9 px-5 text-xs font-bold shadow-sm ml-1" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}>
+                              {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
+                              + Add Product
+                            </Button>
+
+                            <Button onClick={handleAddProductManual} variant="outline" className="border-slate-200 h-9 px-5 text-xs font-bold shadow-sm bg-white" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}>
+                              {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
+                              + Add Item
+                            </Button>
                           </div>
                         </div>
                       )}
@@ -3858,24 +3901,24 @@ export default function CreateBom() {
                         <div className="flex items-center gap-2 min-w-fit border border-blue-100 bg-white rounded-lg px-3 py-1.5">
                           <div className="p-1.5 bg-blue-50 rounded text-blue-600"><Briefcase className="h-3.5 w-3.5" /></div>
                           <div className="flex flex-col">
-                            <span className="text-[10px] leading-none text-slate-400 font-bold uppercase tracking-tight">Client</span>
-                            <span className="text-xs font-semibold text-slate-700">{selectedVersion.project_client || "—"}</span>
+                            <span className="text-[10px] leading-none text-slate-500 font-extrabold uppercase tracking-tight">Client</span>
+                            <span className="text-xs font-bold text-slate-900">{selectedVersion.project_client || "—"}</span>
                           </div>
                         </div>
 
                         <div className="flex items-center gap-2 min-w-fit border border-indigo-100 bg-white rounded-lg px-3 py-1.5">
                           <div className="p-1.5 bg-indigo-50 rounded text-indigo-600"><MapPin className="h-3.5 w-3.5" /></div>
                           <div className="flex flex-col">
-                            <span className="text-[10px] leading-none text-slate-400 font-bold uppercase tracking-tight">Location</span>
-                            <span className="text-xs font-semibold text-slate-700">{selectedVersion.project_location || "—"}</span>
+                            <span className="text-[10px] leading-none text-slate-500 font-extrabold uppercase tracking-tight">Location</span>
+                            <span className="text-xs font-bold text-slate-900">{selectedVersion.project_location || "—"}</span>
                           </div>
                         </div>
 
                         <div className="flex items-center gap-2 min-w-fit border border-emerald-100 bg-white rounded-lg px-3 py-1.5">
                           <div className="p-1.5 bg-emerald-50 rounded text-emerald-600"><IndianRupee className="h-3.5 w-3.5" /></div>
                           <div className="flex flex-col">
-                            <span className="text-[10px] leading-none text-slate-400 font-bold uppercase tracking-tight">Budget</span>
-                            <span className="text-xs font-semibold text-slate-700">₹{currentProjectValue.toLocaleString()}</span>
+                            <span className="text-[10px] leading-none text-slate-500 font-extrabold uppercase tracking-tight">Budget</span>
+                            <span className="text-xs font-bold text-slate-900">₹{currentProjectValue.toLocaleString()}</span>
                           </div>
                         </div>
 
@@ -4106,18 +4149,18 @@ export default function CreateBom() {
 
               {/* BOQ Items */}
               {selectedProjectId && (
-                <Card>
+                <Card className="border-slate-200/70 rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,.04),0_8px_24px_-12px_rgba(15,23,42,.08)] overflow-hidden">
                   <CardContent className="space-y-0 pt-0">
-                    <div className="sticky top-0 z-20 bg-white rounded-t-lg shadow-sm border-b border-slate-200 p-6 pb-4">
+                    <div className="sticky top-0 z-20 bg-white rounded-t-2xl shadow-sm border-b border-slate-100 p-6 pb-4">
                       <div className="flex flex-col gap-4">
                         <div className="flex items-center justify-between">
-                          <h2 className="text-lg font-bold text-gray-800">BOQ Items</h2>
+                          <h2 className="text-[17px] font-extrabold font-outfit text-slate-900">BOQ Items</h2>
                           <div className="flex items-center gap-4">
                             <Button
                               variant="outline"
                               size="sm"
                               onClick={() => setIsCompactView(!isCompactView)}
-                              className={`h-9 px-3 font-semibold ${isCompactView ? 'bg-blue-50 text-blue-600 border-blue-300' : 'text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                              className={`h-9 px-3 rounded-xl font-semibold ${isCompactView ? 'bg-indigo-50 text-indigo-600 border-indigo-200' : 'text-slate-600 border-slate-200 hover:bg-slate-50'}`}
                             >
                               Compact View
                             </Button>
@@ -4223,7 +4266,13 @@ export default function CreateBom() {
                     </div>
                     <div className="pt-6">
                       {boqItems.length === 0
-                        ? <div className="text-gray-500 text-center py-4">No products added yet. Click Add Product +</div>
+                        ? (
+                          <div className="flex flex-col items-center justify-center text-center py-12 px-4">
+                            <img src="/image copy.png" alt="No products" className="h-40 w-40 mb-4 object-contain opacity-85" />
+                            <div className="text-slate-500 font-semibold text-sm">No products added yet.</div>
+                            <div className="text-slate-400 text-xs mt-1">Click <span className="font-bold text-purple-600">+ Add Product</span> to get started</div>
+                          </div>
+                        )
                         : <div className="space-y-6">
                           {(() => {
                             const filteredItems = sortedAllItems.filter(item => {
@@ -4404,6 +4453,8 @@ export default function CreateBom() {
                                           }}
                                           onBomShopRateChangeSubmitted={fetchBomShopRateRequests}
                                           bomShopRateRequests={bomShopRateRequests}
+                                          manualItemRequests={manualItemRequests}
+                                          onManualItemRequestSubmitted={fetchManualItemRequests}
                                         />
                                       </div>
                                     );
@@ -5336,6 +5387,8 @@ export default function CreateBom() {
               },
               onBomShopRateChangeSubmitted: fetchBomShopRateRequests,
               bomShopRateRequests,
+              manualItemRequests,
+              onManualItemRequestSubmitted: fetchManualItemRequests,
             }}
           />
         );

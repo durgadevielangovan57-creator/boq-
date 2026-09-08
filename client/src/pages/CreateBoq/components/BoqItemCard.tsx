@@ -45,7 +45,7 @@ import { BoqItemRow } from './BoqItemRow';
 import { IndicateReasonDialog } from './IndicateReasonDialog';
 import { SaveConfirmDialog, SaveAsWizardDialog, PendingManualItem } from './ManualItemSaveDialogs';
 
-export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, isVersionSubmitted, expandedProductIds, setExpandedProductIds, getEditedValue, updateEditedField, handleDeleteRow, handleFinalizeProduct, handleAddItem, loadBoqItemsAndEdits, setBoqItems, checkBudgetEarly, handleSaveProject, onCardDragStart, onCardDragOver, onCardDrop, isCardDragOver, mismatches, isCompactView, onSaveAsTemplate, editedFields, comments, users, currentUser, onAddComment, selectedVersionId, totalProducts, onProductOrdinalChange, itemCategoryFilter, bomButtonsEnabled, onAnalysis, onFocusProduct, allProductNames, onBomShopRateChangeSubmitted, bomShopRateRequests, refreshComments }: {
+export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, isVersionSubmitted, expandedProductIds, setExpandedProductIds, getEditedValue, updateEditedField, handleDeleteRow, handleFinalizeProduct, handleAddItem, loadBoqItemsAndEdits, setBoqItems, checkBudgetEarly, handleSaveProject, onCardDragStart, onCardDragOver, onCardDrop, isCardDragOver, mismatches, isCompactView, onSaveAsTemplate, editedFields, comments, users, currentUser, onAddComment, selectedVersionId, totalProducts, onProductOrdinalChange, itemCategoryFilter, bomButtonsEnabled, onAnalysis, onFocusProduct, allProductNames, onBomShopRateChangeSubmitted, bomShopRateRequests, manualItemRequests, onManualItemRequestSubmitted, refreshComments }: {
   boqItem: BOMItem; boqIdx: number; isVersionSubmitted: boolean;
   expandedProductIds: Set<string>; setExpandedProductIds: (fn: (p: Set<string>) => Set<string>) => void;
   getEditedValue: (k: string, f: string, v: any) => any;
@@ -80,6 +80,8 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   allProductNames?: string[];
   onBomShopRateChangeSubmitted?: () => void;
   bomShopRateRequests?: any[];
+  manualItemRequests?: any[];
+  onManualItemRequestSubmitted?: () => void;
   /** Optional: re-fetch the comments list after a reason comment is saved (used by the Indicate reason flow). */
   refreshComments?: () => void | Promise<void>;
 }) {
@@ -328,6 +330,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
       }
       toast({ title: "Submitted for Approval", description: `"${payload.newProductName}" submitted for admin approval as a new product.` });
       setShowSaveAsWizard(false);
+      onManualItemRequestSubmitted?.();
     } catch (err) {
       console.error("Failed to submit Save As request", err);
       toast({ title: "Error", description: "Failed to submit new product for approval.", variant: "destructive" });
@@ -357,6 +360,14 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
     .filter((it: any) => it.manual === true && it.manualApproval?.status === "pending");
   const materialLinesArr: any[] = Array.isArray(tableData.materialLines) ? tableData.materialLines : [];
   const awaitingApprovalMaterialLines = materialLinesArr.filter((l: any) => l?.manualApproval?.status === "pending");
+  // ── Save As status indicator ────────────────────────────────────────────
+  // Save As creates a brand-new product that doesn't exist as a card until
+  // approved, so there's nowhere else to surface its outcome. We show it
+  // here, on the originating card, using the most recent request submitted
+  // from it (pending / approved / rejected).
+  const latestSaveAsRequest = (manualItemRequests || [])
+    .filter((r: any) => r.type === "save_as" && r.boq_item_id === boqItem.id)
+    .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
   const existingProductNamesInVersion = Array.isArray(allProductNames) && allProductNames.length > 0
     ? allProductNames
     : [productName];
@@ -1016,6 +1027,31 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                 <Clock className="h-3 w-3" />
                 {awaitingApprovalItems.length + awaitingApprovalMaterialLines.length} item{(awaitingApprovalItems.length + awaitingApprovalMaterialLines.length) === 1 ? "" : "s"} awaiting admin approval
               </div>
+            )}
+
+            {latestSaveAsRequest?.status === "pending" && (
+              <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded border border-amber-200 inline-flex items-center gap-1.5 uppercase tracking-wider w-fit">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                </span>
+                "{latestSaveAsRequest.new_product_name}" Awaiting Approval
+              </span>
+            )}
+            {latestSaveAsRequest?.status === "approved" && (
+              <span className="text-[10px] font-bold text-green-700 bg-green-50 px-2 py-1 rounded border border-green-200 inline-flex items-center gap-1.5 uppercase tracking-wider w-fit">
+                <CheckCircle2 className="h-3 w-3" />
+                "{latestSaveAsRequest.new_product_name}" Approved
+              </span>
+            )}
+            {latestSaveAsRequest?.status === "rejected" && (
+              <span
+                className="text-[10px] font-bold text-red-700 bg-red-50 px-2 py-1 rounded border border-red-200 inline-flex items-center gap-1.5 uppercase tracking-wider w-fit"
+                title={latestSaveAsRequest.rejection_reason || "Rejected by admin"}
+              >
+                <XCircle className="h-3 w-3" />
+                "{latestSaveAsRequest.new_product_name}" Rejected
+              </span>
             )}
 
             {/* Row 4: Description + HSN/SAC */}

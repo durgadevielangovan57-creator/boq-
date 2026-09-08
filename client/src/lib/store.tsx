@@ -25,7 +25,7 @@ export interface User {
   email?: string;
 }
 export interface Shop { id: string; name: string; location?: string; phoneCountryCode?: string; contactNumber?: string; city?: string; state?: string; country?: string; pincode?: string; image?: string; rating?: number; categories?: string[]; gstNo?: string; vendorCategory?: string; ownerId?: string; disabled?: boolean; new_location?: string; terms_and_conditions?: string; }
-export interface Material { id: string; name: string; code: string; rate: number; shopId?: string; unit?: string; category?: string; brandName?: string; modelNumber?: string; subCategory?: string; product?: string; technicalSpecification?: string; dimensions?: string; finish?: string; metalType?: string; image?: string; attributes?: any; masterMaterialId?: string; disabled?: boolean; vendorCategory?: string; taxCodeType?: 'hsn' | 'sac'; taxCodeValue?: string; hsnCode?: string; sacCode?: string; created_at?: string; }
+export interface Material { id: string; name: string; code: string; rate: number; shopId?: string; unit?: string; category?: string; brandName?: string; modelNumber?: string; subCategory?: string; product?: string; technicalSpecification?: string; dimensions?: string; finish?: string; metalType?: string; image?: string; attributes?: any; masterMaterialId?: string; disabled?: boolean; vendorCategory?: string; taxCodeType?: 'hsn' | 'sac'; taxCodeValue?: string; hsnCode?: string; sacCode?: string; created_at?: string; subcategory?: string; category_name?: string; subcategory_name?: string; vendor_category?: string; tax_code_type?: string; tax_code_value?: string; hsn_code?: string; sac_code?: string; shop_name?: string; updated_at?: string; is_project_pricing?: boolean; }
 export interface Product { id: string; name: string; subcategory?: string; category?: string; subcategory_name?: string; category_name?: string; hsnCode?: string; sacCode?: string; image?: string; created_at?: string; created_by?: string }
 
 interface DataContextType {
@@ -158,6 +158,20 @@ export function DataProvider({ children }: { children: ReactNode }) {
     sacCode: mat.sac_code || mat.sacCode || mat.template_sac_code || "",
     created_at: mat.created_at || mat.submitted_at || null,
     is_project_pricing: mat.is_project_pricing || false,
+    // Raw/snake_case fields kept alongside the camelCase ones above, purely
+    // additive, so other parts of the app that expect the original
+    // /api/materials response shape (e.g. MaterialPicker) can read this same
+    // cached list instead of independently re-fetching the whole catalog.
+    subcategory: mat.subcategory || mat.subCategory || "",
+    category_name: mat.category_name || mat.category || "",
+    subcategory_name: mat.subcategory_name || mat.subcategory || mat.subCategory || "",
+    vendor_category: mat.vendor_category || mat.vendorCategory || "",
+    tax_code_type: mat.tax_code_type || mat.taxCodeType || null,
+    tax_code_value: mat.tax_code_value || mat.taxCodeValue || "",
+    hsn_code: mat.hsn_code || mat.hsnCode || mat.template_hsn_code || "",
+    sac_code: mat.sac_code || mat.sacCode || mat.template_sac_code || "",
+    shop_name: mat.shop_name || "",
+    updated_at: mat.updated_at || mat.created_at || null,
   } as Material);
 
   const refreshMaterials = async () => {

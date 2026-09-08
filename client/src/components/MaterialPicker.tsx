@@ -17,8 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import apiFetch from "@/lib/api";
-import { useToast } from "@/hooks/use-toast";
+import { useData } from "@/lib/store";
 import { fuzzySearch } from "@/lib/utils";
 
 type Material = {
@@ -62,13 +61,11 @@ export default function MaterialPicker({
   open,
   onOpenChange,
 }: MaterialPickerProps) {
-  const [materials, setMaterials] = useState<Material[]>([]);
+  const { materials: storeMaterials } = useData();
   const [searchQuery, setSearchQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [subcategoryFilter, setSubcategoryFilter] = useState("all");
   const [pricingTab, setPricingTab] = useState("all");
-  const [loading, setLoading] = useState(true);
-  const { toast } = useToast();
 
   const sortMaterialsByName = (a: Material, b: Material) => {
     const normalize = (text: string) => text.trim().toLowerCase();
@@ -107,46 +104,23 @@ export default function MaterialPicker({
     return aName.localeCompare(bName, undefined, { sensitivity: 'base' });
   };
 
-  // Load all materials when dialog opens
-  useEffect(() => {
-    const loadMaterials = async () => {
-      try {
-        const response = await apiFetch("/api/materials", {
-          headers: {},
-        });
-        if (response.ok) {
-          const data = await response.json();
-          const materialList = (data.materials || []).map((m: any) => ({
-            ...m,
-            category: m.category || m.category_name || "",
-            subcategory: m.subcategory || m.subcategory_name || "",
-            category_name: m.category_name || m.category || "",
-            subcategory_name: m.subcategory_name || m.subcategory || "",
-          })).sort(sortMaterialsByName);
-          setMaterials(materialList);
-        } else {
-          toast({
-            title: "Error",
-            description: "Failed to load materials",
-            variant: "destructive",
-          });
-        }
-      } catch (err) {
-        console.error("Failed to load materials:", err);
-        toast({
-          title: "Error",
-          description: "Failed to load materials",
-          variant: "destructive",
-        });
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    if (open) {
-      loadMaterials();
-    }
-  }, [open, toast]);
+  // Materials come from the global store (useData()) instead of being
+  // independently re-fetched here every time the dialog opens. The store
+  // already loads the full /api/materials catalog once on app start — that
+  // query is heavy, so re-fetching it fresh on every "Add Item" click was
+  // the direct cause of this dialog feeling slow to open. loading is now
+  // effectively "store hasn't loaded materials yet", which in practice is
+  // only true for a brief moment right after the app first loads.
+  const loading = !storeMaterials || storeMaterials.length === 0;
+  const materials: Material[] = useMemo(() => {
+    return (storeMaterials || []).map((m: any) => ({
+      ...m,
+      category: m.category || m.category_name || "",
+      subcategory: m.subcategory || m.subcategory_name || "",
+      category_name: m.category_name || m.category || "",
+      subcategory_name: m.subcategory_name || m.subcategory || "",
+    })).sort(sortMaterialsByName);
+  }, [storeMaterials]);
 
   // Reset filters when dialog opens/closes
   useEffect(() => {

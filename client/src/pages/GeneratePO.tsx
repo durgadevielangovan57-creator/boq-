@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
+import { useData } from "@/lib/store";
 import apiFetch from "@/lib/api";
 import { computeBoq, UnitType } from "@/lib/boqCalc";
 import { getEstimatorTypeFromProduct } from "@/lib/estimatorUtils";
@@ -654,6 +655,7 @@ export default function GeneratePo() {
   const [location, setLocation] = useLocation();
   const { toast } = useToast();
   const { user } = useAuth();
+  const { products: storeProducts, materials: storeMaterials } = useData();
   const isPurchaseTeam = user?.role === 'purchase_team';
 
   const handleOpenPOModal = async () => {
@@ -834,32 +836,34 @@ export default function GeneratePo() {
   // Load BOQ items
   const loadBoqItemsAndEdits = useCallback(async () => {
     if (!selectedVersionId) return;
+    const versionAtRequestTime = selectedVersionId;
     try {
       const res = await apiFetch(`/api/boq-items/version/${encodeURIComponent(selectedVersionId)}`, { headers: {} });
       if (!res.ok) { toast({ title: "Error", description: `Failed to load items (${res.status})`, variant: "destructive" }); return; }
       const data = await safeJson(res as unknown as Response);
       const items: BOMItem[] = data.items || [];
-      // Backfill HSN/SAC and Missing Shop Names
+
+      // Show the items right away — the rest of this function only backfills
+      // missing HSN/SAC codes and shop names using the products/materials
+      // catalogs, which are much heavier queries than the item fetch above.
+      // Previously this whole function awaited those two catalog fetches
+      // before ever calling setBoqItems, so the page sat blank waiting on
+      // data it didn't need yet just to show the list.
+      setBoqItems(items);
+
+      // Backfill HSN/SAC and Missing Shop Names using the products/materials
+      // catalogs already loaded once by the global store (useData()) at app
+      // start, instead of re-fetching both of those heavy endpoints over the
+      // network every time a version's items load.
       try {
-        const [pr, matRes] = await Promise.all([
-          apiFetch("/api/products").catch(() => ({ ok: false, json: () => ({}) })),
-          apiFetch("/api/materials").catch(() => ({ ok: false, json: () => ({}) }))
-        ]);
+        if (versionAtRequestTime !== selectedVersionId) return;
 
-        let byId: Record<string, any> = {};
-        if (pr && "ok" in pr && pr.ok) {
-          const pd = await (pr as any).json();
-          byId = Object.fromEntries((pd.products || []).map((p: any) => [p.id, p]));
-        }
+        const byId: Record<string, any> = Object.fromEntries((storeProducts || []).map((p: any) => [p.id, p]));
+        const matById: Record<string, string> = Object.fromEntries(
+          (storeMaterials || []).filter((m: any) => !!m.shop_name).map((m: any) => [m.id, m.shop_name])
+        );
 
-        let matById: Record<string, string> = {};
-        if (matRes && "ok" in matRes && matRes.ok) {
-          const matData = await (matRes as any).json();
-          matById = Object.fromEntries(
-            (matData.materials || []).filter((m: any) => !!m.shop_name).map((m: any) => [m.id, m.shop_name])
-          );
-        }
-
+        let anyBackfilled = false;
         items.forEach(item => {
           const td = parseTableData(item.table_data);
           let updated = false;
@@ -899,6 +903,7 @@ export default function GeneratePo() {
 
           if (updated) {
             item.table_data = td;
+            anyBackfilled = true;
             apiFetch(`/api/boq-items/${encodeURIComponent(item.id)}`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
@@ -906,11 +911,14 @@ export default function GeneratePo() {
             }).catch(e => console.error("Auto-save backfill failed", e));
           }
         });
-      } catch (err) { console.error("Failed to backfill data", err); }
 
-      setBoqItems(items);
+        if (anyBackfilled && versionAtRequestTime === selectedVersionId) {
+          setBoqItems([...items]);
+        }
+      } catch (err) { console.error("Failed to backfill data", err); }
     } catch { toast({ title: "Error", description: "Failed to load BOQ items", variant: "destructive" }); }
-  }, [selectedVersionId]);
+  }, [selectedVersionId, storeProducts, storeMaterials]);
+
 
   useEffect(() => {
     if (!selectedVersionId) { setBoqItems([]); setEditedFields({}); editedFieldsRef.current = {}; setPreviewVendors([]); setIsPOModalOpen(false); return; }
