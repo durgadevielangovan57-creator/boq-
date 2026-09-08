@@ -10778,7 +10778,16 @@ export async function registerRoutes(
             step11_items: newItems,
             configBasis,
             materialLines,
-            targetRequiredQty: 1, // Target defaults to 1 when a new product is spawned via Save As
+            // Target defaults to the Base Required Qty entered in the Save As
+            // wizard (matches the preview computeBoq(..., baseRequiredQty)
+            // shown before approval — see ManualItemSaveDialogs.tsx). Previously
+            // this was hardcoded to 1, which silently scaled every material
+            // quantity down by a factor of baseRequiredQty the moment the
+            // product was approved (perUnitQty = baseQty / baseRequiredQty,
+            // scaledQty = perUnitQty * targetRequiredQty). The "Project Target"
+            // field on the item card remains fully editable afterward for
+            // projects that need a different quantity than the base recipe.
+            targetRequiredQty: configBasis?.baseRequiredQty || 1,
             finalize_description: productConfig.description || newItems[0]?.description || request.new_product_name,
             save_as_source_boq_item_id: request.boq_item_id,
             save_as_request_id: id,
@@ -10817,14 +10826,17 @@ export async function registerRoutes(
             globalProductId = productResult.rows[0].id;
           }
 
-          // 2. Calculate total_cost and create the product configuration
+          // 2. Calculate total_cost and create the product configuration.
+          // Prefer calcResults.grandTotal — the EXACT total the user saw in
+          // the wizard preview (computeBoq output, wastage + rounding
+          // applied). Falls back to summing each item's own already-computed
+          // `amount` (also wastage-adjusted) if grandTotal is ever missing;
+          // previously this summed raw baseQty * rate, which ignored wastage
+          // entirely and could under-report total_cost vs. what was approved.
           const itemsToInsert = materialLines || newItems;
-          let totalCost = 0;
-          for (const item of itemsToInsert) {
-            const q = Number(item.qty ?? item.baseQty ?? 0);
-            const sr = Number(item.supplyRate ?? item.supply_rate ?? 0);
-            const ir = Number(item.installRate ?? item.install_rate ?? 0);
-            totalCost += q * (sr + ir);
+          let totalCost = Number(calcResults.grandTotal);
+          if (!totalCost && totalCost !== 0) {
+            totalCost = newItems.reduce((sum: number, it: any) => sum + Number(it.amount || 0), 0);
           }
 
           const step11ProductResult = await query(
@@ -10849,9 +10861,22 @@ export async function registerRoutes(
           );
           const step11ProductId = step11ProductResult.rows[0].id;
 
-          // 3. Create the product items
+          // 3. Create the product items. Pull qty/amount from `newItems`
+          // (parallel array to itemsToInsert/materialLines) — the wizard
+          // already computed these with wastage + rounding applied via the
+          // SAME computeBoq() engine Manage Product's own Save button uses
+          // (see ManualItemSaveDialogs.tsx: roundOff = line.roundOffQty,
+          // amount = line.lineTotal). materialLines only carries the raw
+          // pre-wastage baseQty, so reading qty/amount from it (as an
+          // earlier version of this fix did) would under-report both here,
+          // inconsistent with how a normal Manage Product save stores them.
           for (let i = 0; i < itemsToInsert.length; i++) {
             const item = itemsToInsert[i];
+            const srcItem = newItems[i] || item;
+            const sRate = item.supplyRate ?? item.supply_rate ?? 0;
+            const iRate = item.installRate ?? item.install_rate ?? 0;
+            const qtyVal = Number(srcItem.roundOff ?? srcItem.requiredQty ?? srcItem.qty ?? item.baseQty ?? 0);
+            const amountVal = srcItem.amount !== undefined && srcItem.amount !== null ? Number(srcItem.amount) : qtyVal * (sRate + iRate);
             await query(
               `INSERT INTO step11_product_items 
                (step11_product_id, material_id, material_name, unit, qty, supply_rate, install_rate, rate, amount, location, freeze_and_edit, apply_wastage, shop_name, base_qty, wastage_pct)
@@ -10861,17 +10886,82 @@ export async function registerRoutes(
                 item.id || item.material_id || item.materialId,
                 item.name || item.title || item.material_name,
                 item.unit,
-                item.qty,
-                item.supplyRate ?? item.supply_rate ?? 0,
-                item.installRate ?? item.install_rate ?? 0,
-                (item.supplyRate ?? item.supply_rate ?? 0) + (item.installRate ?? item.install_rate ?? 0),
-                (item.qty || 0) * ((item.supplyRate ?? item.supply_rate ?? 0) + (item.installRate ?? item.install_rate ?? 0)),
+                qtyVal,
+                sRate,
+                iRate,
+                sRate + iRate,
+                amountVal,
                 item.location || 'Main Area',
                 item.freezeAndEdit === true,
                 item.applyWastage !== false,
                 item.shop_name || item.shopName || null,
-                item.baseQty ?? item.qty,
+                item.baseQty ?? qtyVal,
                 item.wastagePct !== undefined ? item.wastagePct : null
+              ]
+            );
+          }
+
+          // 3b. Also create the matching Step 3 "draft/working" config
+          // (product_step3_config / product_step3_config_items) — this is
+          // the ONLY table confirmAddToBom's GET /api/product-step3-config/:id
+          // reads from. Without a row here, that call 404s and "+ Add
+          // Product" silently falls back to a default config (baseRequiredQty
+          // = 1, material lines rebuilt from the picker instead of the real
+          // approved recipe) — i.e. this product could never be correctly
+          // re-added to a project. Mirrors what "Manage Product -> Edit ->
+          // Save" itself writes to these same tables.
+          const step3ConfigResultNew = await query(
+            `INSERT INTO product_step3_config (
+              product_id, product_name, config_name, category_id, subcategory_id,
+              total_cost, required_unit_type, base_required_qty, wastage_pct_default,
+              dim_a, dim_b, dim_c, description, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())
+             RETURNING id`,
+            [
+              globalProductId,
+              request.new_product_name,
+              `Save As Config - ${id.substring(0, 8)}`,
+              chosenCategory,
+              chosenSubcategory,
+              totalCost,
+              configBasis?.requiredUnitType || 'Sqft',
+              configBasis?.baseRequiredQty || 1,
+              Number(productConfig.wastagePctDefault) || 0,
+              configBasis?.dimA || null,
+              configBasis?.dimB || null,
+              configBasis?.dimC || null,
+              productConfig.description || null,
+            ]
+          );
+          const step3ConfigIdNew = step3ConfigResultNew.rows[0].id;
+          for (let i = 0; i < itemsToInsert.length; i++) {
+            const item = itemsToInsert[i];
+            const srcItem = newItems[i] || item;
+            const sRate = item.supplyRate ?? item.supply_rate ?? 0;
+            const iRate = item.installRate ?? item.install_rate ?? 0;
+            const qtyVal = Number(srcItem.roundOff ?? srcItem.requiredQty ?? srcItem.qty ?? item.baseQty ?? 0);
+            const amountVal = srcItem.amount !== undefined && srcItem.amount !== null ? Number(srcItem.amount) : qtyVal * (sRate + iRate);
+            await query(
+              `INSERT INTO product_step3_config_items
+               (step3_config_id, material_id, material_name, unit, qty, rate, supply_rate, install_rate, location, amount, base_qty, wastage_pct, apply_wastage, freeze_and_edit, shop_name, description)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+              [
+                step3ConfigIdNew,
+                item.id || item.material_id || item.materialId,
+                item.name || item.title || item.material_name,
+                item.unit,
+                qtyVal,
+                sRate + iRate,
+                sRate,
+                iRate,
+                item.location || 'Main Area',
+                amountVal,
+                item.baseQty ?? qtyVal,
+                item.wastagePct !== undefined ? item.wastagePct : null,
+                item.applyWastage !== false,
+                item.freezeAndEdit === true,
+                item.shop_name || item.shopName || null,
+                item.description || item.title || item.name || null,
               ]
             );
           }
