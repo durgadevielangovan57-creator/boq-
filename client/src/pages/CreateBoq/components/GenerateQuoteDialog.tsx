@@ -58,6 +58,23 @@ export function GenerateQuoteDialog({ open, onOpenChange, shopGroups, projectId,
         ? shopGroups.filter((s) => s.shopName.toLowerCase().includes(search.trim().toLowerCase()))
         : shopGroups;
 
+    const allFilteredSelected = filtered.length > 0 && filtered.every((s) => selected.has(s.shopName));
+    const someFilteredSelected = filtered.some((s) => selected.has(s.shopName));
+
+    const toggleAll = () => {
+        setSelected((prev) => {
+            const next = new Set(prev);
+            if (allFilteredSelected) {
+                // Deselect only the currently-filtered shops
+                filtered.forEach((s) => next.delete(s.shopName));
+            } else {
+                // Select all currently-filtered shops (keep any existing selection outside the filter)
+                filtered.forEach((s) => next.add(s.shopName));
+            }
+            return next;
+        });
+    };
+
     const grandTotal = shopGroups.filter((s) => selected.has(s.shopName)).reduce((sum, s) => sum + s.total, 0);
 
     const handleConfirm = async () => {
@@ -126,7 +143,13 @@ export function GenerateQuoteDialog({ open, onOpenChange, shopGroups, projectId,
                             <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search shops..." className="pl-8 h-9 text-sm" />
                         </div>
                         <div className="flex items-center justify-between text-xs text-gray-500 font-semibold uppercase">
-                            <span>{filtered.length} shop(s) found</span>
+                            <label className="flex items-center gap-2 cursor-pointer normal-case">
+                                <Checkbox
+                                    checked={allFilteredSelected ? true : someFilteredSelected ? "indeterminate" : false}
+                                    onCheckedChange={toggleAll}
+                                />
+                                <span>Select all • {filtered.length} shop(s) found</span>
+                            </label>
                             <span>{selected.size} selected • {formatCurrency(grandTotal)}</span>
                         </div>
                         <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
