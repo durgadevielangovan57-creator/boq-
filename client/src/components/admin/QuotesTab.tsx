@@ -1786,6 +1786,8 @@ export function QuotesTab() {
     const [comparisonId, setComparisonId] = useState<string | null>(null);
     const [bomDetailId, setBomDetailId] = useState<string | null>(null);
     const [editQuoteId, setEditQuoteId] = useState<string | null>(null);
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [bulkDeleting, setBulkDeleting] = useState(false);
 
     // Bumped on every load() call so a slow/late-arriving response from an
     // earlier call can never clobber the result of a newer one (race guard).
@@ -1803,7 +1805,10 @@ export function QuotesTab() {
             }
             const d = await res.json();
             if (seq !== loadSeq.current) return; // a newer load() has already superseded this one
-            setQuotes(d.quotes || []);
+            const list = d.quotes || [];
+            setQuotes(list);
+            const validIds = new Set(list.map((q: any) => q.id));
+            setSelectedIds((prev) => new Set(Array.from(prev).filter((id) => validIds.has(id))));
         } catch (err) {
             console.error("[QuotesTab] load failed:", err);
             if (seq !== loadSeq.current) return;
@@ -1825,6 +1830,46 @@ export function QuotesTab() {
         if (!confirm("Delete this quote?")) return;
         await apiFetch(`/api/fb/quotes/${id}`, { method: "DELETE" });
         load();
+    };
+
+    const toggleSelect = (id: string) => {
+        setSelectedIds((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+        });
+    };
+
+    const allSelected = quotes.length > 0 && quotes.every((q) => selectedIds.has(q.id));
+    const someSelected = quotes.some((q) => selectedIds.has(q.id));
+
+    const toggleSelectAll = () => {
+        setSelectedIds((prev) => {
+            if (allSelected) return new Set();
+            return new Set(quotes.map((q) => q.id));
+        });
+    };
+
+    const bulkRemove = async () => {
+        if (selectedIds.size === 0) return;
+        if (!confirm(`Delete ${selectedIds.size} selected quote(s)? This cannot be undone.`)) return;
+        setBulkDeleting(true);
+        try {
+            const ids = Array.from(selectedIds);
+            const results = await Promise.allSettled(
+                ids.map((id) => apiFetch(`/api/fb/quotes/${id}`, { method: "DELETE" }))
+            );
+            const failed = results.filter((r) => r.status === "rejected" || (r.status === "fulfilled" && !r.value.ok)).length;
+            if (failed > 0) {
+                toast({ title: "Some quotes couldn't be deleted", description: `${ids.length - failed} of ${ids.length} deleted.`, variant: "destructive" });
+            } else {
+                toast({ title: "Quotes deleted", description: `${ids.length} quote(s) deleted.` });
+            }
+            setSelectedIds(new Set());
+            load();
+        } finally {
+            setBulkDeleting(false);
+        }
     };
 
     const copyLink = async (id: string) => {
@@ -1864,6 +1909,12 @@ export function QuotesTab() {
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-end gap-2">
+                {someSelected && (
+                    <Button variant="destructive" onClick={bulkRemove} disabled={bulkDeleting}>
+                        {bulkDeleting ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1" />}
+                        Delete Selected ({selectedIds.size})
+                    </Button>
+                )}
                 <Button variant="outline" onClick={() => setProjectQuoteOpen(true)}>
                     <FolderKanban className="h-4 w-4 mr-1" /> Project Comparison Quote
                 </Button>
@@ -1879,6 +1930,13 @@ export function QuotesTab() {
                     <Table>
                         <TableHeader>
                             <TableRow>
+                                <TableHead className="w-10">
+                                    <Checkbox
+                                        checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                                        onCheckedChange={toggleSelectAll}
+                                        aria-label="Select all quotes"
+                                    />
+                                </TableHead>
                                 <TableHead>Quote #</TableHead>
                                 <TableHead>Title</TableHead>
                                 <TableHead>Type</TableHead>
@@ -1889,12 +1947,19 @@ export function QuotesTab() {
                         </TableHeader>
                         <TableBody>
                             {loading ? (
-                                <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
+                                <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Loading...</TableCell></TableRow>
                             ) : quotes.length === 0 ? (
-                                <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">No quotes yet.</TableCell></TableRow>
+                                <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">No quotes yet.</TableCell></TableRow>
                             ) : (
                                 quotes.map((q) => (
-                                    <TableRow key={q.id}>
+                                    <TableRow key={q.id} data-state={selectedIds.has(q.id) ? "selected" : undefined}>
+                                        <TableCell>
+                                            <Checkbox
+                                                checked={selectedIds.has(q.id)}
+                                                onCheckedChange={() => toggleSelect(q.id)}
+                                                aria-label={`Select quote ${q.quote_number}`}
+                                            />
+                                        </TableCell>
                                         <TableCell className="font-medium">{q.quote_number}</TableCell>
                                         <TableCell>{q.title}</TableCell>
                                         <TableCell>
