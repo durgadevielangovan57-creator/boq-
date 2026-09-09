@@ -1894,6 +1894,7 @@ export async function registerRoutes(
       { name: "idx_boq_versions_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_boq_versions_project_id ON boq_versions (project_id)` },
       { name: "idx_boq_history_version_id", sql: `CREATE INDEX IF NOT EXISTS idx_boq_history_version_id ON boq_history (version_id)` },
       { name: "idx_boq_manual_item_requests_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_boq_manual_item_requests_project_id ON boq_manual_item_requests (project_id)` },
+      { name: "idx_boq_manual_item_requests_version_id", sql: `CREATE INDEX IF NOT EXISTS idx_boq_manual_item_requests_version_id ON boq_manual_item_requests (version_id)` },
       // Proposals
       { name: "idx_proposals_project_id", sql: `CREATE INDEX IF NOT EXISTS idx_proposals_project_id ON proposals (project_id)` },
       { name: "idx_proposal_items_proposal_id", sql: `CREATE INDEX IF NOT EXISTS idx_proposal_items_proposal_id ON proposal_items (proposal_id)` },
@@ -10045,7 +10046,19 @@ export async function registerRoutes(
     authMiddleware,
     async (req: Request, res: Response) => {
       try {
-        const { status } = req.query;
+        const { status, version_id } = req.query;
+        // Generate BOM's status-indicator poll only needs r.* for a single
+        // version, scanned frequently (every 15s while pending) — skip the
+        // heavy LEFT JOIN + json_agg subquery in that case, since it's only
+        // needed by the admin "New Items" approval tab below.
+        if (version_id) {
+          const result = await query(
+            `SELECT r.* FROM boq_manual_item_requests r WHERE r.version_id = $1 ORDER BY r.created_at DESC`,
+            [version_id]
+          );
+          res.json({ requests: result.rows });
+          return;
+        }
         // LEFT JOIN the source product card so the approvals UI can show the
         // FULL existing product (all its items) alongside the newly added
         // ones, instead of only the newly submitted items in isolation.
