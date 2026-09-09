@@ -1219,7 +1219,7 @@ export default function AdminDashboard() {
   // ===== SUPPLIER: Detailed Material (Select from Master + Fill Details) =====
   const [selectedMasterId, setSelectedMasterId] = useState<string>("");
 
-  const [newMaterial, setNewMaterial] = useState<Partial<Material & { vendorCategory?: string; templateId?: string }>>({
+  const [newMaterial, setNewMaterial] = useState<Partial<Material & { vendorCategory?: string; templateId?: string; minQuantity?: string | number; maxQuantity?: string | number }>>({
     name: "",
     code: "",
     rate: 0,
@@ -1384,11 +1384,41 @@ export default function AdminDashboard() {
       metalType: mat.metaltype || mat.metal_type || mat.metalType || "",
       shopId: mat.shop_id ? mat.shop_id.toString() : (mat.shopId ? mat.shopId.toString() : ""),
       templateId: mat.template_id || mat.templateId || "",
+      minQuantity: mat.min_quantity ?? mat.minQuantity ?? "",
+      maxQuantity: mat.max_quantity ?? mat.maxQuantity ?? "",
     });
   };
 
   const handleUpdateMaterial = async () => {
     if (!editingMaterialId) return;
+
+    // Quantity-Based Project Pricing — both optional, but if provided they
+    // must be non-negative and min <= max. Same rule the server enforces.
+    {
+      const minStr = newMaterial.minQuantity !== undefined && newMaterial.minQuantity !== null ? String(newMaterial.minQuantity).trim() : "";
+      const maxStr = newMaterial.maxQuantity !== undefined && newMaterial.maxQuantity !== null ? String(newMaterial.maxQuantity).trim() : "";
+      let rangeError: string | null = null;
+      let minNum: number | null = null;
+      let maxNum: number | null = null;
+      if (minStr) {
+        minNum = Number(minStr);
+        if (Number.isNaN(minNum)) rangeError = "Min Quantity must be a valid number";
+        else if (minNum < 0) rangeError = "Min Quantity cannot be negative";
+      }
+      if (!rangeError && maxStr) {
+        maxNum = Number(maxStr);
+        if (Number.isNaN(maxNum)) rangeError = "Max Quantity must be a valid number";
+        else if (maxNum < 0) rangeError = "Max Quantity cannot be negative";
+      }
+      if (!rangeError && minNum !== null && maxNum !== null && minNum > maxNum) {
+        rangeError = "Min Quantity cannot be greater than Max Quantity";
+      }
+      if (rangeError) {
+        toast({ title: "Error", description: rangeError, variant: "destructive" });
+        return;
+      }
+    }
+
     const prevMat = localMaterials.find((m: any) => m.id === editingMaterialId);
     const oldRate = prevMat?.rate ?? null;
     const newRate = newMaterial.rate ?? null;
@@ -1415,6 +1445,10 @@ export default function AdminDashboard() {
         if (newMaterial.metalType !== undefined) payload.metaltype = newMaterial.metalType;
         if (newMaterial.image !== undefined) payload.image = newMaterial.image;
         if (newMaterial.attributes !== undefined) payload.attributes = newMaterial.attributes;
+        // Quantity-Based Project Pricing — empty string clears the range
+        // (server treats "" as null), a number saves it.
+        if (newMaterial.minQuantity !== undefined) payload.min_quantity = newMaterial.minQuantity === "" ? "" : newMaterial.minQuantity;
+        if (newMaterial.maxQuantity !== undefined) payload.max_quantity = newMaterial.maxQuantity === "" ? "" : newMaterial.maxQuantity;
 
         const res = await apiFetch(`/materials/${editingMaterialId}`, { method: 'PUT', body: JSON.stringify(payload) });
         if (res.ok) {
@@ -4830,6 +4864,11 @@ export default function AdminDashboard() {
                                           ★ Project Pricing Material
                                         </span>
                                       )}
+                                      {request.material.is_project_pricing && (request.material.min_quantity != null || request.material.max_quantity != null) && (
+                                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200" title="Quantity range this Project Pricing rate applies to">
+                                          Qty {request.material.min_quantity ?? 0}–{request.material.max_quantity ?? "∞"}
+                                        </span>
+                                      )}
                                     </h3>
                                     <p className="text-sm text-muted-foreground">
                                       {request.requestType === 'shop_rate_change' ? 'Requested by' : 'Submitted by'}: {request.submittedBy} at{" "}
@@ -4882,6 +4921,12 @@ export default function AdminDashboard() {
                                       <p className="font-semibold">Brand</p>
                                       <p>{request.material.brandName || request.material.brandname || request.material.brand || request.material.make || '-'}</p>
                                     </div>
+                                    {request.material.is_project_pricing && (request.material.min_quantity != null || request.material.max_quantity != null) && (
+                                      <div>
+                                        <p className="font-semibold">Quantity Range</p>
+                                        <p className="text-amber-700">{request.material.min_quantity ?? 0} – {request.material.max_quantity ?? "∞"}</p>
+                                      </div>
+                                    )}
                                     {(request.material.technicalSpecification || request.material.technicalspecification) && (
                                       <div className="col-span-2">
                                         <p className="font-semibold">Technical Specification</p>

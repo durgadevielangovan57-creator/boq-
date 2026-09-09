@@ -17,7 +17,33 @@ interface MaterialTemplate { id: string; name: string; code: string; category?: 
 
 const UNIT_OPTIONS = ["pcs", "kg", "meter", "sqft", "cum", "litre", "set", "nos", "Meters", "Square feet", "Numbers", "Square Meter", "Bags", "Running feet", "Running meter", "LS", "BOX", "LTR", "CQM", "cft", "ml", "DOZ", "PKT", "Man labour", "Points", "Roll", "Days", "Inches", "Hours", "Percentage", "Length", "Panel", "Drum", "Ft", "1 Pkt", "Job", "Units"];
 const Required = () => <span className="text-red-500 ml-1">*</span>;
-const EMPTY_FORM = { rate: "", unit: "", brandname: "", modelnumber: "", category: "", subcategory: "", product: "", technicalspecification: "", dimensions: "", finishtype: "", materialtype: "", isProjectPricing: false };
+const EMPTY_FORM = { rate: "", unit: "", brandname: "", modelnumber: "", category: "", subcategory: "", product: "", technicalspecification: "", dimensions: "", finishtype: "", materialtype: "", isProjectPricing: false, minQuantity: "", maxQuantity: "" };
+
+// Quantity-Based Project Pricing — validates the optional Min/Max Quantity
+// pair before it's added to the submission queue or submitted. Both fields
+// are optional; this only rejects a value that was actually entered.
+function validateQuantityRangeInput(minQuantity: string, maxQuantity: string): string | null {
+  const minStr = (minQuantity || "").trim();
+  const maxStr = (maxQuantity || "").trim();
+  if (!minStr && !maxStr) return null;
+
+  let min: number | null = null;
+  let max: number | null = null;
+  if (minStr) {
+    min = Number(minStr);
+    if (Number.isNaN(min)) return "Min Quantity must be a valid number";
+    if (min < 0) return "Min Quantity cannot be negative";
+  }
+  if (maxStr) {
+    max = Number(maxStr);
+    if (Number.isNaN(max)) return "Max Quantity must be a valid number";
+    if (max < 0) return "Max Quantity cannot be negative";
+  }
+  if (min !== null && max !== null && min > max) {
+    return "Min Quantity cannot be greater than Max Quantity";
+  }
+  return null;
+}
 
 export default function ManageMaterials() {
   const { toast } = useToast();
@@ -107,7 +133,7 @@ export default function ManageMaterials() {
     const rawCategory = template.category || (template as any).category_name || (template as any).Category || (template as any).categoryName || (template as any).vendor_category || "";
     const rawSubcategory = template.subcategory || (template as any).subCategory || (template as any).subcategory_name || (template as any).Subcategory || (template as any).subcategoryName || "";
     const matchedCategory = categories.find(c => c.toLowerCase() === rawCategory.toLowerCase()) || rawCategory;
-    setFormData({ rate: "", unit: (template as any).unit || "", brandname: (template as any).brandname || (template as any).brandName || "", modelnumber: (template as any).modelnumber || (template as any).modelNumber || "", category: matchedCategory, subcategory: rawSubcategory, product: "", technicalspecification: (template as any).technicalspecification || (template as any).technicalSpecification || "", dimensions: (template as any).dimensions || (template as any).Dimensions || "", finishtype: (template as any).finishtype || (template as any).finishType || "", materialtype: (template as any).metaltype || (template as any).metalType || (template as any).materialtype || (template as any).materialType || "", isProjectPricing: false });
+    setFormData({ rate: "", unit: (template as any).unit || "", brandname: (template as any).brandname || (template as any).brandName || "", modelnumber: (template as any).modelnumber || (template as any).modelNumber || "", category: matchedCategory, subcategory: rawSubcategory, product: "", technicalspecification: (template as any).technicalspecification || (template as any).technicalSpecification || "", dimensions: (template as any).dimensions || (template as any).Dimensions || "", finishtype: (template as any).finishtype || (template as any).finishType || "", materialtype: (template as any).metaltype || (template as any).metalType || (template as any).materialtype || (template as any).materialType || "", isProjectPricing: false, minQuantity: "", maxQuantity: "" });
     if (rawSubcategory) setIntendedSubcategory(rawSubcategory);
     setSelectedShop(""); setRateDate(null);
     if (matchedCategory) loadSubcategories(matchedCategory);
@@ -169,10 +195,16 @@ export default function ManageMaterials() {
     if (!selectedTemplate || !selectedShop) { toast({ title: "Error", description: "Please select a template and shop", variant: "destructive" }); return; }
     let toSubmit: any[] = [];
     if (entriesList.length > 0) {
+      const badEntry = entriesList.find(e => e.isProjectPricing && validateQuantityRangeInput(e.minQuantity, e.maxQuantity));
+      if (badEntry) { toast({ title: "Error", description: validateQuantityRangeInput(badEntry.minQuantity, badEntry.maxQuantity) || "Invalid quantity range", variant: "destructive" }); return; }
       if (!window.confirm(`Are you sure you want to submit ${entriesList.length} items for approval?`)) return;
       toSubmit = entriesList;
     } else {
       if (!formData.rate || !formData.unit) { toast({ title: "Error", description: "Rate and unit are required", variant: "destructive" }); return; }
+      if (formData.isProjectPricing) {
+        const rangeError = validateQuantityRangeInput(formData.minQuantity, formData.maxQuantity);
+        if (rangeError) { toast({ title: "Error", description: rangeError, variant: "destructive" }); return; }
+      }
       toSubmit = [{ template_id: selectedTemplate.id, shop_id: selectedShop, ...formData }];
     }
     setSubmitting(true); submittingRef.current = true;
@@ -190,8 +222,12 @@ export default function ManageMaterials() {
   const handleAddEntry = () => {
     if (!selectedTemplate || !selectedShop) { toast({ title: "Error", description: "Please select a template and shop", variant: "destructive" }); return; }
     if (!formData.rate || !formData.unit) { toast({ title: "Error", description: "Rate and unit are required", variant: "destructive" }); return; }
+    if (formData.isProjectPricing) {
+      const rangeError = validateQuantityRangeInput(formData.minQuantity, formData.maxQuantity);
+      if (rangeError) { toast({ title: "Error", description: rangeError, variant: "destructive" }); return; }
+    }
     setEntriesList(s => [...s, { template_id: selectedTemplate.id, shop_id: selectedShop, ...formData }]);
-    setFormData(prev => ({ ...prev, rate: "", unit: "", brandname: "", modelnumber: "", subcategory: "", product: "", technicalspecification: "", dimensions: "", finishtype: "", materialtype: "" }));
+    setFormData(prev => ({ ...prev, rate: "", unit: "", brandname: "", modelnumber: "", subcategory: "", product: "", technicalspecification: "", dimensions: "", finishtype: "", materialtype: "", minQuantity: "", maxQuantity: "" }));
     toast({ title: "Entry Added", description: "Item added to the submission list." });
   };
 
@@ -200,7 +236,7 @@ export default function ManageMaterials() {
   const handleEditEntry = (index: number) => {
     const entry = entriesList[index];
     setEditingEntryIndex(index); setSelectedShop(entry.shop_id || "");
-    setFormData({ rate: entry.rate || "", unit: entry.unit || "", brandname: entry.brandname || "", modelnumber: entry.modelnumber || "", category: entry.category || "", subcategory: entry.subcategory || "", product: entry.product || "", technicalspecification: entry.technicalspecification || "", dimensions: entry.dimensions || "", finishtype: entry.finishtype || "", materialtype: entry.materialtype || entry.metaltype || "", isProjectPricing: entry.isProjectPricing === true || entry.is_project_pricing === true });
+    setFormData({ rate: entry.rate || "", unit: entry.unit || "", brandname: entry.brandname || "", modelnumber: entry.modelnumber || "", category: entry.category || "", subcategory: entry.subcategory || "", product: entry.product || "", technicalspecification: entry.technicalspecification || "", dimensions: entry.dimensions || "", finishtype: entry.finishtype || "", materialtype: entry.materialtype || entry.metaltype || "", isProjectPricing: entry.isProjectPricing === true || entry.is_project_pricing === true, minQuantity: entry.minQuantity ?? entry.min_quantity ?? "", maxQuantity: entry.maxQuantity ?? entry.max_quantity ?? "" });
     if (entry.category) loadSubcategories(entry.category);
     scrollToForm();
   };
@@ -208,6 +244,10 @@ export default function ManageMaterials() {
   const handleUpdateEntry = () => {
     if (editingEntryIndex === null) return;
     if (!formData.rate || !formData.unit) { toast({ title: "Error", description: "Rate and unit are required", variant: "destructive" }); return; }
+    if (formData.isProjectPricing) {
+      const rangeError = validateQuantityRangeInput(formData.minQuantity, formData.maxQuantity);
+      if (rangeError) { toast({ title: "Error", description: rangeError, variant: "destructive" }); return; }
+    }
     const updatedEntry = { template_id: selectedTemplate?.id || entriesList[editingEntryIndex].template_id, shop_id: selectedShop || entriesList[editingEntryIndex].shop_id, ...formData };
     setEntriesList(prev => prev.map((entry, i) => i === editingEntryIndex ? updatedEntry : entry));
     setFormData({ ...EMPTY_FORM, category: selectedTemplate?.category || "", subcategory: (selectedTemplate as any)?.subcategory || (selectedTemplate as any)?.subCategory || "", technicalspecification: (selectedTemplate as any)?.technicalspecification || "" });
@@ -315,9 +355,24 @@ export default function ManageMaterials() {
                     <div><Label>Finish</Label><Input placeholder="Matte/Glossy" value={formData.finishtype} onChange={(e) => setFormData({ ...formData, finishtype: e.target.value })} /></div>
                     <div><Label>Material</Label><Input placeholder="Material Type" value={formData.materialtype} onChange={(e) => setFormData({ ...formData, materialtype: e.target.value })} /></div>
                   </div>
-                  <div className="flex items-center space-x-3 p-3 rounded-lg border border-amber-200 bg-amber-50/50">
-                    <Checkbox id="project-pricing-checkbox" checked={formData.isProjectPricing} onCheckedChange={(checked: boolean) => setFormData({ ...formData, isProjectPricing: !!checked })} />
-                    <div className="flex flex-col"><Label htmlFor="project-pricing-checkbox" className="text-sm font-semibold cursor-pointer">Project Pricing Material</Label><span className="text-xs text-muted-foreground">Enable this if the material uses project-specific pricing</span></div>
+                  <div className="rounded-lg border border-amber-200 bg-amber-50/50 overflow-hidden">
+                    <div className="flex items-center space-x-3 p-3">
+                      <Checkbox id="project-pricing-checkbox" checked={formData.isProjectPricing} onCheckedChange={(checked: boolean) => setFormData({ ...formData, isProjectPricing: !!checked })} />
+                      <div className="flex flex-col"><Label htmlFor="project-pricing-checkbox" className="text-sm font-semibold cursor-pointer">Project Pricing Material</Label><span className="text-xs text-muted-foreground">Enable this if the material uses project-specific pricing</span></div>
+                    </div>
+                    {formData.isProjectPricing && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 px-3 pb-3">
+                        <div>
+                          <Label>Min Quantity</Label>
+                          <Input type="number" step="0.01" min="0" placeholder="Optional" value={formData.minQuantity} onChange={(e) => setFormData({ ...formData, minQuantity: e.target.value })} />
+                        </div>
+                        <div>
+                          <Label>Max Quantity</Label>
+                          <Input type="number" step="0.01" min="0" placeholder="Optional" value={formData.maxQuantity} onChange={(e) => setFormData({ ...formData, maxQuantity: e.target.value })} />
+                        </div>
+                        <p className="text-xs text-muted-foreground md:col-span-2 -mt-1">Optional. If set, this Project Pricing rate is only suggested in the BOM when the material's quantity/area falls within this range. Leave blank to always suggest it, as before.</p>
+                      </div>
+                    )}
                   </div>
                   {entriesList.length > 0 && (
                     <div className="mt-6 border rounded-lg overflow-hidden">
@@ -326,7 +381,7 @@ export default function ManageMaterials() {
                         {entriesList.map((entry, idx) => (
                           <div key={idx} className="flex items-center justify-between px-4 py-3 bg-white">
                             <div className="text-xs flex-1">
-                              <div className="font-bold text-slate-700 flex items-center gap-2">Rate: {entry.rate} / {entry.unit}{entry.isProjectPricing && <Badge className="bg-amber-500 text-white text-[9px] px-1.5 py-0 h-4">Project Pricing</Badge>}</div>
+                              <div className="font-bold text-slate-700 flex items-center gap-2">Rate: {entry.rate} / {entry.unit}{entry.isProjectPricing && <Badge className="bg-amber-500 text-white text-[9px] px-1.5 py-0 h-4">Project Pricing</Badge>}{entry.isProjectPricing && (entry.minQuantity || entry.maxQuantity) && <span className="text-[10px] font-normal text-amber-700">Qty {entry.minQuantity || "0"}–{entry.maxQuantity || "∞"}</span>}</div>
                               <div className="text-slate-500">{entry.brandname || 'No Brand'} • {entry.category}{entry.subcategory && ` • ${entry.subcategory}`}{entry.product && ` • ${entry.product}`}</div>
                               {entry.technicalspecification && <div className="text-slate-400 mt-1 truncate max-w-xs">{entry.technicalspecification}</div>}
                             </div>

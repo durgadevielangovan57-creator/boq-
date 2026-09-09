@@ -177,27 +177,12 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   const [deletedMaterialLines, setDeletedMaterialLines] = useState<any[]>([]);
 
   const handleCardDeleteRow = (id: string, td: any, idx: number, item?: any) => {
-    const isStep11Item = !!item && item._s11Idx !== undefined;
-    if (isStep11Item) {
-      // Defer: track locally + hide from the table. Nothing is deleted
-      // on the server until the Save wizard is submitted.
-      setDeletedFromBom(prev => {
-        if (prev.some(i => i._s11Idx === item._s11Idx)) return prev;
-        return [...prev, item];
-      });
-      return;
-    }
-    const isEngineLine = !!item && item._materialIdx !== undefined;
-    if (isEngineLine) {
-      // Defer: same pending-approval pattern as step11 items above, keyed
-      // by _materialIdx (position in tableData.materialLines) instead.
-      setDeletedMaterialLines(prev => {
-        if (prev.some(i => i._materialIdx === item._materialIdx)) return prev;
-        return [...prev, item];
-      });
-      return;
-    }
-    // Anything else falls back to the previous instant-delete behavior.
+    // Trash icon = instant, temporary delete: it removes the row from
+    // table_data and persists that right away (survives refresh), same as
+    // any other BOM edit. It does NOT go through the Save wizard/admin
+    // approval flow — that flow is reserved for adding new manual items
+    // or editing rates/qty. Users can always re-add a material afterwards
+    // if they deleted it by mistake.
     handleDeleteRow(id, td, idx, item);
   };
   const [localRemarks, setLocalRemarks] = useState(tableData.remarks || "");

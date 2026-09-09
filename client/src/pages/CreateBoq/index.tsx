@@ -1666,6 +1666,26 @@ export default function CreateBom() {
     });
   };
 
+  // Quantity-Based Project Pricing — optional gate on top of the existing
+  // "same template_id + is_project_pricing" match above. A Project Pricing
+  // material with no min/max configured behaves exactly as before (always
+  // eligible once matched by template). One that HAS a min and/or max only
+  // qualifies when the line's quantity falls within the configured range
+  // (inclusive on both ends). This never disqualifies a match for materials
+  // that haven't opted into a range.
+  const qualifiesForQuantityRange = (ppAlt: any, qty: number): boolean => {
+    const min = ppAlt?.min_quantity;
+    const max = ppAlt?.max_quantity;
+    const hasMin = min !== null && min !== undefined && min !== "";
+    const hasMax = max !== null && max !== undefined && max !== "";
+    if (!hasMin && !hasMax) return true; // Case 1: no range configured — unchanged behavior
+    const q = Number(qty);
+    if (!Number.isFinite(q)) return false;
+    if (hasMin && q < Number(min)) return false;
+    if (hasMax && q > Number(max)) return false;
+    return true;
+  };
+
   const ppMatches = useMemo(() => {
     const list: any[] = [];
     boqItems.forEach(boqItem => {
@@ -1678,8 +1698,8 @@ export default function CreateBom() {
             const templateId = currentMat?.template_id || ml.template_id;
             if (templateId) {
               const ppAlt = Object.values(materialsById).find(mat => mat.template_id === templateId && mat.is_project_pricing);
-              if (ppAlt) {
-                list.push({ boqItemId: boqItem.id, type: 'materialLine', index: idx, currentRate: ml.supplyRate, ppRate: ppAlt.rate, name: ml.materialName || ml.name || "Material", productName, ppAlt });
+              if (ppAlt && qualifiesForQuantityRange(ppAlt, ml.qty)) {
+                list.push({ boqItemId: boqItem.id, type: 'materialLine', index: idx, currentRate: ml.supplyRate, ppRate: ppAlt.rate, name: ml.materialName || ml.name || "Material", productName, ppAlt, qty: ml.qty });
               }
             }
           }
@@ -1692,8 +1712,8 @@ export default function CreateBom() {
             const templateId = currentMat?.template_id || s11.template_id;
             if (templateId) {
               const ppAlt = Object.values(materialsById).find(mat => mat.template_id === templateId && mat.is_project_pricing);
-              if (ppAlt) {
-                list.push({ boqItemId: boqItem.id, type: 'step11', index: idx, currentRate: (s11.supply_rate || 0), ppRate: ppAlt.rate, name: s11.title || "Item", productName, ppAlt });
+              if (ppAlt && qualifiesForQuantityRange(ppAlt, s11.qty)) {
+                list.push({ boqItemId: boqItem.id, type: 'step11', index: idx, currentRate: (s11.supply_rate || 0), ppRate: ppAlt.rate, name: s11.title || "Item", productName, ppAlt, qty: s11.qty });
               }
             }
           }

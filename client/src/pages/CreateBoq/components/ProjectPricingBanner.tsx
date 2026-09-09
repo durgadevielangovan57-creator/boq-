@@ -109,7 +109,14 @@ export function ProjectPricingBanner({
                   <td className="py-1.5 text-slate-500 font-semibold truncate max-w-[120px]" title={m.productName}>{m.productName}</td>
                   <td className="py-1.5 font-bold truncate max-w-[200px]" title={m.name || "Item"}>{m.name || "Item"}</td>
                   <td className="py-1.5 text-right text-slate-600">₹{m.currentRate}</td>
-                  <td className="py-1.5 text-right font-bold text-blue-700">₹{m.ppRate}</td>
+                  <td className="py-1.5 text-right font-bold text-blue-700">
+                    ₹{m.ppRate}
+                    {(m.ppAlt?.min_quantity || m.ppAlt?.max_quantity) && (
+                      <div className="text-[9px] font-normal text-blue-500" title="Qualifying quantity range for this Project Pricing rate">
+                        Qty {m.qty ?? "—"} in {m.ppAlt?.min_quantity ?? 0}–{m.ppAlt?.max_quantity ?? "∞"}
+                      </div>
+                    )}
+                  </td>
                   <td className="py-1.5 flex justify-center gap-1">
                     <Button variant="ghost" size="sm" className="h-6 text-[10px] px-1.5 text-slate-500 hover:bg-slate-100 font-bold" onClick={() => onIgnoreSingle(m)}>Ignore</Button>
                     <Button variant="outline" size="sm" className="h-6 text-[10px] px-1.5 border-blue-300 text-blue-700 hover:bg-blue-100 font-bold bg-white" onClick={() => onApplySingle(m)}>Use PP</Button>

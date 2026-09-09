@@ -152,6 +152,12 @@ export function AllMaterialsSplitView({ materials, localShops, categories, getSu
                   <div className="space-y-2"><Label className="text-xs font-semibold uppercase text-slate-500">Finish / Texture</Label><Input value={newMaterial.finish || ''} onChange={(e) => setNewMaterial({ ...newMaterial, finish: e.target.value })} className="h-9" /></div>
                   <div className="space-y-2"><Label className="text-xs font-semibold uppercase text-slate-500">Material Type (e.g. Steel)</Label><Input value={newMaterial.metalType || ''} onChange={(e) => setNewMaterial({ ...newMaterial, metalType: e.target.value })} className="h-9" /></div>
                   <div className="col-span-1 md:col-span-2 space-y-2"><Label className="text-xs font-semibold uppercase text-slate-500">Technical Specification</Label><Textarea value={newMaterial.technicalSpecification || ''} onChange={(e) => setNewMaterial({ ...newMaterial, technicalSpecification: e.target.value })} rows={4} className="resize-none" /></div>
+                  <div className="col-span-1 md:col-span-2 rounded-lg border border-amber-200 bg-amber-50/50 p-3 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
+                    <div className="col-span-1 md:col-span-2 text-xs font-semibold uppercase text-amber-700">Project Pricing Quantity Range (optional)</div>
+                    <div className="space-y-2"><Label className="text-xs font-semibold uppercase text-slate-500">Min Quantity</Label><Input type="number" step="0.01" min="0" placeholder="Optional" value={newMaterial.minQuantity ?? ''} onChange={(e) => setNewMaterial({ ...newMaterial, minQuantity: e.target.value })} className="h-9" /></div>
+                    <div className="space-y-2"><Label className="text-xs font-semibold uppercase text-slate-500">Max Quantity</Label><Input type="number" step="0.01" min="0" placeholder="Optional" value={newMaterial.maxQuantity ?? ''} onChange={(e) => setNewMaterial({ ...newMaterial, maxQuantity: e.target.value })} className="h-9" /></div>
+                    <p className="col-span-1 md:col-span-2 text-xs text-muted-foreground -mt-1">This Project Pricing rate is only suggested in the BOM when quantity falls within this range. Leave blank to always suggest it.</p>
+                  </div>
                 </div>
               </ScrollArea>
               <div className="p-4 border-t bg-slate-50/50 flex justify-end gap-3 shrink-0">
@@ -178,7 +184,7 @@ export function AllMaterialsSplitView({ materials, localShops, categories, getSu
                 </div>
                 <div className="flex items-center gap-2 mb-4">
                   {(canEditDelete || userRole === "pre_sales") && (
-                    <Button size="sm" variant="outline" onClick={() => { setEditingMaterialId(selectedMaterial.id); setNewMaterial({ name: selectedMaterial.name || '', code: selectedMaterial.code || '', rate: selectedMaterial.rate || 0, unit: selectedMaterial.unit || 'pcs', category: selectedMaterial.category || '', subCategory: selectedMaterial.subcategory || selectedMaterial.subCategory || selectedMaterial.sub_category || '', product: selectedMaterial.product || '', brandName: selectedMaterial.brandName || selectedMaterial.brand || '', modelNumber: selectedMaterial.modelNumber || selectedMaterial.model || '', technicalSpecification: selectedMaterial.technicalSpecification || selectedMaterial.technicalspecification || '', dimensions: selectedMaterial.dimensions || '', finish: selectedMaterial.finish || selectedMaterial.finishtype || '', metalType: selectedMaterial.metalType || selectedMaterial.materialtype || '', shopId: selectedMaterial.shopId || selectedMaterial.shop_id || '' }); }} className="h-8 gap-1.5 text-blue-600 border-blue-200 hover:bg-blue-50"><Edit className="h-3.5 w-3.5" /> Edit Material</Button>
+                    <Button size="sm" variant="outline" onClick={() => { setEditingMaterialId(selectedMaterial.id); setNewMaterial({ name: selectedMaterial.name || '', code: selectedMaterial.code || '', rate: selectedMaterial.rate || 0, unit: selectedMaterial.unit || 'pcs', category: selectedMaterial.category || '', subCategory: selectedMaterial.subcategory || selectedMaterial.subCategory || selectedMaterial.sub_category || '', product: selectedMaterial.product || '', brandName: selectedMaterial.brandName || selectedMaterial.brand || '', modelNumber: selectedMaterial.modelNumber || selectedMaterial.model || '', technicalSpecification: selectedMaterial.technicalSpecification || selectedMaterial.technicalspecification || '', dimensions: selectedMaterial.dimensions || '', finish: selectedMaterial.finish || selectedMaterial.finishtype || '', metalType: selectedMaterial.metalType || selectedMaterial.materialtype || '', shopId: selectedMaterial.shopId || selectedMaterial.shop_id || '', minQuantity: selectedMaterial.min_quantity ?? selectedMaterial.minQuantity ?? '', maxQuantity: selectedMaterial.max_quantity ?? selectedMaterial.maxQuantity ?? '' }); }} className="h-8 gap-1.5 text-blue-600 border-blue-200 hover:bg-blue-50"><Edit className="h-3.5 w-3.5" /> Edit Material</Button>
                   )}
                   {canEditDelete && (
                     <>
@@ -209,6 +215,14 @@ export function AllMaterialsSplitView({ materials, localShops, categories, getSu
                           </div>
                         </CardContent>
                       </Card>
+                      {(selectedMaterial.min_quantity != null || selectedMaterial.max_quantity != null) && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3 flex items-center justify-between">
+                          <div>
+                            <span className="text-xs font-semibold text-amber-700 uppercase tracking-wider">Project Pricing Quantity Range</span>
+                            <p className="text-sm text-amber-900 mt-0.5">This rate is only suggested in a BOM when quantity/area is between <span className="font-bold">{selectedMaterial.min_quantity ?? 0}</span> and <span className="font-bold">{selectedMaterial.max_quantity ?? "∞"}</span> ({selectedMaterial.unit || 'unit'}).</p>
+                          </div>
+                        </div>
+                      )}
                       <div>
                         <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-4 flex items-center gap-2"><FileText className="h-4 w-4 text-slate-400" /> Material Specifications</h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

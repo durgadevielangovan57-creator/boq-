@@ -465,6 +465,39 @@ export async function registerRoutes(
     }
   };
 
+  // Quantity-Based Project Pricing — validates an optional min/max quantity
+  // range before it is saved with a Project Pricing rule. Both values are
+  // optional; validation only runs on whatever is actually provided so
+  // materials/submissions that don't use this feature are unaffected.
+  // Returns an error message string, or null if the range is valid.
+  const validateQuantityRange = (
+    minRaw: any,
+    maxRaw: any,
+  ): string | null => {
+    const hasMin = minRaw !== undefined && minRaw !== null && minRaw !== "";
+    const hasMax = maxRaw !== undefined && maxRaw !== null && maxRaw !== "";
+    if (!hasMin && !hasMax) return null;
+
+    if (hasMin) {
+      const min = parseSafeNumeric(minRaw);
+      if (min === null) return "Min Quantity must be a valid number";
+      if (min < 0) return "Min Quantity cannot be negative";
+    }
+    if (hasMax) {
+      const max = parseSafeNumeric(maxRaw);
+      if (max === null) return "Max Quantity must be a valid number";
+      if (max < 0) return "Max Quantity cannot be negative";
+    }
+    if (hasMin && hasMax) {
+      const min = parseSafeNumeric(minRaw);
+      const max = parseSafeNumeric(maxRaw);
+      if (min !== null && max !== null && min > max) {
+        return "Min Quantity cannot be greater than Max Quantity";
+      }
+    }
+    return null;
+  };
+
   // Seed default material templates on startup (best-effort)
   try {
     // dynamic import to avoid circular deps during startup
@@ -916,11 +949,38 @@ export async function registerRoutes(
       "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS boq_item_id VARCHAR(100)",
       "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS boq_version_id VARCHAR(100)",
       "ALTER TABLE material_submissions ALTER COLUMN template_id DROP NOT NULL",
+      // Quantity-Based Project Pricing (additive, optional) — lets a Project
+      // Pricing submission carry an optional min/max quantity range along
+      // with its rate. NULL/absent on every existing row, so nothing about
+      // existing submissions or their approval changes.
+      "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS min_quantity NUMERIC",
+      "ALTER TABLE material_submissions ADD COLUMN IF NOT EXISTS max_quantity NUMERIC",
     ];
     for (const sql of materialSubmissionCols) {
       try { await query(sql); } catch { /* column may already exist / already nullable */ }
     }
     console.log("[db] material_submissions columns ensured (Change Shop & Rate support)");
+
+    // Ensure materials table has the optional Quantity-Based Project Pricing
+    // columns. Purely additive: existing materials keep NULL for both and
+    // continue to behave exactly as before (see feature doc — "Quantity-
+    // Based Project Pricing"). Only materials where an admin explicitly sets
+    // both/either value get the new range-eligibility behavior in the BOM.
+    try {
+      const materialsCols = [
+        "ALTER TABLE materials ADD COLUMN IF NOT EXISTS min_quantity NUMERIC",
+        "ALTER TABLE materials ADD COLUMN IF NOT EXISTS max_quantity NUMERIC",
+      ];
+      for (const sql of materialsCols) {
+        try { await query(sql); } catch { /* column may already exist */ }
+      }
+      console.log("[db] materials columns ensured (Quantity-Based Project Pricing support)");
+    } catch (err: unknown) {
+      console.warn(
+        "[migrations] ensure materials min/max quantity columns failed (continuing):",
+        (err as any)?.message || err,
+      );
+    }
 
 
 
@@ -2864,6 +2924,20 @@ export async function registerRoutes(
           } catch (e) { console.warn("[POST /api/materials] Could not fetch template for fallback codes", e); }
         }
 
+        // Quantity-Based Project Pricing — optional min/max quantity range
+        // saved with this material's Project Pricing rule. Validated only
+        // when provided; existing/other materials that never set these are
+        // unaffected.
+        const minQuantityRaw = body.min_quantity ?? body.minQuantity;
+        const maxQuantityRaw = body.max_quantity ?? body.maxQuantity;
+        const quantityRangeError = validateQuantityRange(minQuantityRaw, maxQuantityRaw);
+        if (quantityRangeError) {
+          res.status(400).json({ message: quantityRangeError });
+          return;
+        }
+        const minQuantity = parseSafeNumeric(minQuantityRaw);
+        const maxQuantity = parseSafeNumeric(maxQuantityRaw);
+
         // Check for duplicate material within last 10 seconds with exact field matching
         const duplicateCheck = await query(
           `SELECT id FROM materials 
@@ -2890,8 +2964,8 @@ export async function registerRoutes(
         }
 
         const result = await query(
-          `INSERT INTO materials (id, template_id, name, code, rate, shop_id, unit, category, brandname, modelnumber, subcategory, product, technicalspecification, dimensions, finishtype, metaltype, image, attributes, master_material_id, hsn_code, sac_code, approved, is_project_pricing, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23, now()) RETURNING *`,
+          `INSERT INTO materials (id, template_id, name, code, rate, shop_id, unit, category, brandname, modelnumber, subcategory, product, technicalspecification, dimensions, finishtype, metaltype, image, attributes, master_material_id, hsn_code, sac_code, approved, is_project_pricing, created_at, min_quantity, max_quantity)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23, now(), $24, $25) RETURNING *`,
           [
             id,
             template_id,
@@ -2916,6 +2990,8 @@ export async function registerRoutes(
             sacCode,
             true, // Default to true for admin-created materials
             body.isProjectPricing === true || body.is_project_pricing === true,
+            minQuantity,
+            maxQuantity,
           ],
         );
 
@@ -3163,7 +3239,11 @@ export async function registerRoutes(
         "template_id",
         "templateId",
         "is_project_pricing",
-        "isProjectPricing"
+        "isProjectPricing",
+        "min_quantity",
+        "minQuantity",
+        "max_quantity",
+        "maxQuantity",
       ]) {
         if (body[k] !== undefined) {
           let val = body[k];
@@ -3177,9 +3257,16 @@ export async function registerRoutes(
           if (k === "modelNumber") dbFieldName = "modelnumber";
           if (k === "finishType") dbFieldName = "finishtype";
           if (k === "isProjectPricing") dbFieldName = "is_project_pricing";
+          if (k === "minQuantity") dbFieldName = "min_quantity";
+          if (k === "maxQuantity") dbFieldName = "max_quantity";
 
           if (dbFieldName === "shop_id" && val === "") val = null;
           if (dbFieldName === "rate") val = parseSafeNumeric(val);
+          // Quantity-Based Project Pricing: these are optional/nullable —
+          // an empty string means "clear the range", not "0".
+          if (dbFieldName === "min_quantity" || dbFieldName === "max_quantity") {
+            val = val === "" || val === null || val === undefined ? null : parseSafeNumeric(val);
+          }
           fields.push(`${dbFieldName} = $${idx++}`);
           vals.push(val);
         }
@@ -3191,7 +3278,9 @@ export async function registerRoutes(
       if (fields.length === 0)
         return res.status(400).json({ message: "no fields" });
 
-      // --- Fetch old material record before updating (for rate change detection) ---
+      // --- Fetch old material record before updating (for rate change detection,
+      // and so a partial min/max quantity update can be validated against the
+      // value already saved for the side the request didn't touch) ---
       let oldMaterial: any = null;
       try {
         const oldRes = await query(
@@ -3201,6 +3290,21 @@ export async function registerRoutes(
         oldMaterial = oldRes.rows[0] || null;
       } catch (e) {
         console.warn("[PUT /api/materials/:id] Could not fetch old material for rate comparison:", e);
+      }
+
+      // Quantity-Based Project Pricing — validate the *effective* range
+      // (new value if provided in this request, otherwise whatever is
+      // already saved) so a partial update (e.g. only Max Quantity) can't
+      // produce an invalid min > max range.
+      {
+        const minProvided = body.min_quantity ?? body.minQuantity;
+        const maxProvided = body.max_quantity ?? body.maxQuantity;
+        const effectiveMin = minProvided !== undefined ? minProvided : oldMaterial?.min_quantity;
+        const effectiveMax = maxProvided !== undefined ? maxProvided : oldMaterial?.max_quantity;
+        const quantityRangeError = validateQuantityRange(effectiveMin, effectiveMax);
+        if (quantityRangeError) {
+          return res.status(400).json({ message: quantityRangeError });
+        }
       }
 
       vals.push(id);
@@ -4939,6 +5043,19 @@ export async function registerRoutes(
         // Ensure metaltype/materialtype handled consistently
         let final_metaltype = metaltype || (req.body as any).materialtype || (req.body as any).materialType || (req.body as any).metalType || null;
 
+        // Quantity-Based Project Pricing — optional min/max quantity range
+        // for this submission's Project Pricing rule. Only validated/used
+        // when provided; leaving both empty keeps today's behavior.
+        const minQuantityRaw = (req.body as any).min_quantity ?? (req.body as any).minQuantity;
+        const maxQuantityRaw = (req.body as any).max_quantity ?? (req.body as any).maxQuantity;
+        const quantityRangeError = validateQuantityRange(minQuantityRaw, maxQuantityRaw);
+        if (quantityRangeError) {
+          res.status(400).json({ message: quantityRangeError });
+          return;
+        }
+        const minQuantity = parseSafeNumeric(minQuantityRaw);
+        const maxQuantity = parseSafeNumeric(maxQuantityRaw);
+
         // Check for duplicate submission within last 10 seconds with exact field matching
         const duplicateCheck = await query(
           `SELECT id FROM material_submissions 
@@ -4960,8 +5077,8 @@ export async function registerRoutes(
 
         const id = randomUUID();
         const result = await query(
-          `INSERT INTO material_submissions (id, template_id, shop_id, rate, unit, brandname, modelnumber, subcategory, category, product, technicalspecification, dimensions, finishtype, metaltype, image, hsn_code, sac_code, submitted_by, submitted_at, approved, is_project_pricing)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NULL, $19)
+          `INSERT INTO material_submissions (id, template_id, shop_id, rate, unit, brandname, modelnumber, subcategory, category, product, technicalspecification, dimensions, finishtype, metaltype, image, hsn_code, sac_code, submitted_by, submitted_at, approved, is_project_pricing, min_quantity, max_quantity)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NULL, $19, $20, $21)
            RETURNING *`,
           [
             id,
@@ -4982,7 +5099,9 @@ export async function registerRoutes(
             hsn_code,
             sac_code,
             (req as any).user?.id,
-            !!((req.body as any).is_project_pricing || (req.body as any).isProjectPricing)
+            !!((req.body as any).is_project_pricing || (req.body as any).isProjectPricing),
+            minQuantity,
+            maxQuantity,
           ],
         );
 
@@ -5480,8 +5599,8 @@ export async function registerRoutes(
 
         const materialId = randomUUID();
         await query(
-          `INSERT INTO materials (id, name, code, rate, shop_id, unit, category, brandname, modelnumber, subcategory, product, technicalspecification, template_id, image, hsn_code, sac_code, approved, is_project_pricing)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, true, $17)`,
+          `INSERT INTO materials (id, name, code, rate, shop_id, unit, category, brandname, modelnumber, subcategory, product, technicalspecification, template_id, image, hsn_code, sac_code, approved, is_project_pricing, min_quantity, max_quantity)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, true, $17, $18, $19)`,
           [
             materialId,
             template.name || submission.material_name,
@@ -5500,6 +5619,11 @@ export async function registerRoutes(
             submission.hsn_code || submission.hsnCode || template.hsn_code || null,
             submission.sac_code || submission.sacCode || template.sac_code || null,
             submission.is_project_pricing === true,
+            // Quantity-Based Project Pricing: carry the optional range from
+            // the submission through to the approved material. NULL when
+            // the submitter never set a range, same as before this feature.
+            submission.min_quantity ?? null,
+            submission.max_quantity ?? null,
           ],
         );
 
