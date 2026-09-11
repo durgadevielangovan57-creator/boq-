@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { Layout } from "@/components/layout/Layout";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import * as XLSX from "xlsx";
+import XLSX from "xlsx-js-style";
 import {
     Card,
     CardContent,
@@ -418,6 +418,102 @@ export default function PurchaseOrders() {
         }
     };
 
+    const [isBulkExportingExcel, setIsBulkExportingExcel] = useState(false);
+
+    const handleBulkDownloadExcel = () => {
+        if (selectedPoIds.size === 0) return;
+        setIsBulkExportingExcel(true);
+        try {
+            const selectedPOs = purchaseOrders.filter((po) => selectedPoIds.has(po.id));
+
+            const tableHeader = ["Project", "Vendor", "Amount"];
+            const tableRows = selectedPOs.map((po) => [
+                po.project_name || "N/A",
+                po.vendor_name || "N/A",
+                parseFloat(po.total_amount || "0"),
+            ]);
+
+            const totalAmount = selectedPOs.reduce(
+                (sum, po) => sum + parseFloat(po.total_amount || "0"),
+                0
+            );
+            const footerRow = ["", "Total", totalAmount];
+
+            const sheetData = [tableHeader, ...tableRows, footerRow];
+            const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
+            worksheet["!cols"] = [{ wch: 32 }, { wch: 32 }, { wch: 18 }];
+
+            const lastRowIdx = sheetData.length - 1; // footer row index
+            const thinBorder = {
+                top: { style: "thin", color: { rgb: "B0B0B0" } },
+                bottom: { style: "thin", color: { rgb: "B0B0B0" } },
+                left: { style: "thin", color: { rgb: "B0B0B0" } },
+                right: { style: "thin", color: { rgb: "B0B0B0" } },
+            };
+
+            for (let r = 0; r < sheetData.length; r++) {
+                for (let c = 0; c < tableHeader.length; c++) {
+                    const addr = XLSX.utils.encode_cell({ r, c });
+                    if (!worksheet[addr]) continue;
+
+                    if (r === 0) {
+                        // Header row — bold white text on a blue fill, centered
+                        worksheet[addr].s = {
+                            font: { bold: true, color: { rgb: "FFFFFF" } },
+                            fill: { patternType: "solid", fgColor: { rgb: "2980B9" } },
+                            alignment: { horizontal: "center", vertical: "center" },
+                            border: thinBorder,
+                        };
+                    } else if (r === lastRowIdx) {
+                        // Footer / total row — bold with light grey fill
+                        worksheet[addr].s = {
+                            font: { bold: true },
+                            fill: { patternType: "solid", fgColor: { rgb: "F0F0F0" } },
+                            alignment: {
+                                horizontal: c === 2 ? "right" : (c === 1 ? "right" : "left"),
+                                vertical: "center",
+                            },
+                            border: thinBorder,
+                            numFmt: c === 2 ? "#,##0.00" : undefined,
+                        };
+                    } else {
+                        // Data rows — bordered, amount column right-aligned & currency formatted
+                        worksheet[addr].s = {
+                            alignment: {
+                                horizontal: c === 2 ? "right" : "left",
+                                vertical: "center",
+                            },
+                            border: thinBorder,
+                            numFmt: c === 2 ? "#,##0.00" : undefined,
+                        };
+                    }
+                }
+            }
+
+            worksheet["!rows"] = sheetData.map((_, idx) => (idx === 0 ? { hpt: 20 } : { hpt: 18 }));
+
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Annexures");
+
+            const filename = `Annexures_Export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+            XLSX.writeFile(workbook, filename, { cellStyles: true });
+
+            toast({
+                title: "Success",
+                description: `Exported ${selectedPOs.length} Annexure${selectedPOs.length > 1 ? "s" : ""} to Excel.`,
+            });
+        } catch (error) {
+            console.error("Bulk Excel Export Error:", error);
+            toast({
+                title: "Error",
+                description: "Failed to export selected Annexures.",
+                variant: "destructive",
+            });
+        } finally {
+            setIsBulkExportingExcel(false);
+        }
+    };
+
     const handleBulkMoveToDeliveryTracker = async () => {
         setIsMovingBulk(true);
         let successCount = 0;
@@ -723,21 +819,45 @@ export default function PurchaseOrders() {
                                     {selectedPoIds.size > 0 && (
                                         <>
                                             <Button
-                                                onClick={() => setShowBulkMoveDialog(true)}
-                                                className="h-9 ml-2 bg-indigo-600 hover:bg-indigo-700 text-white"
-                                                disabled={isMovingBulk}
+                                                onClick={handleBulkDownloadExcel}
+                                                size="icon"
+                                                className="h-9 w-9 ml-2 relative bg-green-600 hover:bg-green-700 text-white"
+                                                disabled={isBulkExportingExcel}
+                                                title={`Download Excel (${selectedPoIds.size})`}
                                             >
-                                                <Truck className="h-4 w-4 mr-2" />
-                                                Move to Delivery ({selectedPoIds.size})
+                                                {isBulkExportingExcel ? (
+                                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                                ) : (
+                                                    <FileSpreadsheet className="h-4 w-4" />
+                                                )}
+                                                <span className="absolute -top-1.5 -right-1.5 bg-white text-green-700 text-[10px] font-bold rounded-full h-4 min-w-[16px] px-1 flex items-center justify-center border border-green-600">
+                                                    {selectedPoIds.size}
+                                                </span>
+                                            </Button>
+                                            <Button
+                                                onClick={() => setShowBulkMoveDialog(true)}
+                                                size="icon"
+                                                className="h-9 w-9 ml-2 relative bg-indigo-600 hover:bg-indigo-700 text-white"
+                                                disabled={isMovingBulk}
+                                                title={`Move to Delivery (${selectedPoIds.size})`}
+                                            >
+                                                <Truck className="h-4 w-4" />
+                                                <span className="absolute -top-1.5 -right-1.5 bg-white text-indigo-700 text-[10px] font-bold rounded-full h-4 min-w-[16px] px-1 flex items-center justify-center border border-indigo-600">
+                                                    {selectedPoIds.size}
+                                                </span>
                                             </Button>
                                             {user?.role !== 'purchase_team' && (
                                                 <Button
                                                     variant="destructive"
                                                     onClick={() => setShowBulkDeleteDialog(true)}
-                                                    className="h-9 ml-2"
+                                                    size="icon"
+                                                    className="h-9 w-9 ml-2 relative"
+                                                    title={`Delete Selected (${selectedPoIds.size})`}
                                                 >
-                                                    <Trash2 className="h-4 w-4 mr-2" />
-                                                    Delete Selected ({selectedPoIds.size})
+                                                    <Trash2 className="h-4 w-4" />
+                                                    <span className="absolute -top-1.5 -right-1.5 bg-white text-red-700 text-[10px] font-bold rounded-full h-4 min-w-[16px] px-1 flex items-center justify-center border border-red-600">
+                                                        {selectedPoIds.size}
+                                                    </span>
                                                 </Button>
                                             )}
                                         </>
@@ -751,14 +871,12 @@ export default function PurchaseOrders() {
                                     <TableHeader className="bg-slate-50">
                                         <TableRow>
                                             <TableHead className="w-12 text-center border-r">
-                                                {user?.role !== 'purchase_team' && (
-                                                    <input
-                                                        type="checkbox"
-                                                        className="w-4 h-4 rounded border-gray-300 align-middle"
-                                                        checked={filteredPOs.length > 0 && selectedPoIds.size === filteredPOs.length}
-                                                        onChange={toggleSelectAll}
-                                                    />
-                                                )}
+                                                <input
+                                                    type="checkbox"
+                                                    className="w-4 h-4 rounded border-gray-300 align-middle"
+                                                    checked={filteredPOs.length > 0 && selectedPoIds.size === filteredPOs.length}
+                                                    onChange={toggleSelectAll}
+                                                />
                                             </TableHead>
                                             <TableHead className="w-6"></TableHead>
                                             <TableHead className="font-bold">Annexure No.</TableHead>
@@ -794,14 +912,12 @@ export default function PurchaseOrders() {
                                                     <React.Fragment key={mainPo!.id}>
                                                         <TableRow className="hover:bg-slate-50/50 cursor-pointer group" onClick={() => setLocation(`/purchase-orders/${mainPo!.id}`)}>
                                                             <TableCell className="text-center border-r" onClick={(e) => e.stopPropagation()}>
-                                                                {user?.role !== 'purchase_team' && (
-                                                                    <input
-                                                                        type="checkbox"
-                                                                        className="w-4 h-4 rounded border-gray-300 align-middle"
-                                                                        checked={selectedPoIds.has(mainPo!.id)}
-                                                                        onChange={(e) => toggleSelectPo(mainPo!.id, e)}
-                                                                    />
-                                                                )}
+                                                                <input
+                                                                    type="checkbox"
+                                                                    className="w-4 h-4 rounded border-gray-300 align-middle"
+                                                                    checked={selectedPoIds.has(mainPo!.id)}
+                                                                    onChange={(e) => toggleSelectPo(mainPo!.id, e)}
+                                                                />
                                                             </TableCell>
                                                             <TableCell className="p-0 text-center" onClick={(e) => { e.stopPropagation(); if (hasMultiple) toggleGroup(base, e); }}>
                                                                 {hasMultiple && (
@@ -894,14 +1010,12 @@ export default function PurchaseOrders() {
                                                         {isExpanded && subPos.map((subPo) => (
                                                             <TableRow key={subPo.id} className="bg-slate-50/50 hover:bg-slate-100/50 cursor-pointer border-l-4 border-l-slate-200" onClick={() => setLocation(`/purchase-orders/${subPo.id}`)}>
                                                                 <TableCell className="text-center border-r" onClick={(e) => e.stopPropagation()}>
-                                                                    {user?.role !== 'purchase_team' && (
-                                                                        <input
-                                                                            type="checkbox"
-                                                                            className="w-4 h-4 rounded border-gray-300 align-middle ml-2"
-                                                                            checked={selectedPoIds.has(subPo.id)}
-                                                                            onChange={(e) => toggleSelectPo(subPo.id, e)}
-                                                                        />
-                                                                    )}
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        className="w-4 h-4 rounded border-gray-300 align-middle ml-2"
+                                                                        checked={selectedPoIds.has(subPo.id)}
+                                                                        onChange={(e) => toggleSelectPo(subPo.id, e)}
+                                                                    />
                                                                 </TableCell>
                                                                 <TableCell></TableCell>
                                                                 <TableCell className="pl-8 text-sm text-slate-600 font-medium italic">
