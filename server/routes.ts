@@ -7365,11 +7365,30 @@ export async function registerRoutes(
           currentRateById.set(m.id, { name: m.name, rate: Number(m.rate) });
         });
 
+        // Changes the user already chose "Ignore" for shouldn't keep coming
+        // back every time this endpoint is re-polled. Pull the most recent
+        // Ignored decision per (item, material) on this BOQ version and
+        // skip re-surfacing it — UNLESS the catalog rate has moved again
+        // since it was ignored, in which case it's a genuinely new change.
+        const ignoredRes = await query(
+          `SELECT DISTINCT ON (boq_id, material_id) boq_id, material_id, new_rate
+             FROM boq_price_update_audit
+            WHERE boq_version_id = $1 AND action = 'Ignored'
+            ORDER BY boq_id, material_id, created_at DESC`,
+          [versionId]
+        );
+        const lastIgnoredRateByKey = new Map<string, number>();
+        ignoredRes.rows.forEach((row: any) => {
+          lastIgnoredRateByKey.set(`${row.boq_id}|${row.material_id}`, Number(row.new_rate));
+        });
+
         const changes = lineRefs
           .map((ref) => {
             const current = currentRateById.get(ref.materialId);
             if (!current || Number.isNaN(current.rate)) return null;
             if (current.rate === ref.oldRate) return null;
+            const lastIgnoredRate = lastIgnoredRateByKey.get(`${ref.itemId}|${ref.materialId}`);
+            if (lastIgnoredRate !== undefined && lastIgnoredRate === current.rate) return null;
             return {
               itemId: ref.itemId,
               itemName: ref.itemName,
