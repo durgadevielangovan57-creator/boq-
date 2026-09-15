@@ -46,12 +46,14 @@ export function ProjectPricingBanner({
   onApplyAll,
   onApplySingle,
   onIgnoreSingle,
+  onViewSingle,
   isUpdating
 }: {
   items: any[];
   onApplyAll: () => void | Promise<void>;
-  onApplySingle: (m: any) => void;
+  onApplySingle: (m: any, chosenAlt?: any) => void;
   onIgnoreSingle: (m: any) => void;
+  onViewSingle?: (m: any) => void;
   isUpdating?: boolean;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -93,38 +95,103 @@ export function ProjectPricingBanner({
 
       {isExpanded && (
         <div className="border-t border-blue-200 bg-white/50 p-3 max-h-[250px] overflow-y-auto w-full">
-          <table className="w-full text-xs">
-            <thead className="text-left text-blue-900/70 border-b border-blue-200">
-              <tr>
-                <th className="pb-1.5 font-bold uppercase w-[15%]">Product</th>
-                <th className="pb-1.5 font-bold uppercase w-[35%]">Item Name</th>
-                <th className="pb-1.5 font-bold uppercase text-right w-[15%]">Current Rate</th>
-                <th className="pb-1.5 font-bold uppercase text-right w-[15%]">PP Rate</th>
-                <th className="pb-1.5 font-bold uppercase text-center w-[20%]">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-blue-100">
-              {items.map((m, idx) => (
-                <tr key={`pp-${m.boqItemId}-${m.type}-${m.index}-${idx}`} className="hover:bg-blue-50/50">
-                  <td className="py-1.5 text-slate-500 font-semibold truncate max-w-[120px]" title={m.productName}>{m.productName}</td>
-                  <td className="py-1.5 font-bold truncate max-w-[200px]" title={m.name || "Item"}>{m.name || "Item"}</td>
-                  <td className="py-1.5 text-right text-slate-600">₹{m.currentRate}</td>
-                  <td className="py-1.5 text-right font-bold text-blue-700">
-                    ₹{m.ppRate}
-                    {(m.ppAlt?.min_quantity || m.ppAlt?.max_quantity) && (
-                      <div className="text-[9px] font-normal text-blue-500" title="Qualifying quantity range for this Project Pricing rate">
-                        Qty {m.qty ?? "—"} in {m.ppAlt?.min_quantity ?? 0}–{m.ppAlt?.max_quantity ?? "∞"}
+          <div className="min-w-[720px]">
+            {/* Header row */}
+            <div className="grid grid-cols-[15%_30%_15%_18%_22%] gap-2 pb-1.5 border-b border-blue-200 text-left text-blue-900/70">
+              <div className="font-bold uppercase text-[11px]">Product</div>
+              <div className="font-bold uppercase text-[11px]">Item Name</div>
+              <div className="font-bold uppercase text-[11px] text-right">Current Rate</div>
+              <div className="font-bold uppercase text-[11px] text-right">PP Rate</div>
+              <div className="font-bold uppercase text-[11px] text-center">Actions</div>
+            </div>
+
+            <div className="divide-y divide-blue-100">
+              {items.map((m, idx) => {
+                const options = (m.ppOptions && m.ppOptions.length > 0) ? m.ppOptions : (m.ppAlt ? [m.ppAlt] : []);
+                const hasMultiple = options.length > 1;
+                return (
+                  <div
+                    key={`pp-${m.boqItemId}-${m.type}-${m.index}-${idx}`}
+                    className="grid grid-cols-[15%_30%_15%_18%_22%] gap-2 py-1.5 items-start hover:bg-blue-50/50"
+                  >
+                    {/* Product */}
+                    <div className="text-slate-500 font-semibold truncate self-start" title={m.productName}>{m.productName}</div>
+
+                    {/* Item Name */}
+                    <div className="font-bold truncate self-start" title={m.name || "Item"}>
+                      {m.name || "Item"}
+                      {m.alreadyOnPp && (
+                        <div className="text-[9px] font-normal text-emerald-600 mt-0.5 whitespace-normal">
+                          Already on Project Pricing — another option available
+                        </div>
+                      )}
+                      {hasMultiple && (
+                        <div className="text-[9px] font-normal text-amber-600 mt-0.5 whitespace-normal">
+                          {options.length} Project Pricing options available for this material
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Current Rate */}
+                    <div className="text-right text-slate-600 self-start">₹{m.currentRate}</div>
+
+                    {/* PP Rate */}
+                    <div className="text-right self-start">
+                      {!hasMultiple ? (
+                        <>
+                          <div className="font-bold text-blue-700">₹{m.ppRate}</div>
+                          {(m.ppAlt?.min_quantity || m.ppAlt?.max_quantity) && (
+                            <div className="text-[9px] font-normal text-blue-500" title="Qualifying quantity range for this Project Pricing rate">
+                              Qty {m.qty ?? "—"} in {m.ppAlt?.min_quantity ?? 0}–{m.ppAlt?.max_quantity ?? "∞"}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="space-y-1">
+                          {options.map((opt: any) => (
+                            <div key={opt.id} className="flex items-center justify-end gap-1.5">
+                              <div className="text-right">
+                                <div className="font-bold text-blue-700">₹{opt.rate}</div>
+                                {(opt.min_quantity || opt.max_quantity) && (
+                                  <div className="text-[9px] font-normal text-blue-500">
+                                    Qty {m.qty ?? "—"} in {opt.min_quantity ?? 0}–{opt.max_quantity ?? "∞"}
+                                  </div>
+                                )}
+                              </div>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-6 text-[10px] px-1.5 border-blue-300 text-blue-700 hover:bg-blue-100 font-bold bg-white shrink-0"
+                                onClick={() => onApplySingle(m, opt)}
+                              >
+                                Use
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Actions — a real grid column, so View sits directly
+                        under View and Ignore directly under Ignore for
+                        every row, top-aligned regardless of how tall the
+                        PP Rate column gets next to it. */}
+                    <div className="self-start">
+                      <div className="flex justify-center flex-wrap gap-1">
+                        {onViewSingle && (
+                          <Button variant="ghost" size="sm" className="h-6 text-[10px] px-1.5 text-blue-600 hover:bg-blue-50 font-bold" onClick={() => onViewSingle(m)}>View</Button>
+                        )}
+                        <Button variant="ghost" size="sm" className="h-6 text-[10px] px-1.5 text-slate-500 hover:bg-slate-100 font-bold" onClick={() => onIgnoreSingle(m)}>Ignore</Button>
+                        {!hasMultiple && (
+                          <Button variant="outline" size="sm" className="h-6 text-[10px] px-1.5 border-blue-300 text-blue-700 hover:bg-blue-100 font-bold bg-white" onClick={() => onApplySingle(m)}>Use PP</Button>
+                        )}
                       </div>
-                    )}
-                  </td>
-                  <td className="py-1.5 flex justify-center gap-1">
-                    <Button variant="ghost" size="sm" className="h-6 text-[10px] px-1.5 text-slate-500 hover:bg-slate-100 font-bold" onClick={() => onIgnoreSingle(m)}>Ignore</Button>
-                    <Button variant="outline" size="sm" className="h-6 text-[10px] px-1.5 border-blue-300 text-blue-700 hover:bg-blue-100 font-bold bg-white" onClick={() => onApplySingle(m)}>Use PP</Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
     </div>

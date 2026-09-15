@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, FileText, Maximize2, Ruler } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, FileText, Maximize2, Ruler, Percent, Copy, AlignLeft } from "lucide-react";
 import { fuzzySearch, cn } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -44,6 +44,66 @@ import { EditableHsnSac } from './EditableHsnSac';
 import { BoqItemRow } from './BoqItemRow';
 import { IndicateReasonDialog } from './IndicateReasonDialog';
 import { SaveConfirmDialog, SaveAsWizardDialog, PendingManualItem } from './ManualItemSaveDialogs';
+
+/**
+ * Icon-only action button (medium size) with a small hover tooltip showing
+ * the label. Used for the item action row (Amend rates, Analysis, Save as
+ * template, Save, Save As, Comments, Delete).
+ */
+export function IconActionButton({
+  icon: Icon,
+  label,
+  onClick,
+  disabled,
+  active,
+  tone = "slate",
+  badge,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  active?: boolean;
+  tone?: "slate" | "blue" | "orange" | "emerald" | "indigo" | "red" | "purple";
+  badge?: number;
+}) {
+  const toneClasses: Record<string, string> = {
+    slate: "border-slate-300 bg-white text-slate-600 hover:bg-slate-50",
+    blue: "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100",
+    orange: "border-orange-300 bg-orange-100 text-orange-700 hover:bg-orange-200",
+    emerald: "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100",
+    indigo: "border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100",
+    red: "border-red-300 bg-red-50 text-red-600 hover:bg-red-100",
+    purple: "border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100",
+  };
+  return (
+    <div className="relative group inline-flex">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={label}
+        className={cn(
+          "h-8 w-8 flex items-center justify-center rounded-md border shadow-sm shrink-0 transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+          active ? toneClasses.orange : toneClasses[tone]
+        )}
+      >
+        <Icon className="h-4 w-4" />
+        {!!badge && badge > 0 && (
+          <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[9px] rounded-full h-4 min-w-4 flex items-center justify-center px-1 font-bold shadow border border-white">
+            {badge}
+          </span>
+        )}
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-1/2 top-full z-20 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded bg-slate-900 px-2 py-1 text-[11px] font-semibold text-white opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
+      >
+        {label}
+      </span>
+    </div>
+  );
+}
 
 export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, isVersionSubmitted, expandedProductIds, setExpandedProductIds, getEditedValue, updateEditedField, handleDeleteRow, handleFinalizeProduct, handleAddItem, loadBoqItemsAndEdits, setBoqItems, checkBudgetEarly, handleSaveProject, onCardDragStart, onCardDragOver, onCardDrop, isCardDragOver, mismatches, isCompactView, onSaveAsTemplate, editedFields, comments, users, currentUser, onAddComment, selectedVersionId, totalProducts, onProductOrdinalChange, itemCategoryFilter, bomButtonsEnabled, onAnalysis, onFocusProduct, allProductNames, onBomShopRateChangeSubmitted, bomShopRateRequests, manualItemRequests, onManualItemRequestSubmitted, refreshComments }: {
   boqItem: BOMItem; boqIdx: number; isVersionSubmitted: boolean;
@@ -118,6 +178,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
     }
   };
   const [showDescTooltip, setShowDescTooltip] = useState(false);
+  const [showDescriptionField, setShowDescriptionField] = useState(!!tableData?.finalize_description);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [amendRatesActive, setAmendRatesActive] = useState(false);
@@ -908,14 +969,17 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                   </span>
                 )}
                 {!tableData.is_finalized && (
-                  <Button variant="outline" size="sm" className="h-7 text-xs border-slate-300 font-bold" disabled={isVersionSubmitted || !bomButtonsEnabled} onClick={() => handleAddItem(boqItem.id)}>+ Add Item</Button>
+                  <IconActionButton
+                    icon={Plus}
+                    label="Add Item"
+                    tone="slate"
+                    onClick={() => handleAddItem(boqItem.id)}
+                    disabled={isVersionSubmitted || !bomButtonsEnabled}
+                  />
                 )}
-                <Button variant="default" size="sm" className="h-7 text-xs bg-green-600 hover:bg-green-700 text-white font-bold" disabled={isVersionSubmitted || tableData.is_finalized || isMultiItemLooseProduct} onClick={() => handleFinalizeProduct(boqItem.id)}>Finalize</Button>
               </div>
-            </div>
 
-            {/* Row 3: Rate, Total, Analysis, Save, Comments, Delete */}
-            <div className="flex flex-wrap items-center gap-3">
+              <div className="w-px self-stretch bg-slate-200 mx-0.5 hidden sm:block" />
               <div className="flex items-center gap-2">
                 <div className="flex flex-col bg-white border border-slate-200 rounded px-3 py-1 shadow-sm min-w-[100px]">
                   <span className="text-[9px] text-slate-400 font-black uppercase tracking-tight">Rate per {isLumpSum ? "LS" : (tableData.configBasis?.requiredUnitType || "Unit")}</span>
@@ -930,80 +994,82 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                 </div>
               </div>
 
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className={`h-7 text-xs font-bold shadow-sm ${amendRatesActive ? 'bg-orange-100 text-orange-700 border-orange-300' : 'border-slate-300 bg-white hover:bg-slate-50'}`}
-                  title={amendRatesActive ? "Finish editing rates. Use 'Submit Rate Amend Request' at the bottom of the page to send changes for admin approval." : "Enable rate editing for this product"}
+              <div className="flex items-center gap-2 flex-wrap">
+                <IconActionButton
+                  icon={Percent}
+                  label={amendRatesActive ? "Done editing rates" : "Amend rates"}
+                  tone="orange"
+                  active={amendRatesActive}
                   onClick={() => setAmendRatesActive(!amendRatesActive)}
                   disabled={isVersionSubmitted || tableData.is_finalized}
-                >
-                  <Edit className="h-3.5 w-3.5 mr-1" />
-                  {amendRatesActive ? "Done Editing" : "Amend Rates"}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-xs bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 font-bold shadow-sm"
+                />
+                <IconActionButton
+                  icon={History}
+                  label="Analysis"
+                  tone="blue"
                   onClick={() => onAnalysis(productName)}
-                >
-                  <History className="h-3.5 w-3.5 mr-1" />
-                  Analysis
-                </Button>
-                <Button variant="outline" size="sm" className="h-7 text-xs font-bold border-slate-300 shadow-sm" disabled={isVersionSubmitted} onClick={() => onSaveAsTemplate?.(boqItem)}>Save as Template</Button>
+                />
+                <IconActionButton
+                  icon={FileText}
+                  label="Save as template"
+                  tone="slate"
+                  disabled={isVersionSubmitted}
+                  onClick={() => onSaveAsTemplate?.(boqItem)}
+                />
                 {(!isVersionSubmitted && (bomButtonsEnabled || pendingManualItems.length > 0)) && (
                   <>
                     {!isLooseItem && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 text-xs font-bold border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 shadow-sm"
-                        title={pendingManualItems.length > 0 ? `Add ${pendingManualItems.length} newly added manual item(s) to this product (requires approval)` : "Edit product and submit changes for approval"}
+                      <IconActionButton
+                        icon={Save}
+                        label={pendingManualItems.length > 0 ? `Save (${pendingManualItems.length} new item${pendingManualItems.length === 1 ? "" : "s"})` : "Save changes"}
+                        tone="emerald"
+                        badge={pendingManualItems.length}
                         onClick={() => setShowSaveEditWizard(true)}
-                      >
-                        <Save className="h-3.5 w-3.5 mr-1" />
-                        Save {pendingManualItems.length > 0 ? `(${pendingManualItems.length})` : ""}
-                      </Button>
+                      />
                     )}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs font-bold border-indigo-300 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 shadow-sm"
-                      title={pendingManualItems.length > 0 ? "Use these newly added manual items to create a new product (requires approval)" : "Use this product as a base to create a new product (requires approval)"}
+                    <IconActionButton
+                      icon={Copy}
+                      label="Save as new product"
+                      tone="indigo"
                       onClick={() => setShowSaveAsWizard(true)}
-                    >
-                      Save As
-                    </Button>
+                    />
                   </>
                 )}
-                <Button variant="outline" size="sm" className="h-7 text-xs font-bold border-slate-300 shadow-sm relative" onClick={() => onAddComment(selectedVersionId!, boqItem.id)}>
-                  <MessageSquare className="h-3 w-3 mr-1" />
-                  Comments ({comments.filter(c => c.product_id === boqItem.id || (c.item_id && c.item_id.startsWith(boqItem.id))).length})
-                  {(() => {
-                    const unread = comments.filter(c => {
+                <IconActionButton
+                  icon={MessageSquare}
+                  label={`Comments (${comments.filter(c => c.product_id === boqItem.id || (c.item_id && c.item_id.startsWith(boqItem.id))).length})`}
+                  tone="slate"
+                  badge={(() => {
+                    return comments.filter(c => {
                       if (c.product_id !== boqItem.id && !(c.item_id && c.item_id.startsWith(boqItem.id))) return false;
                       if (c.user_id === currentUser?.id) return false;
                       const isVisible = (!c.visible_to || c.visible_to.length === 0 || c.visible_to.includes(currentUser?.username));
                       return isVisible && (!c.read_by || !c.read_by.includes(currentUser?.id));
                     }).length;
-                    return unread > 0 ? (
-                      <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[9px] rounded-full h-4 min-w-4 flex items-center justify-center px-1 font-bold shadow border border-white">{unread}</span>
-                    ) : null;
                   })()}
-                </Button>
+                  onClick={() => onAddComment(selectedVersionId!, boqItem.id)}
+                />
                 {!isBifProd && (
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    className="h-7 w-7 p-0 bg-red-500 hover:bg-red-600 shadow-sm"
+                  <IconActionButton
+                    icon={Trash2}
+                    label="Delete product"
+                    tone="red"
                     disabled={isVersionSubmitted}
                     onClick={() => setDeleteConfirmOpen(true)}
-                    title="Delete Product"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+                  />
                 )}
+                <div className="relative inline-flex">
+                  <IconActionButton
+                    icon={AlignLeft}
+                    label={showDescriptionField ? "Hide description" : (tableData.finalize_description ? "Show description" : "Add description")}
+                    tone="slate"
+                    active={showDescriptionField}
+                    onClick={() => setShowDescriptionField(!showDescriptionField)}
+                  />
+                  {!showDescriptionField && tableData.finalize_description && (
+                    <span className="absolute -top-1.5 -right-1.5 h-2.5 w-2.5 rounded-full bg-blue-500 border border-white" />
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1039,41 +1105,50 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
               </span>
             )}
 
-            {/* Row 4: Description + HSN/SAC */}
+            {/* Row 4: Project Target (if applicable) + HSN/SAC, side by side */}
             <div className="flex flex-wrap items-center gap-4 pt-1">
-              <div className="relative flex-1 min-w-[300px]"
-                onMouseEnter={(e) => {
-                  if (tableData.finalize_description) {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    setTooltipPos({ x: rect.left, y: rect.bottom + 5 });
-                    setShowDescTooltip(true);
-                  }
-                }}
-                onMouseLeave={() => setShowDescTooltip(false)}
-              >
-                <textarea
-                  rows={1}
-                  placeholder="Enter product description..."
-                  className="min-h-[32px] py-1.5 px-3 rounded-md border text-xs w-full font-bold text-slate-700 bg-slate-50 border-slate-200 hover:bg-white focus:bg-white focus:ring-1 ring-blue-100 resize-y"
-                  defaultValue={tableData.finalize_description || ""}
-                  disabled={isVersionSubmitted}
-                  onFocus={checkBudgetEarly}
-                  onBlur={async e => {
-                    const newDesc = e.target.value;
-                    if (newDesc === (tableData.finalize_description || "")) return;
-                    try {
-                      const updatedTd = { ...tableData, finalize_description: newDesc };
-                      const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
-                      if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
-                    } catch (err) { console.error("Failed to save description", err); }
-                  }}
-                />
-                {showDescTooltip && tableData.finalize_description && (
-                  <div className="fixed bg-gray-900 text-white text-[10px] rounded px-3 py-2 shadow-lg z-50 max-w-xs break-words font-medium" style={{ left: `${tooltipPos.x}px`, top: `${tooltipPos.y}px` }}>
-                    {tableData.finalize_description}
+              {(isEngineBased || isMultiItemLooseProduct) && (
+                <div className={`flex items-center gap-3 ${isLumpSum ? "opacity-50 pointer-events-none" : ""}`}>
+                  <span className={`text-xs font-black uppercase tracking-tight ${isMultiItemLooseProduct ? "text-red-500" : "text-slate-500"}`}>
+                    {isMultiItemLooseProduct ? "Project Target (Save As Required):" : "Project Target:"}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      className="h-8 w-24 text-xs font-black text-blue-600 border-blue-200 focus:ring-1 ring-blue-100 bg-white"
+                      value={isMultiItemLooseProduct ? "" : displayQty}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 0;
+                        if (isLumpSum || isMultiItemLooseProduct) return;
+                        setLocalTarget(Math.max(0, val));
+                      }}
+
+                      disabled={isVersionSubmitted || tableData.is_finalized || isMultiItemLooseProduct}
+                      onBlur={async (e) => {
+                        if (isMultiItemLooseProduct) return;
+                        const newVal = parseFloat(e.target.value);
+                        const currentVal = tableData.targetRequiredQty ?? 1;
+                        if (isNaN(newVal) || newVal === currentVal || newVal < 0) { setLocalTarget(currentVal); return; }
+                        try {
+                          const updatedTd = { ...tableData, targetRequiredQty: newVal };
+                          const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
+                          if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
+                        } catch (err) { console.error("Failed to update target qty", err); }
+                      }}
+                    />
+                    <span className="text-xs font-black text-blue-600">
+                      {isLumpSum ? "LS" : (isMultiItemLooseProduct ? "Unit" : (tableData.configBasis?.requiredUnitType || "Unit"))}
+                    </span>
                   </div>
-                )}
-              </div>
+                  {isMultiItemLooseProduct && (
+                    <span className="text-[10px] font-bold text-red-600 ml-2 bg-red-50 px-2 py-0.5 rounded border border-red-200">
+                      Please use 'Save As' to convert this multi-item group into a Product.
+                    </span>
+                  )}
+
+                  <div className="w-px self-stretch bg-slate-200 mx-1 hidden sm:block" />
+                </div>
+              )}
 
               <EditableHsnSac
                 tableData={tableData}
@@ -1091,44 +1166,39 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
               />
             </div>
 
-            {/* Row 5: Project Target */}
-            {(isEngineBased || isMultiItemLooseProduct) && (
-              <div className={`flex items-center gap-3 pt-1 ${isLumpSum ? "opacity-50 pointer-events-none" : ""}`}>
-                <span className={`text-xs font-black uppercase tracking-tight ${isMultiItemLooseProduct ? "text-red-500" : "text-slate-500"}`}>
-                  {isMultiItemLooseProduct ? "Project Target (Save As Required):" : "Project Target:"}
-                </span>
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="number"
-                    className="h-8 w-24 text-xs font-black text-blue-600 border-blue-200 focus:ring-1 ring-blue-100 bg-white"
-                    value={isMultiItemLooseProduct ? "" : displayQty}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value) || 0;
-                      if (isLumpSum || isMultiItemLooseProduct) return;
-                      setLocalTarget(Math.max(0, val));
-                    }}
-
-                    disabled={isVersionSubmitted || tableData.is_finalized || isMultiItemLooseProduct}
-                    onBlur={async (e) => {
-                      if (isMultiItemLooseProduct) return;
-                      const newVal = parseFloat(e.target.value);
-                      const currentVal = tableData.targetRequiredQty ?? 1;
-                      if (isNaN(newVal) || newVal === currentVal || newVal < 0) { setLocalTarget(currentVal); return; }
-                      try {
-                        const updatedTd = { ...tableData, targetRequiredQty: newVal };
-                        const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
-                        if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
-                      } catch (err) { console.error("Failed to update target qty", err); }
-                    }}
-                  />
-                  <span className="text-xs font-black text-blue-600">
-                    {isLumpSum ? "LS" : (isMultiItemLooseProduct ? "Unit" : (tableData.configBasis?.requiredUnitType || "Unit"))}
-                  </span>
-                </div>
-                {isMultiItemLooseProduct && (
-                  <span className="text-[10px] font-bold text-red-600 ml-2 bg-red-50 px-2 py-0.5 rounded border border-red-200">
-                    Please use 'Save As' to convert this multi-item group into a Product.
-                  </span>
+            {showDescriptionField && (
+              <div className="relative flex-1 min-w-[300px] pt-1"
+                onMouseEnter={(e) => {
+                  if (tableData.finalize_description) {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setTooltipPos({ x: rect.left, y: rect.bottom + 5 });
+                    setShowDescTooltip(true);
+                  }
+                }}
+                onMouseLeave={() => setShowDescTooltip(false)}
+              >
+                <textarea
+                  rows={1}
+                  placeholder="Enter product description..."
+                  className="min-h-[32px] py-1.5 px-3 rounded-md border text-xs w-full font-bold text-slate-700 bg-slate-50 border-slate-200 hover:bg-white focus:bg-white focus:ring-1 ring-blue-100 resize-y"
+                  defaultValue={tableData.finalize_description || ""}
+                  disabled={isVersionSubmitted}
+                  autoFocus
+                  onFocus={checkBudgetEarly}
+                  onBlur={async e => {
+                    const newDesc = e.target.value;
+                    if (newDesc === (tableData.finalize_description || "")) return;
+                    try {
+                      const updatedTd = { ...tableData, finalize_description: newDesc };
+                      const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
+                      if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
+                    } catch (err) { console.error("Failed to save description", err); }
+                  }}
+                />
+                {showDescTooltip && tableData.finalize_description && (
+                  <div className="fixed bg-gray-900 text-white text-[10px] rounded px-3 py-2 shadow-lg z-50 max-w-xs break-words font-medium" style={{ left: `${tooltipPos.x}px`, top: `${tooltipPos.y}px` }}>
+                    {tableData.finalize_description}
+                  </div>
                 )}
               </div>
             )}

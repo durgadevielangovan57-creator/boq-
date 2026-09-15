@@ -36,6 +36,8 @@ type Material = {
   sac_code?: string;
   rate?: number;
   is_project_pricing?: boolean;
+  min_quantity?: number | string | null;
+  max_quantity?: number | string | null;
   created_at: string;
   updated_at: string;
 };
@@ -340,7 +342,14 @@ export default function MaterialPicker({
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
                           {material.is_project_pricing && (
-                            <Badge className="bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 text-[9px] px-1.5 py-0 h-4 font-bold whitespace-nowrap">
+                            <Badge
+                              className="bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 text-[9px] px-1.5 py-0 h-4 font-bold whitespace-nowrap"
+                              title={
+                                (material.min_quantity || material.max_quantity)
+                                  ? `Applies for qty ${material.min_quantity ?? 0}–${material.max_quantity ?? "∞"} ${material.unit || ""}`
+                                  : undefined
+                              }
+                            >
                               ★ Project Pricing
                             </Badge>
                           )}
@@ -351,6 +360,12 @@ export default function MaterialPicker({
                           )}
                         </div>
                       </div>
+
+                      {material.is_project_pricing && (material.min_quantity != null || material.max_quantity != null) && (
+                        <div className="text-[10px] font-semibold text-amber-600 mt-0.5">
+                          Project Pricing applies for qty {material.min_quantity ?? 0}–{material.max_quantity ?? "∞"} {material.unit || ""}
+                        </div>
+                      )}
 
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
                         {material.shop_name && (

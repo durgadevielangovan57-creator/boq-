@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, Zap, Store, FolderOpen, SlidersHorizontal, Settings, Package } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, Lock, Unlock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, Zap, Store, FolderOpen, SlidersHorizontal, Settings, Package, PackagePlus, ListPlus, ClipboardList, Rows3, Send, FileSpreadsheet, FileText } from "lucide-react";
 import { fuzzySearch, cn } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -48,7 +48,7 @@ import { PriceUpdateBanner } from './components/PriceUpdateBanner';
 import { ProjectPricingBanner } from './components/ProjectPricingBanner';
 import { EditableHsnSac } from './components/EditableHsnSac';
 import { VersionStatusBanner } from './components/VersionStatusBanner';
-import { BoqItemCard } from './components/BoqItemCard';
+import { BoqItemCard, IconActionButton } from './components/BoqItemCard';
 import { ProductFocusDialog } from './components/ProductFocusDialog';
 import { BoqItemRow } from './components/BoqItemRow';
 import { HistorySection } from './components/HistorySection';
@@ -93,6 +93,49 @@ function HeaderIconButton({
         >
           <Icon className={cn("h-4 w-4", spinning && "animate-spin")} />
         </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+// Chip-style icon-only button (used for New Version, History, Delete, Advanced
+// Options, Refresh, Add Product, Add Item, Comment). Label shows as a tooltip
+// on hover so the row stays compact with just icons, as requested.
+function ActionChip({
+  icon: Icon,
+  label,
+  onClick,
+  disabled,
+  spinning = false,
+  colorClass = "bg-white border-slate-200 text-slate-600 hover:border-blue-200 hover:text-blue-600",
+  badge,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  spinning?: boolean;
+  colorClass?: string;
+  badge?: React.ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={disabled}
+          aria-label={label}
+          className={cn(
+            "relative flex items-center justify-center h-9 w-9 rounded-xl border shadow-sm shrink-0 transition-colors",
+            "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-inherit",
+            colorClass
+          )}
+        >
+          {badge}
+          <Icon className={cn("h-4 w-4", spinning && "animate-spin")} />
+        </button>
       </TooltipTrigger>
       <TooltipContent side="bottom">{label}</TooltipContent>
     </Tooltip>
@@ -172,6 +215,8 @@ export default function CreateBom() {
   const [itemCategoryFilter, setItemCategoryFilter] = useState("all");
   const [projectPricingFilter, setProjectPricingFilter] = useState(false);
   const [isCompactView, setIsCompactView] = useState(false);
+  const [isFabOpen, setIsFabOpen] = useState(false);
+  const [isSelectorExpanded, setIsSelectorExpanded] = useState(true);
   const [analysisProduct, setAnalysisProduct] = useState<string | null>(null);
   const [cardDragOverIdx, setCardDragOverIdx] = useState<number | null>(null);
   const cardDragIdxRef = useRef<number | null>(null);
@@ -1686,6 +1731,24 @@ export default function CreateBom() {
     return true;
   };
 
+  // A given template_id can have more than one Project Pricing material
+  // configured against it (e.g. different quantity-tiered rates). We used
+  // to grab only the first match via Object.values(...).find(...), which
+  // silently hid any other qualifying Project Pricing options from the
+  // user. Now we collect every PP material sharing the template_id, keep
+  // the ones that qualify for the line's quantity, and surface all of
+  // them as `ppOptions` so nothing is hidden. `ppAlt`/`ppRate` still point
+  // at a sensible default (the cheapest qualifying option) so existing
+  // "apply" behavior keeps working when the user doesn't pick a specific one.
+  const findQualifyingPpOptions = (templateId: string, qty: number) => {
+    const options = Object.values(materialsById).filter(
+      (mat: any) => mat.template_id === templateId && mat.is_project_pricing
+    );
+    return options
+      .filter((opt: any) => qualifiesForQuantityRange(opt, qty))
+      .sort((a: any, b: any) => Number(a.rate) - Number(b.rate));
+  };
+
   const ppMatches = useMemo(() => {
     const list: any[] = [];
     boqItems.forEach(boqItem => {
@@ -1693,28 +1756,47 @@ export default function CreateBom() {
       const productName = td.product_name || boqItem.estimator || "Unknown Product";
       if (td.materialLines) {
         td.materialLines.forEach((ml: any, idx: number) => {
+          const currentMat = materialsById[ml.id || ml.materialId];
+          const templateId = currentMat?.template_id || ml.template_id;
+          if (!templateId) return;
           if (!ml.is_project_pricing) {
-            const currentMat = materialsById[ml.id || ml.materialId];
-            const templateId = currentMat?.template_id || ml.template_id;
-            if (templateId) {
-              const ppAlt = Object.values(materialsById).find(mat => mat.template_id === templateId && mat.is_project_pricing);
-              if (ppAlt && qualifiesForQuantityRange(ppAlt, ml.qty)) {
-                list.push({ boqItemId: boqItem.id, type: 'materialLine', index: idx, currentRate: ml.supplyRate, ppRate: ppAlt.rate, name: ml.materialName || ml.name || "Material", productName, ppAlt, qty: ml.qty });
-              }
+            const ppOptions = findQualifyingPpOptions(templateId, ml.qty);
+            if (ppOptions.length > 0) {
+              const ppAlt = ppOptions[0];
+              list.push({ boqItemId: boqItem.id, type: 'materialLine', index: idx, currentRate: ml.supplyRate, ppRate: ppAlt.rate, name: ml.materialName || ml.name || "Material", productName, ppAlt, ppOptions, qty: ml.qty });
+            }
+          } else {
+            // Line is already using a Project Pricing material — but that
+            // template can have more than one PP rate configured (e.g. a
+            // different quantity tier, or a newer/cheaper one added later).
+            // Surface those other options too, excluding whichever one is
+            // already applied to this line.
+            const appliedId = ml.id || ml.materialId;
+            const ppOptions = findQualifyingPpOptions(templateId, ml.qty).filter((opt: any) => opt.id !== appliedId);
+            if (ppOptions.length > 0) {
+              const ppAlt = ppOptions[0];
+              list.push({ boqItemId: boqItem.id, type: 'materialLine', index: idx, currentRate: ml.supplyRate, ppRate: ppAlt.rate, name: ml.materialName || ml.name || "Material", productName, ppAlt, ppOptions, qty: ml.qty, alreadyOnPp: true });
             }
           }
         });
       }
       if (td.step11_items) {
         td.step11_items.forEach((s11: any, idx: number) => {
+          const currentMat = materialsById[s11.id];
+          const templateId = currentMat?.template_id || s11.template_id;
+          if (!templateId) return;
           if (!s11.is_project_pricing) {
-            const currentMat = materialsById[s11.id];
-            const templateId = currentMat?.template_id || s11.template_id;
-            if (templateId) {
-              const ppAlt = Object.values(materialsById).find(mat => mat.template_id === templateId && mat.is_project_pricing);
-              if (ppAlt && qualifiesForQuantityRange(ppAlt, s11.qty)) {
-                list.push({ boqItemId: boqItem.id, type: 'step11', index: idx, currentRate: (s11.supply_rate || 0), ppRate: ppAlt.rate, name: s11.title || "Item", productName, ppAlt, qty: s11.qty });
-              }
+            const ppOptions = findQualifyingPpOptions(templateId, s11.qty);
+            if (ppOptions.length > 0) {
+              const ppAlt = ppOptions[0];
+              list.push({ boqItemId: boqItem.id, type: 'step11', index: idx, currentRate: (s11.supply_rate || 0), ppRate: ppAlt.rate, name: s11.title || "Item", productName, ppAlt, ppOptions, qty: s11.qty });
+            }
+          } else {
+            const appliedId = s11.id;
+            const ppOptions = findQualifyingPpOptions(templateId, s11.qty).filter((opt: any) => opt.id !== appliedId);
+            if (ppOptions.length > 0) {
+              const ppAlt = ppOptions[0];
+              list.push({ boqItemId: boqItem.id, type: 'step11', index: idx, currentRate: (s11.supply_rate || 0), ppRate: ppAlt.rate, name: s11.title || "Item", productName, ppAlt, ppOptions, qty: s11.qty, alreadyOnPp: true });
             }
           }
         });
@@ -1772,21 +1854,27 @@ export default function CreateBom() {
     }
   };
 
-  const handleUpdateSinglePp = async (m: any) => {
+  // `chosenAlt` lets the caller apply a specific Project Pricing option
+  // (from m.ppOptions) instead of the default m.ppAlt — used when a line
+  // has more than one qualifying PP rate and the user picks one explicitly.
+  const handleUpdateSinglePp = async (m: any, chosenAlt?: any) => {
     setIsUpdatingRates(true);
     try {
       const boqItem = boqItems.find(i => i.id === m.boqItemId);
       if (!boqItem) return;
 
+      const alt = chosenAlt || m.ppAlt;
+      const rate = chosenAlt ? chosenAlt.rate : m.ppRate;
+
       const td = parseTableData(boqItem.table_data);
       if (m.type === 'materialLine') {
-        td.materialLines[m.index].supplyRate = m.ppRate;
+        td.materialLines[m.index].supplyRate = rate;
         td.materialLines[m.index].is_project_pricing = true;
-        td.materialLines[m.index].materialId = m.ppAlt.id;
+        td.materialLines[m.index].materialId = alt.id;
       } else if (m.type === 'step11') {
-        td.step11_items[m.index].supply_rate = m.ppRate;
+        td.step11_items[m.index].supply_rate = rate;
         td.step11_items[m.index].is_project_pricing = true;
-        td.step11_items[m.index].id = m.ppAlt.id;
+        td.step11_items[m.index].id = alt.id;
       }
 
       await apiFetch(`/api/boq-items/${m.boqItemId}`, {
@@ -3496,52 +3584,58 @@ export default function CreateBom() {
       <Layout>
         <div className="space-y-6 pb-24 md:pb-32">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2 rounded-2xl border border-purple-200/90 bg-gradient-to-r from-purple-100/90 via-purple-50 to-indigo-100/80 p-5 shadow-sm relative overflow-visible" style={{ minHeight: '90px' }}>
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-2 rounded-xl border border-purple-200/90 bg-gradient-to-r from-purple-100/90 via-purple-50 to-indigo-100/80 p-2 shadow-sm relative overflow-visible">
               {/* Subtle Light Purple Ambient Glow */}
               <div className="absolute -top-10 -right-10 h-36 w-36 rounded-full bg-purple-200/50 blur-2xl pointer-events-none" />
 
-              <div className="flex items-center gap-4 relative z-10">
-                <div className="hidden sm:flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 shadow-lg shadow-indigo-500/30">
-                  <Store className="h-6 w-6 text-white" />
+              <div className="flex items-center gap-2 relative z-10">
+                <div className="hidden sm:flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 shadow-md shadow-indigo-500/30">
+                  <Store className="h-3.5 w-3.5 text-white" />
                 </div>
-                <h1 className="text-[26px] font-extrabold font-outfit text-slate-900 tracking-tight flex flex-wrap items-center gap-3">
+                <h1 className="text-sm font-extrabold font-outfit text-slate-900 tracking-tight flex flex-wrap items-center gap-2">
                   Generate BOM
                   {activeTab === 'approvals' && <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100 border-blue-200 uppercase tracking-widest text-[10px]">Approvals View</Badge>}
                   {user?.role === 'admin' && (
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className={`h-7 px-3 rounded-full text-[11px] font-bold border flex items-center gap-1.5 ${bomButtonsEnabled ? 'border-emerald-100 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' : 'border-red-100 bg-red-50 text-red-700 hover:bg-red-100'}`}
-                        onClick={toggleBomButtons}
-                      >
-                        <span className={`h-1.5 w-1.5 rounded-full ${bomButtonsEnabled ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                        Modification: {bomButtonsEnabled ? 'Enabled' : 'Disabled'}
-                      </Button>
-                    </div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={toggleBomButtons}
+                          aria-label={`Modification: ${bomButtonsEnabled ? 'Enabled' : 'Disabled'}`}
+                          className={cn(
+                            "flex items-center justify-center h-6 w-6 rounded-full border shrink-0 transition-colors",
+                            bomButtonsEnabled ? 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100' : 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100'
+                          )}
+                        >
+                          {bomButtonsEnabled ? <Unlock className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">Modification: {bomButtonsEnabled ? 'Enabled' : 'Disabled'}</TooltipContent>
+                    </Tooltip>
                   )}
                 </h1>
               </div>
 
               {(user?.role === 'admin' || user?.role === 'software_team') && (
-                <div className="flex items-center gap-2.5 relative z-10">
-                  <div className="px-5 py-2 text-xs font-bold bg-white text-indigo-600 shadow-sm rounded-xl border border-slate-200 flex items-center gap-2">
-                    <Settings className="h-3.5 w-3.5" />
-                    BOM Builder
-                  </div>
-                  <Button
-                    variant="outline"
-                    className="px-5 py-2 h-auto rounded-xl text-xs font-bold bg-gradient-to-r from-indigo-600 to-violet-600 text-white border-0 shadow-lg shadow-indigo-500/25 hover:opacity-95 hover:-translate-y-0.5 transition-all flex items-center gap-2"
-                    onClick={() => { setApprovalsModalOpen(true); fetchApprovals(); }}
-                  >
-                    <Users className="h-3.5 w-3.5" />
-                    Approvals
-                    {(approvals.length > 0 || rateChangeRequests.filter(r => r.status === 'pending').length > 0) && (
-                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-white/25 text-[10px] text-white font-bold">
-                        {approvals.length + rateChangeRequests.filter(r => r.status === 'pending').length}
-                      </span>
-                    )}
-                  </Button>
+                <div className="flex items-center gap-2 relative z-10">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => { setApprovalsModalOpen(true); fetchApprovals(); }}
+                        aria-label="Approvals"
+                        className="relative flex items-center justify-center h-8 w-8 rounded-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md shadow-indigo-500/25 hover:opacity-95 transition-all"
+                      >
+                        <Users className="h-3.5 w-3.5" />
+                        {(approvals.length > 0 || rateChangeRequests.filter(r => r.status === 'pending').length > 0) && (
+                          <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] text-white font-bold border border-white">
+                            {approvals.length + rateChangeRequests.filter(r => r.status === 'pending').length}
+                          </span>
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Approvals</TooltipContent>
+                  </Tooltip>
                 </div>
               )}
 
@@ -3554,11 +3648,10 @@ export default function CreateBom() {
               {/* Project & Version Selector (Compact & Professional) */}
               <Card className="border-slate-200/70 rounded-2xl shadow-[0_1px_2px_rgba(15,23,42,.04),0_8px_24px_-12px_rgba(15,23,42,.08)] overflow-hidden">
                 <CardContent className="p-5 bg-white">
-                  <div className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-5">
                     {/* Top Row: Selectors & Actions */}
                     {/* Row 1: Project Filters */}
-                    <div className="flex flex-wrap items-center gap-3 p-1.5 bg-slate-50 rounded-lg border border-slate-200 w-full" ref={statusFilterRef}>
-                      <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-2 whitespace-nowrap">Project Filters:</Label>
+                    <div className="flex flex-nowrap items-center gap-3 p-1.5 bg-slate-50 rounded-lg border border-slate-200 w-full" ref={statusFilterRef}>
                       <div className="relative inline-block">
                         <button
                           type="button"
@@ -3663,37 +3756,27 @@ export default function CreateBom() {
                         </div>
                       </div>
 
-                      {selectedProjectId && (() => {
-                        const selProj = projects.find(p => p.id === selectedProjectId);
-                        return (
-                          <div className="flex items-center gap-2 ml-auto">
-                            <span className="text-[10px] text-slate-500 font-bold uppercase whitespace-nowrap">Project Status:</span>
-                            <select
-                              className="text-xs border border-slate-200 rounded px-2 py-1 bg-white font-semibold focus:ring-1 ring-blue-400 outline-none disabled:bg-slate-50 disabled:text-slate-500"
-                              value={selProj?.project_status || 'started'}
-                              disabled={isReadOnlyMode}
-                              onChange={async (e) => {
-                                const newStatus = e.target.value;
-                                try {
-                                  await apiFetch(`/api/boq-projects/${selectedProjectId}`, {
-                                    method: 'PUT',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ project_status: newStatus }),
-                                  });
-                                  setProjects(prev => prev.map(p => p.id === selectedProjectId ? { ...p, project_status: newStatus } : p));
-                                } catch (err) { console.error('Failed to update project status', err); }
-                              }}
-                            >
-                              {PROJECT_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-                            </select>
-                          </div>
-                        );
-                      })()}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            onClick={() => setIsSelectorExpanded(o => !o)}
+                            aria-label={isSelectorExpanded ? "Collapse project selector" : "Expand project selector"}
+                            aria-expanded={isSelectorExpanded}
+                            className="ml-auto flex items-center justify-center h-8 w-8 rounded-lg border border-slate-200 bg-white text-slate-500 shadow-sm hover:text-blue-600 hover:border-blue-200 transition-colors shrink-0"
+                          >
+                            <ChevronDown className={cn("h-4 w-4 transition-transform duration-200", !isSelectorExpanded && "-rotate-90")} />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="left">{isSelectorExpanded ? "Collapse" : "Expand"}</TooltipContent>
+                      </Tooltip>
                     </div>
 
-                    {/* Row 2: Select Project & Version Actions */}
-                    <div className="flex flex-wrap items-start gap-x-6 gap-y-4">
-                      <div className="w-[260px] shrink-0 space-y-1">
+                    {isSelectorExpanded && (
+                    <>
+                    {/* Row 2: Select Project, Version & Actions, Status, Client, Location, Budget — all as compact boxes in one row (never wraps; scrolls horizontally if the window is very narrow) */}
+                    <div className="flex flex-nowrap items-start gap-3 overflow-x-auto pb-1">
+                      <div className="w-[190px] shrink-0 space-y-1.5">
                         <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Select Project</Label>
                         <Select onValueChange={v => setSelectedProjectId(v || null)} value={selectedProjectId || ""}>
                           <SelectTrigger className="w-full bg-slate-50 border-slate-200 h-9 px-3 hover:bg-slate-100/50 transition-colors">
@@ -3739,12 +3822,12 @@ export default function CreateBom() {
                       </div>
 
                       {selectedProjectId && (
-                        <div className="flex-1 min-w-[500px] space-y-1.5 text-slate-900">
-                          <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Version & Actions</Label>
+                        <div className="w-[180px] shrink-0 space-y-1.5 text-slate-900">
+                          <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Version &amp; Actions</Label>
                           <div className="flex flex-wrap items-center gap-2">
-                            <div className="flex gap-1">
+                            <div className="flex gap-1 w-full">
                               <Select value={selectedVersionId || ""} onValueChange={setSelectedVersionId}>
-                                <SelectTrigger className="flex-1 min-w-[140px] bg-slate-50 border-slate-200 h-9 px-3">
+                                <SelectTrigger className="flex-1 min-w-0 bg-slate-50 border-slate-200 h-9 px-3">
                                   <SelectValue placeholder="Select version" />
                                 </SelectTrigger>
                                 <SelectContent className="max-h-[300px] overflow-y-auto">
@@ -3811,79 +3894,167 @@ export default function CreateBom() {
 
                               })()}
                             </div>
-                            {!isReadOnlyMode && (
-                              <HeaderIconButton
-                                icon={Clock}
-                                label="New Version"
-                                onClick={() => {
-                                  if (versions.length > 0) {
-                                    const last = versions[0];
-                                    handleCreateNewVersion(confirm(`Copy items from V${last.version_number}?`));
-                                  } else {
-                                    handleCreateNewVersion(false);
-                                  }
-                                }}
-                                colorClass="bg-emerald-50 border-emerald-200 text-emerald-600 hover:text-emerald-700 hover:border-emerald-300"
-                              />
-                            )}
-                            <HeaderIconButton
-                              icon={History}
-                              label="View History"
-                              onClick={() => setShowHistoryModal(true)}
-                              disabled={!selectedVersionId}
-                              colorClass="bg-blue-50 border-blue-200 text-blue-600 hover:text-blue-700 hover:border-blue-300"
-                            />
-                            {(user?.role === 'admin' || user?.role === 'software_team') && (
-                              <HeaderIconButton
-                                icon={Trash2}
-                                label="Delete Version"
-                                onClick={handleDeleteVersion}
-                                disabled={!selectedVersionId}
-                                colorClass="bg-red-50 border-red-200 text-red-600 hover:text-red-700 hover:border-red-300"
-                              />
-                            )}
-                            {!isReadOnlyMode && (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    onClick={() => setShowAdvancedActions(o => !o)}
-                                    variant="outline"
-                                    size="icon"
-                                    className={cn(
-                                      "h-9 w-9 border bg-purple-50 border-purple-200 text-purple-600 shadow-sm shrink-0 transition-colors hover:text-purple-700 hover:border-purple-300",
-                                      showAdvancedActions && "border-purple-400 ring-2 ring-purple-100 text-purple-700"
-                                    )}
-                                  >
-                                    <Settings className="h-4 w-4" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent side="bottom">Advanced Options</TooltipContent>
-                              </Tooltip>
-                            )}
-                            {!isReadOnlyMode && (
-                              <HeaderIconButton
-                                icon={isRefreshingCategories ? Loader2 : RefreshCw}
-                                label={isRefreshingCategories ? "Refreshing..." : "Refresh: detect and update any item categories that changed in the master product library"}
-                                onClick={handleRefreshCategories}
-                                disabled={!selectedVersionId || isRefreshingCategories || boqItems.length === 0}
-                                spinning={isRefreshingCategories}
-                                colorClass="bg-teal-50 border-teal-200 text-teal-600 hover:text-teal-700 hover:border-teal-300"
-                              />
-                            )}
-
-                            <Button onClick={handleAddProduct} className="bg-primary text-white h-9 px-5 text-xs font-bold shadow-sm ml-1" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}>
-                              {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
-                              + Add Product
-                            </Button>
-
-                            <Button onClick={handleAddProductManual} variant="outline" className="border-slate-200 h-9 px-5 text-xs font-bold shadow-sm bg-white" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}>
-                              {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
-                              + Add Item
-                            </Button>
                           </div>
                         </div>
                       )}
+
+                      {selectedProjectId && (() => {
+                        const selProj = projects.find(p => p.id === selectedProjectId);
+                        return (
+                          <div className="w-[125px] shrink-0 space-y-1.5">
+                            <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Status</Label>
+                            <select
+                              className="w-full h-9 text-xs border border-slate-200 rounded-lg px-2.5 bg-slate-50 font-semibold focus:ring-1 ring-blue-400 outline-none disabled:bg-slate-50 disabled:text-slate-500 hover:bg-slate-100/50 transition-colors"
+                              value={selProj?.project_status || 'started'}
+                              disabled={isReadOnlyMode}
+                              onChange={async (e) => {
+                                const newStatus = e.target.value;
+                                try {
+                                  await apiFetch(`/api/boq-projects/${selectedProjectId}`, {
+                                    method: 'PUT',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ project_status: newStatus }),
+                                  });
+                                  setProjects(prev => prev.map(p => p.id === selectedProjectId ? { ...p, project_status: newStatus } : p));
+                                } catch (err) { console.error('Failed to update project status', err); }
+                              }}
+                            >
+                              {PROJECT_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                            </select>
+                          </div>
+                        );
+                      })()}
+
+                      {selectedVersion && (
+                        <>
+                          <div className="w-[125px] shrink-0 space-y-1.5">
+                            <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1 flex items-center gap-1"><Briefcase className="h-3 w-3 text-blue-500" /> Client</Label>
+                            <div className="h-9 flex items-center px-3 rounded-lg border border-blue-100 bg-blue-50/40 text-xs font-bold text-slate-900 truncate">
+                              {selectedVersion.project_client || "—"}
+                            </div>
+                          </div>
+
+                          <div className="w-[125px] shrink-0 space-y-1.5">
+                            <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1 flex items-center gap-1"><MapPin className="h-3 w-3 text-indigo-500" /> Location</Label>
+                            <div className="h-9 flex items-center px-3 rounded-lg border border-indigo-100 bg-indigo-50/40 text-xs font-bold text-slate-900 truncate">
+                              {selectedVersion.project_location || "—"}
+                            </div>
+                          </div>
+
+                          <div className="w-[125px] shrink-0 space-y-1.5">
+                            <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1 flex items-center gap-1"><IndianRupee className="h-3 w-3 text-emerald-500" /> Budget</Label>
+                            <div className="h-9 flex items-center px-3 rounded-lg border border-emerald-100 bg-emerald-50/40 text-xs font-bold text-slate-900 truncate">
+                              ₹{currentProjectValue.toLocaleString()}
+                            </div>
+                          </div>
+                        </>
+                      )}
                     </div>
+
+                    {/* Row 3: Action chips — icon + label, matching the requested layout */}
+                    {selectedProjectId && (
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        {!isReadOnlyMode && (
+                          <ActionChip
+                            icon={Clock}
+                            label="New Ver"
+                            onClick={() => {
+                              if (versions.length > 0) {
+                                const last = versions[0];
+                                handleCreateNewVersion(confirm(`Copy items from V${last.version_number}?`));
+                              } else {
+                                handleCreateNewVersion(false);
+                              }
+                            }}
+                            colorClass="bg-emerald-50 border-emerald-200 text-emerald-600 hover:text-emerald-700 hover:border-emerald-300"
+                          />
+                        )}
+                        <ActionChip
+                          icon={History}
+                          label="History"
+                          onClick={() => setShowHistoryModal(true)}
+                          disabled={!selectedVersionId}
+                          colorClass="bg-blue-50 border-blue-200 text-blue-600 hover:text-blue-700 hover:border-blue-300"
+                        />
+                        {(user?.role === 'admin' || user?.role === 'software_team') && (
+                          <ActionChip
+                            icon={Trash2}
+                            label="Del"
+                            onClick={handleDeleteVersion}
+                            disabled={!selectedVersionId}
+                            colorClass="bg-red-50 border-red-200 text-red-600 hover:text-red-700 hover:border-red-300"
+                          />
+                        )}
+                        {!isReadOnlyMode && (
+                          <ActionChip
+                            icon={Settings}
+                            label="Advanced"
+                            onClick={() => setShowAdvancedActions(o => !o)}
+                            colorClass={cn(
+                              "bg-purple-50 border-purple-200 text-purple-600 hover:text-purple-700 hover:border-purple-300",
+                              showAdvancedActions && "border-purple-400 ring-2 ring-purple-100 text-purple-700"
+                            )}
+                          />
+                        )}
+                        {!isReadOnlyMode && (
+                          <ActionChip
+                            icon={isRefreshingCategories ? Loader2 : RefreshCw}
+                            label="Refresh"
+                            onClick={handleRefreshCategories}
+                            disabled={!selectedVersionId || isRefreshingCategories || boqItems.length === 0}
+                            spinning={isRefreshingCategories}
+                            colorClass="bg-teal-50 border-teal-200 text-teal-600 hover:text-teal-700 hover:border-teal-300"
+                          />
+                        )}
+
+                        <div className="w-px self-stretch bg-slate-200 mx-0.5" />
+
+                        <ActionChip
+                          icon={isSaving ? Loader2 : PackagePlus}
+                          label="Add Product"
+                          onClick={handleAddProduct}
+                          disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}
+                          spinning={isSaving}
+                          colorClass="bg-primary border-primary text-white hover:opacity-90"
+                        />
+
+                        <ActionChip
+                          icon={isSaving ? Loader2 : ListPlus}
+                          label="Add Item"
+                          onClick={handleAddProductManual}
+                          disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}
+                          spinning={isSaving}
+                          colorClass="bg-white border-slate-200 text-slate-700 hover:border-slate-300"
+                        />
+
+                        {selectedVersion && (
+                          <>
+                            <ActionChip
+                              icon={MessageSquare}
+                              label="Comment"
+                              onClick={() => {
+                                if (!selectedVersionId) return;
+                                setCommentInboxView(true);
+                                setCommentTarget(null);
+                                setShowCommentDialog(true);
+                              }}
+                              disabled={!selectedVersionId}
+                              colorClass="bg-white border-slate-200 text-slate-600 hover:border-blue-200 hover:text-blue-600"
+                              badge={(() => {
+                                const unreadCount = comments.filter(c => {
+                                  if (c.user_id === user?.id) return false;
+                                  const isVisible = (!c.visible_to || c.visible_to.length === 0 || c.visible_to.includes(user?.username || ""));
+                                  return isVisible && (!c.read_by || !c.read_by.includes(user?.id || ""));
+                                }).length;
+                                return unreadCount > 0 ? (
+                                  <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[9px] rounded-full h-4 min-w-4 flex items-center justify-center font-bold px-1 shadow-sm border border-white">{unreadCount}</span>
+                                ) : null;
+                              })()}
+                            />
+                          </>
+                        )}
+                      </div>
+                    )}
 
                     {/* Advanced actions — used occasionally, tucked away behind the toggle above */}
                     {!isReadOnlyMode && showAdvancedActions && (
@@ -3914,82 +4085,9 @@ export default function CreateBom() {
                         </Button>
                       </div>
                     )}
-
-                    {/* Row 4: Project Info Summary & Comment */}
-                    {selectedVersion && (
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5 px-4 bg-slate-50/50 border border-slate-100 rounded-lg overflow-hidden">
-                        <div className="flex items-center gap-2 min-w-fit border border-blue-100 bg-white rounded-lg px-3 py-1.5">
-                          <div className="p-1.5 bg-blue-50 rounded text-blue-600"><Briefcase className="h-3.5 w-3.5" /></div>
-                          <div className="flex flex-col">
-                            <span className="text-[10px] leading-none text-slate-500 font-extrabold uppercase tracking-tight">Client</span>
-                            <span className="text-xs font-bold text-slate-900">{selectedVersion.project_client || "—"}</span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 min-w-fit border border-indigo-100 bg-white rounded-lg px-3 py-1.5">
-                          <div className="p-1.5 bg-indigo-50 rounded text-indigo-600"><MapPin className="h-3.5 w-3.5" /></div>
-                          <div className="flex flex-col">
-                            <span className="text-[10px] leading-none text-slate-500 font-extrabold uppercase tracking-tight">Location</span>
-                            <span className="text-xs font-bold text-slate-900">{selectedVersion.project_location || "—"}</span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 min-w-fit border border-emerald-100 bg-white rounded-lg px-3 py-1.5">
-                          <div className="p-1.5 bg-emerald-50 rounded text-emerald-600"><IndianRupee className="h-3.5 w-3.5" /></div>
-                          <div className="flex flex-col">
-                            <span className="text-[10px] leading-none text-slate-500 font-extrabold uppercase tracking-tight">Budget</span>
-                            <span className="text-xs font-bold text-slate-900">₹{currentProjectValue.toLocaleString()}</span>
-                          </div>
-                        </div>
-
-                        <div className="ml-auto flex items-center gap-3">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 px-3 bg-white border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-blue-600 gap-2 font-semibold relative"
-                            title="View All Comments"
-                            onClick={() => {
-                              if (!selectedVersionId) return;
-                              setCommentInboxView(true);
-                              setCommentTarget(null);
-                              setShowCommentDialog(true);
-                            }}
-                            disabled={!selectedVersionId}
-                          >
-                            <MessageSquare className="h-3.5 w-3.5" />
-                            <span className="text-xs">Comment</span>
-                            {(() => {
-                              const unreadCount = comments.filter(c => {
-                                if (c.user_id === user?.id) return false;
-                                const isVisible = (!c.visible_to || c.visible_to.length === 0 || c.visible_to.includes(user?.username || ""));
-                                return isVisible && (!c.read_by || !c.read_by.includes(user?.id || ""));
-                              }).length;
-                              return unreadCount > 0 ? (
-                                <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[9px] rounded-full h-4 min-w-4 flex items-center justify-center font-bold px-1 shadow-sm border border-white">{unreadCount}</span>
-                              ) : null;
-                            })()}
-                          </Button>
-
-                          {selectedVersion.status === "approved" ? (
-                            <Badge variant="outline" className="bg-emerald-100 text-emerald-700 border-emerald-200 text-[10px] font-bold px-2 py-0 h-6">
-                              <CheckCircle2 className="h-2.5 w-2.5 mr-1" /> APPROVED
-                            </Badge>
-                          ) : selectedVersion.status === "edit_requested" ? (
-                            <Badge variant="outline" className="bg-indigo-100 text-indigo-700 border-indigo-200 text-[10px] font-bold px-2 py-0 h-6">
-                              <Clock className="h-2.5 w-2.5 mr-1" /> EDIT REQUESTED
-                            </Badge>
-                          ) : isVersionSubmitted ? (
-                            <Badge variant="outline" className="bg-amber-100 text-amber-700 border-amber-200 text-[10px] font-bold px-2 py-0 h-6">
-                              <Lock className="h-2.5 w-2.5 mr-1" /> SUBMITTED
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline" className="bg-blue-100 text-blue-700 border-blue-200 text-[10px] font-bold px-2 py-0 h-6">
-                              <Clock className="h-2.5 w-2.5 mr-1" /> DRAFT
-                            </Badge>
-                          )}
-                        </div>
-                      </div>
+                    </>
                     )}
+
                   </div>
                 </CardContent>
 
@@ -4176,14 +4274,13 @@ export default function CreateBom() {
                         <div className="flex items-center justify-between">
                           <h2 className="text-[17px] font-extrabold font-outfit text-slate-900">BOQ Items</h2>
                           <div className="flex items-center gap-4">
-                            <Button
-                              variant="outline"
-                              size="sm"
+                            <IconActionButton
+                              icon={Rows3}
+                              label={isCompactView ? "Exit compact view" : "Compact view"}
+                              tone="indigo"
+                              active={isCompactView}
                               onClick={() => setIsCompactView(!isCompactView)}
-                              className={`h-9 px-3 rounded-xl font-semibold ${isCompactView ? 'bg-indigo-50 text-indigo-600 border-indigo-200' : 'text-slate-600 border-slate-200 hover:bg-slate-50'}`}
-                            >
-                              Compact View
-                            </Button>
+                            />
                             <div className="flex items-center gap-2">
                               <div className="flex items-center space-x-2 mr-2 bg-amber-50 px-3 py-1.5 rounded-md border border-amber-200">
                                 <Checkbox
@@ -4517,38 +4614,83 @@ export default function CreateBom() {
                       onApplyAll={handleUpdateAllPp}
                       onApplySingle={handleUpdateSinglePp}
                       onIgnoreSingle={handleIgnoreSinglePp}
+                      onViewSingle={handleViewMismatch}
                       isUpdating={isUpdatingRates}
                     />
 
                     {/* Version History Modal */}
-                    <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+                    <div className="flex items-center gap-2 flex-wrap bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 w-fit">
                       {!isReadOnlyMode && (
                         <>
-                          <Button onClick={withBudgetCheck(() => currentProjectValue, handleSaveProject)} variant="outline" disabled={isVersionSubmitted || Object.keys(editedFields).length === 0}>Save Draft</Button>
-                          <Button onClick={() => handleSubmitVersion("submitted")} variant="outline" className="border-primary text-primary hover:bg-primary/5 font-bold" disabled={isVersionSubmitted || boqItems.length === 0 || hasPendingRateAmendments || hasPendingBomShopRateChanges} title={(hasPendingRateAmendments || hasPendingBomShopRateChanges) ? "Cannot lock: There are material or rate change requests that must be approved first." : undefined}>Lock Version</Button>
+                          <IconActionButton
+                            icon={Save}
+                            label="Save draft"
+                            tone="slate"
+                            onClick={withBudgetCheck(() => currentProjectValue, handleSaveProject)}
+                            disabled={isVersionSubmitted || Object.keys(editedFields).length === 0}
+                          />
+                          <IconActionButton
+                            icon={Lock}
+                            label={(hasPendingRateAmendments || hasPendingBomShopRateChanges) ? "Cannot lock: pending change requests" : "Lock version"}
+                            tone="blue"
+                            onClick={() => handleSubmitVersion("submitted")}
+                            disabled={isVersionSubmitted || boqItems.length === 0 || hasPendingRateAmendments || hasPendingBomShopRateChanges}
+                          />
+                          <div className="w-px self-stretch bg-slate-200 mx-0.5" />
                           {rateAmendmentSummary.hasDraft ? (
-                            <Button onClick={handleSubmitRateAmendRequests} variant="default" className="bg-amber-600 hover:bg-amber-700 font-bold" title="Send the amended rate(s) to admin for approval">
-                              Submit Rate Amend Request
-                            </Button>
+                            <IconActionButton
+                              icon={Send}
+                              label="Submit rate amend request"
+                              tone="orange"
+                              onClick={handleSubmitRateAmendRequests}
+                            />
                           ) : rateAmendmentSummary.hasPending ? (
-                            <Button variant="default" className="bg-amber-300 font-bold cursor-not-allowed" disabled title="Waiting for admin to approve or reject the submitted rate change request(s)">
-                              Awaiting Rate Approval
-                            </Button>
+                            <IconActionButton
+                              icon={Clock}
+                              label="Awaiting rate approval"
+                              tone="orange"
+                              disabled
+                            />
                           ) : hasPendingBomShopRateChanges ? (
-                            <Button variant="default" className="bg-indigo-300 font-bold cursor-not-allowed" disabled title="Waiting for admin to approve or reject the submitted shop/rate change request(s)">
-                              Awaiting Shop/Rate Approval
-                            </Button>
+                            <IconActionButton
+                              icon={Clock}
+                              label="Awaiting shop/rate approval"
+                              tone="indigo"
+                              disabled
+                            />
                           ) : (
-                            <Button onClick={() => handleSubmitVersion("pending_approval")} variant="default" className="bg-primary hover:bg-primary/90 font-bold" disabled={isVersionSubmitted || boqItems.length === 0}>Submit for Approval</Button>
+                            <IconActionButton
+                              icon={Send}
+                              label="Submit for approval"
+                              tone="blue"
+                              onClick={() => handleSubmitVersion("pending_approval")}
+                              disabled={isVersionSubmitted || boqItems.length === 0}
+                            />
                           )}
+                          <div className="w-px self-stretch bg-slate-200 mx-0.5" />
                         </>
                       )}
-                      <Button onClick={handleDownloadExcel} variant="outline" disabled={boqItems.length === 0}>Download Excel</Button>
-                      <Button onClick={handleDownloadPdf} variant="outline" disabled={boqItems.length === 0}>Download PDF</Button>
-                      <Button onClick={() => setShowGenerateQuoteDialog(true)} variant="outline" className="border-purple-300 text-purple-700 hover:bg-purple-50 font-bold" disabled={bomShopGroups.length === 0}>
-                        <Store className="h-4 w-4 mr-2" />
-                        Generate Quote
-                      </Button>
+                      <IconActionButton
+                        icon={FileSpreadsheet}
+                        label="Download Excel"
+                        tone="emerald"
+                        onClick={handleDownloadExcel}
+                        disabled={boqItems.length === 0}
+                      />
+                      <IconActionButton
+                        icon={FileText}
+                        label="Download PDF"
+                        tone="red"
+                        onClick={handleDownloadPdf}
+                        disabled={boqItems.length === 0}
+                      />
+                      <IconActionButton
+                        icon={Store}
+                        label="Generate quote"
+                        tone="purple"
+                        onClick={() => setShowGenerateQuoteDialog(true)}
+                        disabled={bomShopGroups.length === 0}
+                      />
                     </div>
                     {rateAmendmentSummary.hasDraft && (
                       <div className="col-span-full flex items-center gap-2 mt-2 p-2 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold">
@@ -4606,30 +4748,90 @@ export default function CreateBom() {
         </div>
       </Layout>
 
-      {/* Small floating Add buttons at bottom-right (duplicate of top actions) */}
-      <div className="fixed right-6 bottom-24 z-50 flex flex-col items-end gap-2 md:gap-3">
-        {!isReadOnlyMode && (
-          <>
-            <Button onClick={handleAddProduct} className="bg-primary text-white h-8 px-3 text-xs font-semibold shadow-sm" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving} title="Add Product">
-              {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
-              + Add Product
-            </Button>
+      {/* Floating speed-dial: one icon button that expands sideways (like a Mac dock)
+          to reveal Add Product, Add Item, and Compact View as icon-only actions,
+          stacked straight upward above the main button. */}
+      <div className="fixed right-6 bottom-24 z-50">
+        <div className="relative">
+          {isFabOpen && (
+            <>
+              {!isReadOnlyMode && (
+                <div className="absolute bottom-[60px] right-0 animate-in slide-in-from-bottom-3 fade-in duration-200">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={handleAddProduct}
+                        disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}
+                        aria-label="Add Product"
+                        className="h-11 w-11 rounded-full bg-primary text-white shadow-lg flex items-center justify-center transition-all hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <PackagePlus className="h-4 w-4" />}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">Add Product</TooltipContent>
+                  </Tooltip>
+                </div>
+              )}
 
-            <Button onClick={handleAddProductManual} variant="outline" className="border-slate-200 h-8 px-3 text-xs font-semibold shadow-sm bg-white" disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving} title="Add Item">
-              {isSaving ? <Loader2 className="h-3 w-3 animate-spin mr-2" /> : null}
-              + Add Item
-            </Button>
-          </>
-        )}
+              {!isReadOnlyMode && (
+                <div className="absolute bottom-[112px] right-0 animate-in slide-in-from-bottom-3 fade-in duration-200 delay-[40ms]">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={handleAddProductManual}
+                        disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}
+                        aria-label="Add Item"
+                        className="h-11 w-11 rounded-full bg-white border border-slate-200 text-slate-700 shadow-lg flex items-center justify-center transition-all hover:border-slate-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <ListPlus className="h-4 w-4" />}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">Add Item</TooltipContent>
+                  </Tooltip>
+                </div>
+              )}
 
-        <Button
-          onClick={() => setIsCompactView(!isCompactView)}
-          variant="outline"
-          className={`h-8 px-3 text-xs font-semibold shadow-sm ${isCompactView ? 'bg-blue-50 text-blue-600 border-blue-300' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
-          title="Toggle Compact View"
-        >
-          Compact View
-        </Button>
+              <div className="absolute bottom-[164px] right-0 animate-in slide-in-from-bottom-3 fade-in duration-200 delay-[80ms]">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => setIsCompactView(!isCompactView)}
+                      aria-label="Toggle Compact View"
+                      className={cn(
+                        "h-11 w-11 rounded-full border shadow-lg flex items-center justify-center transition-all",
+                        isCompactView ? "bg-blue-50 text-blue-600 border-blue-300" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                      )}
+                    >
+                      <Rows3 className="h-4 w-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">Compact View</TooltipContent>
+                </Tooltip>
+              </div>
+            </>
+          )}
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => setIsFabOpen(o => !o)}
+                aria-label={isFabOpen ? "Close quick actions" : "Open quick actions"}
+                aria-expanded={isFabOpen}
+                className={cn(
+                  "h-12 w-12 rounded-full shadow-xl flex items-center justify-center transition-all relative",
+                  isFabOpen ? "bg-slate-700 text-white" : "bg-slate-900 text-white hover:bg-slate-800"
+                )}
+              >
+                <Plus className={cn("h-5 w-5 transition-transform duration-200", isFabOpen && "rotate-45")} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="left">{isFabOpen ? "Close" : "Quick Actions"}</TooltipContent>
+          </Tooltip>
+        </div>
       </div>
 
       {/* Target Qty Modal */}
