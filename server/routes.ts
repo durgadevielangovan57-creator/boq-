@@ -2777,8 +2777,7 @@ export async function registerRoutes(
       let queryStr = `SELECT m.id, m.name, m.code, m.rate, m.shop_id, m.unit, m.category, 
                 m.brandname as "brandName", m.modelnumber as "modelNumber", 
                 m.subcategory, m.technicalspecification,
-                COALESCE(m.image, mt.image) as image,
-                m.is_project_pricing, m.min_quantity, m.max_quantity, m.created_at, m.updated_at, m.master_material_id, m.disabled, m.template_id, m.approved,
+                m.is_project_pricing, m.min_quantity, m.max_quantity, m.created_at, m.master_material_id, m.disabled, m.template_id, m.approved,
                 s.name as shop_name, 
                 mt.tax_code_type, mt.tax_code_value,
                 mt.hsn_code as template_hsn_code, mt.sac_code as template_sac_code
@@ -4779,7 +4778,30 @@ export async function registerRoutes(
             UNION ALL
             SELECT 1 FROM product_approvals WHERE product_id = p.id AND status IN ('approved', 'edit_requested', 'draft')
           ) AS is_approved,
-          (price_updates.product_id IS NOT NULL) AS has_price_updates
+          -- Lightweight price_updates check: does any material used by this product
+          -- have a rate that diverges from what was saved in the config?
+          -- Uses EXISTS so it short-circuits on the first mismatch instead of
+          -- scanning all config tables for all products at once.
+          (EXISTS (
+            SELECT 1
+            FROM step11_product_items si
+            JOIN step11_products sp ON sp.id = si.step11_product_id
+            JOIN materials m ON m.id::text = si.material_id::text
+            WHERE sp.product_id = p.id
+              AND m.approved IS TRUE
+              AND ABS(COALESCE(si.supply_rate, si.rate) - m.rate) > 0.01
+            LIMIT 1
+          ) OR EXISTS (
+            SELECT 1
+            FROM product_approval_items ai
+            JOIN product_approvals pa ON pa.id = ai.approval_id
+            JOIN materials m ON m.id::text = ai.material_id::text
+            WHERE pa.product_id = p.id
+              AND (pa.status IS NULL OR pa.status = 'pending')
+              AND m.approved IS TRUE
+              AND ABS(COALESCE(ai.supply_rate, ai.rate) - m.rate) > 0.01
+            LIMIT 1
+          )) AS has_price_updates
         FROM products p
         LEFT JOIN (
           SELECT DISTINCT ON (LOWER(TRIM(name)), LOWER(TRIM(category))) name, category
@@ -4787,29 +4809,6 @@ export async function registerRoutes(
           ORDER BY LOWER(TRIM(name)), LOWER(TRIM(category)), created_at DESC
         ) s ON LOWER(TRIM(p.subcategory)) = LOWER(TRIM(s.name)) AND (p.category IS NULL OR LOWER(TRIM(p.category)) = LOWER(TRIM(s.category)))
         LEFT JOIN material_categories c ON LOWER(TRIM(s.category)) = LOWER(TRIM(c.name))
-        LEFT JOIN (
-           SELECT cfg.product_id::text as product_id
-           FROM (
-              SELECT sp.product_id::text, si.material_id::text, COALESCE(si.supply_rate, si.rate) AS config_rate, NULL::text as status
-              FROM step11_products sp
-              JOIN step11_product_items si ON si.step11_product_id = sp.id
-              UNION ALL
-              SELECT pc.product_id::text, ci.material_id::text, COALESCE(ci.supply_rate, ci.rate) AS config_rate, NULL::text as status
-              FROM product_step3_config pc
-              JOIN product_step3_config_items ci ON ci.step3_config_id = pc.id
-              UNION ALL
-              SELECT pa.product_id::text, ai.material_id::text, COALESCE(ai.supply_rate, ai.rate) AS config_rate, pa.status::text
-              FROM (
-                SELECT DISTINCT ON (product_id, config_name) product_id, id, status
-                FROM product_approvals
-                ORDER BY product_id, config_name, created_at DESC
-              ) pa
-              JOIN product_approval_items ai ON ai.approval_id = pa.id
-           ) cfg
-           JOIN materials m ON m.id::text = cfg.material_id
-           WHERE (cfg.status IS NULL OR cfg.status = 'pending') AND ABS(cfg.config_rate - m.rate) > 0.01 AND m.approved IS TRUE
-           GROUP BY cfg.product_id
-        ) price_updates ON price_updates.product_id = p.id::text
       `;
 
       if (approvedOnly === 'true') {
