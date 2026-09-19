@@ -2774,11 +2774,14 @@ export async function registerRoutes(
       const { shop_id } = req.query;
 
       // Only return materials that are approved for public listing
-      let queryStr = `SELECT m.*, s.name as shop_name, 
+      let queryStr = `SELECT m.id, m.name, m.code, m.rate, m.shop_id, m.unit, m.category, 
+                m.brandname as "brandName", m.modelnumber as "modelNumber", 
+                m.subcategory, m.technicalspecification,
+                COALESCE(m.image, mt.image) as image,
+                m.is_project_pricing, m.min_quantity, m.max_quantity, m.created_at, m.updated_at, m.master_material_id, m.disabled, m.template_id, m.approved,
+                s.name as shop_name, 
                 mt.tax_code_type, mt.tax_code_value,
-                mt.hsn_code as template_hsn_code, mt.sac_code as template_sac_code,
-                mt.image as template_image,
-                m.brandname as "brandName", m.modelnumber as "modelNumber"
+                mt.hsn_code as template_hsn_code, mt.sac_code as template_sac_code
          FROM materials m 
          LEFT JOIN shops s ON m.shop_id = s.id 
          LEFT JOIN material_templates mt ON m.template_id = mt.id 
@@ -2801,14 +2804,7 @@ export async function registerRoutes(
       const archivedSet = new Set(archivedIds);
       const trashedSet = new Set(trashedIds);
       const filtered = result.rows
-        .filter(r => !archivedSet.has(r.id) && !trashedSet.has(r.id))
-        .map((r: any) => {
-          // Fall back to the material template's image if this specific
-          // shop material row doesn't have its own image set. Does not
-          // overwrite an existing material-level image.
-          if (!r.image && r.template_image) r.image = r.template_image;
-          return r;
-        });
+        .filter(r => !archivedSet.has(r.id) && !trashedSet.has(r.id));
 
       res.json({ materials: filtered });
     } catch (err) {

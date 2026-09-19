@@ -62,7 +62,7 @@ const parseImages = (imageField: string | null | undefined): string[] => {
 
 export default function ManageProduct() {
     const { user } = useAuth();
-    const { materials: storeMaterials } = useData();
+    const { materials: storeMaterials, products: storeProducts } = useData();
     const isSupplier = user?.role === "supplier";
     const [location] = useLocation();
     const [step, setStep] = useState(1);
@@ -254,15 +254,22 @@ export default function ManageProduct() {
         else setPreviousConfigs([]);
     }, [selectedProduct?.id]);
 
-    const { data: productsData, isLoading: loadingProducts } = useQuery({
-        queryKey: ["/api/products"],
-        queryFn: async () => {
-            const res = await apiFetch("/api/products");
-            if (!res.ok) throw new Error("Failed to fetch products");
-            const d = await res.json();
-            return ((d.products || []) as Product[]).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-        },
-    });
+    // Products come from the global store (useData()) instead of an
+    // independent react-query fetch here. /api/products is a heavy query
+    // (it's the same one flagged elsewhere in this app for being slow), and
+    // this page's own fetch of it had no special handling for a slow/failed
+    // response beyond react-query's defaults — once loadingProducts turned
+    // false with no data, the page had no way to tell "the fetch failed or
+    // never really finished" apart from "there are genuinely zero
+    // products", so it silently showed the empty state either way. Reading
+    // from the store sidesteps a second independent fetch of this endpoint
+    // entirely, using the same data every other page in the app already
+    // relies on.
+    const loadingProducts = !storeProducts || storeProducts.length === 0;
+    const productsData = useMemo(
+        () => [...(storeProducts || [])].sort((a: any, b: any) => (a.name || "").localeCompare(b.name || "")) as Product[],
+        [storeProducts]
+    );
 
     useEffect(() => {
         if (approvalIdParam && productIdParam && productsData && !selectedProduct) {
