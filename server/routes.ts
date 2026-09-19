@@ -2773,18 +2773,27 @@ export async function registerRoutes(
     try {
       const { shop_id } = req.query;
 
-      // Only return materials that are approved for public listing
+      // Only return materials that are approved for public listing.
+      // The archive/trash filter is done inside the SQL itself (NOT EXISTS on
+      // archive_records) so we avoid 2 extra sequential DB round-trips that
+      // the old code made via archiveService.getArchivedItemIds / getTrashedItemIds.
       let queryStr = `SELECT m.id, m.name, m.code, m.rate, m.shop_id, m.unit, m.category, 
                 m.brandname as "brandName", m.modelnumber as "modelNumber", 
                 m.subcategory, m.technicalspecification,
-                m.is_project_pricing, m.min_quantity, m.max_quantity, m.created_at, m.master_material_id, m.disabled, m.template_id, m.approved,
+                m.is_project_pricing, m.min_quantity, m.max_quantity, m.created_at, m.template_id,
                 s.name as shop_name, 
                 mt.tax_code_type, mt.tax_code_value,
                 mt.hsn_code as template_hsn_code, mt.sac_code as template_sac_code
          FROM materials m 
          LEFT JOIN shops s ON m.shop_id = s.id 
          LEFT JOIN material_templates mt ON m.template_id = mt.id 
-         WHERE m.approved IS TRUE`;
+         WHERE m.approved IS TRUE
+           AND NOT EXISTS (
+             SELECT 1 FROM archive_records ar
+             WHERE ar.module = 'materials'
+               AND ar.origin_id = m.id::text
+               AND ar.status IN ('archived', 'trashed')
+           )`;
 
       const params: any[] = [];
 
@@ -2798,14 +2807,11 @@ export async function registerRoutes(
 
       const result = await query(queryStr, params);
 
-      const archivedIds = await archiveService.getArchivedItemIds('materials');
-      const trashedIds = await archiveService.getTrashedItemIds('materials');
-      const archivedSet = new Set(archivedIds);
-      const trashedSet = new Set(trashedIds);
-      const filtered = result.rows
-        .filter(r => !archivedSet.has(r.id) && !trashedSet.has(r.id));
-
-      res.json({ materials: filtered });
+      // Cache for 60 s, serve stale for up to 5 min while revalidating —
+      // materials change infrequently, so clients don't need to re-fetch on
+      // every navigation. This makes repeat loads instant.
+      res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=300");
+      res.json({ materials: result.rows });
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("/api/materials error", err);
