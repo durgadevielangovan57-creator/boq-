@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Layout } from "@/components/layout/Layout";
+import ManagementTabBar from "@/components/ManagementTabBar";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -265,6 +266,7 @@ export default function ManageMaterials() {
   return (
     <Layout>
       <div className="container mx-auto py-8">
+        <ManagementTabBar active="manage-materials" />
         <div className="mb-8"><h1 className="text-3xl font-bold mb-2">Material Management</h1><p className="text-gray-600">Select from available material templates and add your details</p></div>
         <div className="grid gap-8">
           <div>

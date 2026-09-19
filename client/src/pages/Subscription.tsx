@@ -2,6 +2,7 @@ import { Layout } from "@/components/layout/Layout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Check } from "lucide-react";
+import ResourcesTabBar from "@/components/ResourcesTabBar";
 
 export default function Subscription() {
   const plans = [
@@ -29,6 +30,7 @@ export default function Subscription() {
   return (
     <Layout>
       <div className="space-y-8">
+        <ResourcesTabBar active="subscription" />
         <div className="text-center">
           <h1 className="text-4xl font-bold font-heading">Subscription Plans</h1>
           <p className="text-muted-foreground mt-2">Choose the plan that fits your needs</p>

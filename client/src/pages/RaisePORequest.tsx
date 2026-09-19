@@ -17,6 +17,7 @@ import apiFetch from "@/lib/api";
 import { useLocation } from "wouter";
 import { useData } from "@/lib/store";
 import { Badge } from "@/components/ui/badge";
+import ProcurementTabBar from "@/components/ProcurementTabBar";
 
 interface Material {
     id: string;
@@ -238,6 +239,7 @@ export default function RaisePORequest() {
     return (
         <Layout>
             <div className="container mx-auto p-4 md:p-6 max-w-[1200px]">
+                <ProcurementTabBar active="raise-po-request" />
                 <div className="mb-6">
                     <h1 className="text-3xl font-bold tracking-tight text-slate-900">Raise PO Request</h1>
                     <p className="text-muted-foreground mt-1">
@@ -310,11 +312,10 @@ export default function RaisePORequest() {
                                                     <button
                                                         type="button"
                                                         onClick={() => { setPickerOpenForIndex(index); setSearchQuery(""); }}
-                                                        className={`w-full text-left px-3 py-2 rounded-md border text-sm flex items-center justify-between gap-2 transition-colors ${
-                                                            item.item
-                                                                ? "bg-white border-slate-200 text-slate-800 hover:border-blue-300"
-                                                                : "bg-slate-50 border-slate-200 text-slate-400 hover:border-blue-300 hover:bg-blue-50"
-                                                        }`}
+                                                        className={`w-full text-left px-3 py-2 rounded-md border text-sm flex items-center justify-between gap-2 transition-colors ${item.item
+                                                            ? "bg-white border-slate-200 text-slate-800 hover:border-blue-300"
+                                                            : "bg-slate-50 border-slate-200 text-slate-400 hover:border-blue-300 hover:bg-blue-50"
+                                                            }`}
                                                     >
                                                         <span className="flex items-center gap-2 truncate">
                                                             <Package className="h-3.5 w-3.5 shrink-0 text-slate-400" />

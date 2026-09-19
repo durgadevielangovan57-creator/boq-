@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import apiFetch from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
+import CreationsTabBar from "@/components/CreationsTabBar";
 
 const PROJECT_STATUSES: { value: string; label: string; color: string }[] = [
   { value: 'started', label: 'Started', color: 'bg-slate-100 text-slate-700' },
@@ -474,6 +475,7 @@ export default function CreateProject() {
   return (
     <Layout>
       <div className="space-y-6">
+        <CreationsTabBar active="create-project" />
         <h1 className="text-2xl font-semibold">Create Project</h1>
 
         <Card ref={createFormRefCallback} className="border-slate-200 shadow-sm overflow-hidden bg-white">

@@ -399,7 +399,7 @@ export default function MaterialPicker({
                       </div>
                     </div>
                   </div>
-                ))}
+                ))} 
               </div>
             )}
           </div>

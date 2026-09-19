@@ -33,6 +33,7 @@ interface UserEntry {
 }
 
 import { Layout } from "@/components/layout/Layout";
+import OverviewTabBar from "@/components/OverviewTabBar";
 
 export default function AdminAccessControl() {
   const { toast } = useToast();
@@ -143,6 +144,7 @@ export default function AdminAccessControl() {
   return (
     <Layout>
       <div className="pb-20">
+        <OverviewTabBar active="access-control" />
         {/* HEADER */}
         <div className="sticky top-0 z-10 border-b bg-white/70 backdrop-blur px-6 py-5 -mx-4 md:-mx-8">
           <div className="max-w-7xl mx-auto flex justify-between">

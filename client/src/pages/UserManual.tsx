@@ -25,6 +25,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/layout/Sidebar";
+import ResourcesTabBar from "@/components/ResourcesTabBar";
 
 type ManualSubItem = {
     label: string;
@@ -222,6 +223,7 @@ export default function UserManual() {
             <Sidebar isOpen={isSidebarOpen} setIsOpen={setIsSidebarOpen} />
             <main className="flex-1 md:ml-64 p-8 pt-20 md:pt-8 overflow-y-auto">
                 <div className="max-w-5xl mx-auto space-y-8">
+                    <ResourcesTabBar active="user-manual" />
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
                         <div className="flex items-center gap-4">
                             <div className="p-4 bg-gradient-to-br from-purple-500 to-indigo-600 rounded-2xl shadow-lg shadow-purple-100">

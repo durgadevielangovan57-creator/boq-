@@ -18,6 +18,7 @@ function ClientDashboard() {
 
   return (
     <Layout>
+      <OverviewTabBar active="dashboard" />
       <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-4">
         <div className="p-6 bg-primary/10 rounded-full">
           <Building2 className="w-12 h-12 text-primary" />
@@ -34,6 +35,7 @@ function ClientDashboard() {
 }
 
 import apiFetch from "@/lib/api";
+import OverviewTabBar from "@/components/OverviewTabBar";
 
 export default function Dashboard() {
   const { user } = useData();
@@ -82,14 +84,14 @@ export default function Dashboard() {
         if (data.isCustomManaged) {
           const modules = new Set(data.modules || []);
           if (!modules.has('dashboard')) {
-             // Redirect or block if no access
-             setHasAccess(false);
+            // Redirect or block if no access
+            setHasAccess(false);
           } else {
-             setHasAccess(true);
+            setHasAccess(true);
           }
         } else {
           // If not custom managed, fallback to true if role implies it
-          setHasAccess(true); 
+          setHasAccess(true);
         }
       })
       .catch(() => {
@@ -100,13 +102,14 @@ export default function Dashboard() {
   }, [user, setLocation]);
 
   if (!user) return null;
-  
+
   if (hasAccess === false) {
     return (
       <Layout>
+        <OverviewTabBar active="dashboard" />
         <div className="flex flex-col items-center justify-center h-[50vh] text-center space-y-4">
           <div className="p-4 bg-red-50 text-red-600 rounded-full">
-             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>
           </div>
           <h2 className="text-xl font-bold">Access Denied</h2>
           <p className="text-muted-foreground">You do not have permission to view this page.</p>
@@ -116,7 +119,7 @@ export default function Dashboard() {
   }
 
   // Still loading access check
-  if (hasAccess === null) return <Layout><div className="flex justify-center p-8">Loading...</div></Layout>;
+  if (hasAccess === null) return <Layout><OverviewTabBar active="dashboard" /><div className="flex justify-center p-8">Loading...</div></Layout>;
 
   // Client / User role 
   return <ClientDashboard />;

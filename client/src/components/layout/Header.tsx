@@ -76,7 +76,7 @@ export function Header() {
     { label: "Manage Materials", href: "/admin/manage-materials" },
     { label: "Manage Shops", href: "/admin/dashboard?tab=shops" },
     { label: "Manage Categories", href: "/admin/manage-categories" },
-    { label: "Bulk Upload", href: "/admin/bulk-material-upload" },
+    // { label: "Bulk Upload", href: "/admin/bulk-material-upload" }, // hidden for now
     { label: "Generate BOM", href: "/create-bom" },
     { label: "Generate PO", href: "/generate-po" },
     { label: "Finalize BOQ", href: "/finalize-bom" },
@@ -325,35 +325,8 @@ export function Header() {
   };
 
   // Build approval items array
+  // Sorted alphabetically by label — keep new entries in alpha order too.
   const approvalItems = [
-    {
-      id: "shop_approvals",
-      label: "Shop Approvals",
-      href: "/admin/dashboard?tab=approvals",
-      count: pendingShopCount,
-      show: isVisible("shop_approvals", (isAdminOrSoftware || isPurchaseTeam) && !isPreSales && !isContractor && !isProductManager),
-    },
-    {
-      id: "material_approvals",
-      label: "Material Approvals",
-      href: "/admin/dashboard?tab=material-approvals",
-      count: pendingMaterialCount,
-      show: isVisible("material_approvals", (isAdminOrSoftware || isPurchaseTeam) && !isPreSales && !isContractor && !isProductManager),
-    },
-    {
-      id: "supplier_approvals",
-      label: "Supplier Approvals",
-      href: "/admin/suppliers",
-      count: 0,
-      show: isVisible("supplier_approvals", isAdminOnly),
-    },
-    {
-      id: "product_approvals",
-      label: "Product Approvals",
-      href: "/admin/product-approvals",
-      count: pendingProductCount,
-      show: isVisible("product_approvals", isAdminOrSoftware || isProductManager),
-    },
     {
       id: "bom_approvals",
       label: "BOM Approvals",
@@ -369,19 +342,55 @@ export function Header() {
       show: isVisible("boq_approvals", isAdminOrSoftware),
     },
     {
-      id: "purchase_team_bom_approvals",
-      label: "Purchase Team BOM",
-      href: "/admin/purchase-team-bom-approvals",
-      count: 0,
-      show: isVisible("purchase_team_bom_approvals", isAdminOrSoftware || isPurchaseTeam),
+      id: "material_approvals",
+      label: "Material Approvals",
+      href: "/admin/dashboard?tab=material-approvals",
+      count: pendingMaterialCount,
+      show: isVisible("material_approvals", (isAdminOrSoftware || isPurchaseTeam) && !isPreSales && !isContractor && !isProductManager),
     },
     {
-      id: "proposal_approvals",
-      label: "Proposal Approvals",
-      href: "/admin/proposal-approvals",
+      id: "po_approvals",
+      label: "PO Approvals",
+      href: "/po-approvals",
       count: 0,
-      show: isVisible("proposal_approvals", isAdminOrSoftware),
+      show: isVisible("po_approvals", isAdminOrSoftware),
     },
+    {
+      id: "product_approvals",
+      label: "Product Approvals",
+      href: "/admin/product-approvals",
+      count: pendingProductCount,
+      show: isVisible("product_approvals", isAdminOrSoftware || isProductManager),
+    },
+    {
+      id: "shop_approvals",
+      label: "Shop Approvals",
+      href: "/admin/dashboard?tab=approvals",
+      count: pendingShopCount,
+      show: isVisible("shop_approvals", (isAdminOrSoftware || isPurchaseTeam) && !isPreSales && !isContractor && !isProductManager),
+    },
+    {
+      id: "supplier_approvals",
+      label: "Supplier Approvals",
+      href: "/admin/suppliers",
+      count: 0,
+      show: isVisible("supplier_approvals", isAdminOnly),
+    },
+    // Hidden from header dropdown per request; routes still exist, just not linked here.
+    // {
+    //   id: "purchase_team_bom_approvals",
+    //   label: "Purchase Team BOM",
+    //   href: "/admin/purchase-team-bom-approvals",
+    //   count: 0,
+    //   show: isVisible("purchase_team_bom_approvals", isAdminOrSoftware || isPurchaseTeam),
+    // },
+    // {
+    //   id: "proposal_approvals",
+    //   label: "Proposal Approvals",
+    //   href: "/admin/proposal-approvals",
+    //   count: 0,
+    //   show: isVisible("proposal_approvals", isAdminOrSoftware),
+    // },
   ].filter((item) => item.show);
 
   const totalApprovalCount = approvalItems.reduce(

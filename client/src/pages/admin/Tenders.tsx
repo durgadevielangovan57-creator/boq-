@@ -17,6 +17,7 @@ import { TenderFormsDialog } from "@/components/admin/TenderFormsDialog";
 import { FormRenderer } from "@/components/formbuilder/FormRenderer";
 import { filterSchemaForAdmin, FormSchema } from "@/lib/formSchema";
 import "../tenders-glass.css";
+import ProcurementTabBar from "@/components/ProcurementTabBar";
 
 function InvitationsPanel() {
   const { toast } = useToast();
@@ -835,6 +836,7 @@ export default function AdminTenders() {
   return (
     <Layout>
       <div className="tenders-glass max-w-7xl mx-auto p-6 space-y-6">
+        <ProcurementTabBar active="tenders" />
         <div className="tg-header flex items-center justify-between tg-animate-in">
           <div>
             <h1 className="text-2xl font-bold flex items-center gap-2"><Gavel className="h-6 w-6 tg-gavel" /> Enterprise Procurement</h1>

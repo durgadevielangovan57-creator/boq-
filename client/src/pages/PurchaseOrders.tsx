@@ -70,6 +70,7 @@ import {
 import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
+import ProcurementTabBar from "@/components/ProcurementTabBar";
 
 interface PurchaseOrder {
     id: string;
@@ -675,9 +676,12 @@ export default function PurchaseOrders() {
     if (loading) {
         return (
             <Layout>
-                <div className="flex flex-col items-center justify-center min-h-[60vh]">
-                    <Loader2 className="h-10 w-10 animate-spin text-primary mb-4" />
-                    <p className="text-muted-foreground">Loading Annexures...</p>
+                <div className="space-y-6">
+                    <ProcurementTabBar active="purchase-orders" />
+                    <div className="flex flex-col items-center justify-center min-h-[60vh]">
+                        <Loader2 className="h-10 w-10 animate-spin text-primary mb-4" />
+                        <p className="text-muted-foreground">Loading Annexures...</p>
+                    </div>
                 </div>
             </Layout>
         );
@@ -694,6 +698,7 @@ export default function PurchaseOrders() {
     return (
         <Layout>
             <div className="space-y-6">
+                <ProcurementTabBar active="purchase-orders" />
                 <div className="flex justify-between items-center">
                     <div>
                         <h1 className="text-3xl font-bold tracking-tight">Annexures</h1>

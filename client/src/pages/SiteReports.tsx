@@ -33,6 +33,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import SiteManagementTabBar from "@/components/SiteManagementTabBar";
 
 export default function SiteReports() {
   const [reports, setReports] = useState<any[]>([]);
@@ -158,6 +159,7 @@ export default function SiteReports() {
   return (
     <Layout>
       <div className="max-w-7xl mx-auto py-8 px-4">
+        <SiteManagementTabBar active="site-reports" />
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Site Reports</h1>
@@ -181,9 +183,9 @@ export default function SiteReports() {
                     <div className="space-y-3 p-4 bg-gray-50 rounded-lg border border-gray-200">
                       <div className="space-y-1">
                         <Label className="text-xs">Group Name</Label>
-                        <Input 
-                          placeholder="e.g., Project Managers" 
-                          value={newGroupName} 
+                        <Input
+                          placeholder="e.g., Project Managers"
+                          value={newGroupName}
                           onChange={(e) => setNewGroupName(e.target.value)}
                           className="h-8 text-sm"
                         />
@@ -191,9 +193,9 @@ export default function SiteReports() {
                       <div className="space-y-1">
                         <Label className="text-xs">Add Email</Label>
                         <div className="flex gap-2">
-                          <Input 
-                            placeholder="manager@client.com" 
-                            value={emailInput} 
+                          <Input
+                            placeholder="manager@client.com"
+                            value={emailInput}
                             onChange={(e) => setEmailInput(e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addEmail())}
                             className="h-8 text-sm"
@@ -223,8 +225,8 @@ export default function SiteReports() {
                           This is a client group (simplified email content)
                         </Label>
                       </div>
-                      <Button 
-                        className="w-full mt-2 h-9 bg-gray-900" 
+                      <Button
+                        className="w-full mt-2 h-9 bg-gray-900"
                         disabled={creatingGroup || !newGroupName || newEmails.length === 0}
                         onClick={handleCreateGroup}
                       >

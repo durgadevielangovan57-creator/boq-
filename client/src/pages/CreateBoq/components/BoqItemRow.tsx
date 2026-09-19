@@ -150,6 +150,10 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
     : getEditedValue(itemKey, "rate_amendment_status", item.rate_amendment_status);
   const isRateAmended = rateAmendStatus === 'pending' || rateAmendStatus === 'draft';
   const isRateApproved = rateAmendStatus === 'approved';
+  // Whether the amended (new) rate should be used on the PO instead of the original
+  // rate. Defaults to false/unchecked, which preserves the existing behavior of the
+  // PO always using the original (pre-amendment) rate.
+  const poUseAmendedRate = getEditedValue(itemKey, "po_use_amended_rate", item.po_use_amended_rate === true);
 
   if (perItemIsEngine) {
     // Read-only display for engine-computed items (with optional rate editing)
@@ -320,6 +324,18 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
             <div className="text-[9px] text-slate-400 line-through leading-tight mt-0.5">
               ₹{Number(item.original_rate ?? item.original_engine_rate).toLocaleString()}
             </div>
+          )}
+          {(isRateAmended || isRateApproved) && (item.original_rate ?? item.original_engine_rate) !== undefined && (
+            <label className="flex items-center justify-center gap-1 text-[8px] text-slate-500 font-medium leading-tight mt-0.5 cursor-pointer whitespace-nowrap" title="If checked, the PO will use the new (amended) rate instead of the original rate">
+              <input
+                type="checkbox"
+                className="h-2.5 w-2.5 cursor-pointer"
+                checked={poUseAmendedRate}
+                disabled={isVersionSubmitted}
+                onChange={(e) => updateEditedField(itemKey, "po_use_amended_rate", e.target.checked)}
+              />
+              Use new rate for PO
+            </label>
           )}
         </td>
         <td className="border px-2 py-2 text-center w-28 font-bold text-green-700 bg-green-50">₹{(item.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
@@ -639,6 +655,18 @@ export const BoqItemRow = React.memo(function BoqItemRow({ item, itemIdx, boqIte
           <div className="text-[9px] text-slate-400 line-through leading-tight mt-0.5">
             ₹{Number(item.original_rate).toLocaleString()}
           </div>
+        )}
+        {(isRateAmended || isRateApproved) && item.original_rate !== undefined && (
+          <label className="flex items-center justify-center gap-1 text-[8px] text-slate-500 font-medium leading-tight mt-0.5 cursor-pointer whitespace-nowrap" title="If checked, the PO will use the new (amended) rate instead of the original rate">
+            <input
+              type="checkbox"
+              className="h-2.5 w-2.5 cursor-pointer"
+              checked={poUseAmendedRate}
+              disabled={isVersionSubmitted}
+              onChange={(e) => updateEditedField(itemKey, "po_use_amended_rate", e.target.checked)}
+            />
+            Use new rate for PO
+          </label>
         )}
       </td>
       <td className="border px-2 py-2 text-center w-28 font-bold text-green-700 bg-green-50">

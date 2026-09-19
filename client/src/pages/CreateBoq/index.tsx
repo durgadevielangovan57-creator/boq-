@@ -55,6 +55,7 @@ import { HistorySection } from './components/HistorySection';
 import { ApprovalsList } from './components/ApprovalsList';
 import { ApprovalPreviewDialog } from './components/ApprovalPreviewDialog';
 import { VersionHistoryModal } from '@/components/ui/VersionHistoryModal';
+import BoqTabBar from "@/components/BoqTabBar";
 
 
 // ─── Small UI Components ───────────────────────────────────────────────────────
@@ -515,9 +516,18 @@ export default function CreateBom() {
           if (rateRes.ok) {
             const rateData = await rateRes.json();
             setRateChangeRequests(rateData.rateChanges || []);
+          } else {
+            // Previously a non-2xx response here (e.g. a 500 because the
+            // table didn't exist yet) was silently ignored: rateRes.ok was
+            // false, the if-block was skipped, and the tab just rendered
+            // "No rate change requests" with nothing in the console or UI
+            // to say the fetch had actually failed. Surface it instead.
+            console.error("Failed to fetch rate changes: HTTP", rateRes.status);
+            toast({ title: "Error", description: "Could not load rate change requests. Try refreshing.", variant: "destructive" });
           }
         } catch (e) {
           console.error("Failed to fetch rate changes", e);
+          toast({ title: "Error", description: "Could not load rate change requests. Try refreshing.", variant: "destructive" });
         }
       }
     } catch (err) {
@@ -1468,8 +1478,21 @@ export default function CreateBom() {
     }
   };
 
+  // Tracks which version the boqItems state currently belongs to. When the user
+  // switches version we drop the previous version's rows IMMEDIATELY, instead of
+  // leaving them on screen (and in handlers like cleanUpDuplicates / delete /
+  // save) until the new fetch returns. Otherwise an action taken in that window
+  // is sent with the OLD version's item ids while the page already shows the new one.
+  const itemsOwnerVersionRef = useRef<string | null>(null);
+
   useEffect(() => {
-    if (!selectedVersionId) { setBoqItems([]); setEditedFields({}); editedFieldsRef.current = {}; return; }
+    if (!selectedVersionId) { setBoqItems([]); setEditedFields({}); editedFieldsRef.current = {}; itemsOwnerVersionRef.current = null; return; }
+    if (itemsOwnerVersionRef.current !== selectedVersionId) {
+      setBoqItems([]);
+      setEditedFields({});
+      editedFieldsRef.current = {};
+      itemsOwnerVersionRef.current = selectedVersionId;
+    }
     loadBoqItemsAndEdits();
     loadHistory();
     loadComments();
@@ -1915,7 +1938,12 @@ export default function CreateBom() {
   };
 
 
-  // Auto-select project and version from URL
+  // Auto-select project and version from URL.
+  // The ?version= value is applied ONCE per distinct value. This effect re-runs
+  // whenever the versions list changes (e.g. right after cloning v1 -> v2), and
+  // without this guard it would yank the page back to the URL's version (v1)
+  // while the user believes they are working in the newly created v2.
+  const appliedUrlVersionRef = useRef<string | null>(null);
   useEffect(() => {
     try {
       const qs = window.location.search || "";
@@ -1930,7 +1958,8 @@ export default function CreateBom() {
       // We can only set version if the versions array is loaded and contains the versionId.
       // But versions array is loaded based on selectedProjectId. 
       // If versionParam is present, it will be set once versions array is loaded.
-      if (versionParam && versionParam !== selectedVersionId && versions.find(v => v.id === versionParam)) {
+      if (versionParam && versionParam !== selectedVersionId && appliedUrlVersionRef.current !== versionParam && versions.find(v => v.id === versionParam)) {
+        appliedUrlVersionRef.current = versionParam;
         setSelectedVersionId(versionParam);
       }
     } catch { /* ignore */ }
@@ -2057,7 +2086,7 @@ export default function CreateBom() {
     let failedCount = 0;
     for (const it of validItems) {
       try {
-        await apiFetch('/api/bom-rate-changes', {
+        const rateChangeRes = await apiFetch('/api/bom-rate-changes', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2075,6 +2104,15 @@ export default function CreateBom() {
             remarks: 'Amended during BOQ creation',
           }),
         });
+        // apiFetch behaves like plain fetch and does NOT throw on a non-2xx
+        // response — without this check, a failed insert (e.g. a 500 from
+        // the server) was silently treated as a success: the item's status
+        // still flipped to 'pending' and the toast still said "submitted",
+        // even though no row was ever created in bom_rate_change_requests.
+        // That's why admins never saw the request under Rate Changes.
+        if (!rateChangeRes.ok) {
+          throw new Error(`Rate change request failed with status ${rateChangeRes.status}`);
+        }
         // Flip local status from 'draft' (unsent) to 'pending' (awaiting admin decision)
         updateEditedField(it.itemKey, 'rate_amendment_status', 'pending');
         // Persist THIS item's 'pending' status immediately, instead of waiting
@@ -3577,12 +3615,13 @@ export default function CreateBom() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  if (loading) return <Layout><div className="text-center py-8">Loading projects...</div></Layout>;
+  if (loading) return <Layout><div className="space-y-6"><BoqTabBar active="bom" /><div className="text-center py-8">Loading projects...</div></div></Layout>;
 
   return (
     <>
       <Layout>
         <div className="space-y-6 pb-24 md:pb-32">
+          <BoqTabBar active="bom" />
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-2 rounded-xl border border-purple-200/90 bg-gradient-to-r from-purple-100/90 via-purple-50 to-indigo-100/80 p-2 shadow-sm relative overflow-visible">
               {/* Subtle Light Purple Ambient Glow */}
@@ -3773,319 +3812,319 @@ export default function CreateBom() {
                     </div>
 
                     {isSelectorExpanded && (
-                    <>
-                    {/* Row 2: Select Project, Version & Actions, Status, Client, Location, Budget — all as compact boxes in one row (never wraps; scrolls horizontally if the window is very narrow) */}
-                    <div className="flex flex-nowrap items-start gap-3 overflow-x-auto pb-1">
-                      <div className="w-[190px] shrink-0 space-y-1.5">
-                        <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Select Project</Label>
-                        <Select onValueChange={v => setSelectedProjectId(v || null)} value={selectedProjectId || ""}>
-                          <SelectTrigger className="w-full bg-slate-50 border-slate-200 h-9 px-3 hover:bg-slate-100/50 transition-colors">
-                            <SelectValue placeholder={projects.length === 0 ? "No projects" : "Choose from filtered list..."} />
-                          </SelectTrigger>
-                          <SelectContent className="max-h-[300px] overflow-hidden flex flex-col">
-                            <div className="sticky top-0 z-10 bg-white p-2 border-b border-slate-100">
-                              <div className="relative">
-                                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
-                                <Input
-                                  placeholder="Search projects..."
-                                  value={projectSearchTerm}
-                                  onChange={(e) => setProjectSearchTerm(e.target.value)}
-                                  onKeyDown={(e) => e.stopPropagation()}
-                                  className="pl-7 h-8 text-[11px] border-slate-200 bg-slate-50 focus:bg-white transition-colors w-full"
-                                />
-                              </div>
-                            </div>
-                            <div className="overflow-y-auto max-h-[250px]">
-                              {projects
-                                .filter(p => {
-                                  // Filter by search term
-                                  if (projectSearchTerm && !fuzzySearch(projectSearchTerm, [p.name, p.client])) return false;
+                      <>
+                        {/* Row 2: Select Project, Version & Actions, Status, Client, Location, Budget — all as compact boxes in one row (never wraps; scrolls horizontally if the window is very narrow) */}
+                        <div className="flex flex-nowrap items-start gap-3 overflow-x-auto pb-1">
+                          <div className="w-[190px] shrink-0 space-y-1.5">
+                            <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Select Project</Label>
+                            <Select onValueChange={v => setSelectedProjectId(v || null)} value={selectedProjectId || ""}>
+                              <SelectTrigger className="w-full bg-slate-50 border-slate-200 h-9 px-3 hover:bg-slate-100/50 transition-colors">
+                                <SelectValue placeholder={projects.length === 0 ? "No projects" : "Choose from filtered list..."} />
+                              </SelectTrigger>
+                              <SelectContent className="max-h-[300px] overflow-hidden flex flex-col">
+                                <div className="sticky top-0 z-10 bg-white p-2 border-b border-slate-100">
+                                  <div className="relative">
+                                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
+                                    <Input
+                                      placeholder="Search projects..."
+                                      value={projectSearchTerm}
+                                      onChange={(e) => setProjectSearchTerm(e.target.value)}
+                                      onKeyDown={(e) => e.stopPropagation()}
+                                      className="pl-7 h-8 text-[11px] border-slate-200 bg-slate-50 focus:bg-white transition-colors w-full"
+                                    />
+                                  </div>
+                                </div>
+                                <div className="overflow-y-auto max-h-[250px]">
+                                  {projects
+                                    .filter(p => {
+                                      // Filter by search term
+                                      if (projectSearchTerm && !fuzzySearch(projectSearchTerm, [p.name, p.client])) return false;
 
-                                  // Filter by status
-                                  if (projectStatusFilter === "all") return true;
-                                  return p.project_status === projectStatusFilter;
-                                })
-                                .map((p: Project) => {
-                                  const sm = getProjectStatusMeta(p.project_status);
-                                  return (
-                                    <SelectItem value={p.id} key={p.id}>
-                                      <span className="flex items-center gap-2">
-                                        {p.name}
-                                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${sm.color}`}>{sm.label}</span>
-                                      </span>
-                                    </SelectItem>
-                                  );
-                                })}
-                            </div>
-                          </SelectContent>
-                        </Select>
-                      </div>
+                                      // Filter by status
+                                      if (projectStatusFilter === "all") return true;
+                                      return p.project_status === projectStatusFilter;
+                                    })
+                                    .map((p: Project) => {
+                                      const sm = getProjectStatusMeta(p.project_status);
+                                      return (
+                                        <SelectItem value={p.id} key={p.id}>
+                                          <span className="flex items-center gap-2">
+                                            {p.name}
+                                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${sm.color}`}>{sm.label}</span>
+                                          </span>
+                                        </SelectItem>
+                                      );
+                                    })}
+                                </div>
+                              </SelectContent>
+                            </Select>
+                          </div>
 
-                      {selectedProjectId && (
-                        <div className="w-[180px] shrink-0 space-y-1.5 text-slate-900">
-                          <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Version &amp; Actions</Label>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <div className="flex gap-1 w-full">
-                              <Select value={selectedVersionId || ""} onValueChange={setSelectedVersionId}>
-                                <SelectTrigger className="flex-1 min-w-0 bg-slate-50 border-slate-200 h-9 px-3">
-                                  <SelectValue placeholder="Select version" />
-                                </SelectTrigger>
-                                <SelectContent className="max-h-[300px] overflow-y-auto">
-                                  {/* A version marked "Last Final" stays right here in Generate BOM —
+                          {selectedProjectId && (
+                            <div className="w-[180px] shrink-0 space-y-1.5 text-slate-900">
+                              <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Version &amp; Actions</Label>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="flex gap-1 w-full">
+                                  <Select value={selectedVersionId || ""} onValueChange={setSelectedVersionId}>
+                                    <SelectTrigger className="flex-1 min-w-0 bg-slate-50 border-slate-200 h-9 px-3">
+                                      <SelectValue placeholder="Select version" />
+                                    </SelectTrigger>
+                                    <SelectContent className="max-h-[300px] overflow-y-auto">
+                                      {/* A version marked "Last Final" stays right here in Generate BOM —
                                       it is only highlighted differently to show it's the Final one.
                                       It does not move or disappear. */}
-                                  {versions.map((v: BOMVersion) => {
-                                    const isFinal = !!(v as any).is_last_final;
+                                      {versions.map((v: BOMVersion) => {
+                                        const isFinal = !!(v as any).is_last_final;
+                                        return (
+                                          <SelectItem
+                                            value={v.id}
+                                            key={v.id}
+                                            className={isFinal ? "bg-green-50 focus:bg-green-100 data-[state=checked]:bg-green-100" : undefined}
+                                          >
+                                            <div className="flex items-center justify-between w-full gap-2">
+                                              <span className={isFinal ? "text-green-700 font-semibold" : undefined}>V{v.version_number} ({VERSION_LABEL[v.status] ?? v.status})</span>
+                                              <div className="flex items-center gap-1 shrink-0">
+                                                {v.linked && <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold flex items-center gap-0.5"><Zap className="w-2.5 h-2.5 fill-amber-300 stroke-amber-500" /> Linked</span>}
+                                                {isFinal && <span className="bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold flex items-center">Final</span>}
+                                              </div>
+                                            </div>
+                                          </SelectItem>
+                                        );
+                                      })}
+                                    </SelectContent>
+                                  </Select>
+                                  {(() => {
+                                    const currentV = versions.find(v => v.id === selectedVersionId);
+                                    const showMark = currentV && currentV.status === 'approved' && !(currentV as any).is_last_final;
+
                                     return (
-                                      <SelectItem
-                                        value={v.id}
-                                        key={v.id}
-                                        className={isFinal ? "bg-green-50 focus:bg-green-100 data-[state=checked]:bg-green-100" : undefined}
-                                      >
-                                        <div className="flex items-center justify-between w-full gap-2">
-                                          <span className={isFinal ? "text-green-700 font-semibold" : undefined}>V{v.version_number} ({VERSION_LABEL[v.status] ?? v.status})</span>
-                                          <div className="flex items-center gap-1 shrink-0">
-                                            {v.linked && <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold flex items-center gap-0.5"><Zap className="w-2.5 h-2.5 fill-amber-300 stroke-amber-500" /> Linked</span>}
-                                            {isFinal && <span className="bg-green-600 text-white text-[8px] h-3.5 px-1 rounded-sm leading-none uppercase font-bold flex items-center">Final</span>}
-                                          </div>
-                                        </div>
-                                      </SelectItem>
-                                    );
-                                  })}
-                                </SelectContent>
-                              </Select>
-                              {(() => {
-                                const currentV = versions.find(v => v.id === selectedVersionId);
-                                const showMark = currentV && currentV.status === 'approved' && !(currentV as any).is_last_final;
-
-                                return (
-                                  <div className="flex items-center gap-1">
-                                    {showMark && (
-                                      <Button
-                                        variant="outline"
-                                        size="icon"
-                                        className="h-9 w-9 border border-amber-200 bg-amber-50 text-amber-500 hover:text-amber-600 hover:border-amber-300 shadow-sm shrink-0"
-                                        title="Mark this as Last Final — it will also become available in Finalize BOQ"
-                                        onClick={async () => {
-                                          if (!confirm("Mark this version as the Last Final version? It will also become available in Finalize BOQ.")) return;
-                                          try {
-                                            const resp = await apiFetch(`/api/boq-versions/${selectedVersionId}/make-final`, { method: "POST" });
-                                            if (resp.ok) {
-                                              toast({ title: "Success", description: "Version marked as Last Final" });
-                                              // Refresh the list in place — keep the same version selected,
-                                              // it just now shows the Final highlight.
-                                              const boqResp = await apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId!)}?type=bom`);
-                                              if (boqResp.ok) {
-                                                const boqData = await boqResp.json();
-                                                setVersions(boqData.versions || []);
+                                      <div className="flex items-center gap-1">
+                                        {showMark && (
+                                          <Button
+                                            variant="outline"
+                                            size="icon"
+                                            className="h-9 w-9 border border-amber-200 bg-amber-50 text-amber-500 hover:text-amber-600 hover:border-amber-300 shadow-sm shrink-0"
+                                            title="Mark this as Last Final — it will also become available in Finalize BOQ"
+                                            onClick={async () => {
+                                              if (!confirm("Mark this version as the Last Final version? It will also become available in Finalize BOQ.")) return;
+                                              try {
+                                                const resp = await apiFetch(`/api/boq-versions/${selectedVersionId}/make-final`, { method: "POST" });
+                                                if (resp.ok) {
+                                                  toast({ title: "Success", description: "Version marked as Last Final" });
+                                                  // Refresh the list in place — keep the same version selected,
+                                                  // it just now shows the Final highlight.
+                                                  const boqResp = await apiFetch(`/api/boq-versions/${encodeURIComponent(selectedProjectId!)}?type=bom`);
+                                                  if (boqResp.ok) {
+                                                    const boqData = await boqResp.json();
+                                                    setVersions(boqData.versions || []);
+                                                  }
+                                                }
+                                              } catch (e) {
+                                                console.error("Failed to mark final", e);
+                                                toast({ title: "Error", description: "Failed to mark as final", variant: "destructive" });
                                               }
-                                            }
-                                          } catch (e) {
-                                            console.error("Failed to mark final", e);
-                                            toast({ title: "Error", description: "Failed to mark as final", variant: "destructive" });
-                                          }
-                                        }}
-                                      >
-                                        <Star className="h-4 w-4" />
-                                      </Button>
-                                    )}
-                                  </div>
-                                );
+                                            }}
+                                          >
+                                            <Star className="h-4 w-4" />
+                                          </Button>
+                                        )}
+                                      </div>
+                                    );
 
-                              })()}
+                                  })()}
+                                </div>
+                              </div>
                             </div>
-                          </div>
+                          )}
+
+                          {selectedProjectId && (() => {
+                            const selProj = projects.find(p => p.id === selectedProjectId);
+                            return (
+                              <div className="w-[125px] shrink-0 space-y-1.5">
+                                <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Status</Label>
+                                <select
+                                  className="w-full h-9 text-xs border border-slate-200 rounded-lg px-2.5 bg-slate-50 font-semibold focus:ring-1 ring-blue-400 outline-none disabled:bg-slate-50 disabled:text-slate-500 hover:bg-slate-100/50 transition-colors"
+                                  value={selProj?.project_status || 'started'}
+                                  disabled={isReadOnlyMode}
+                                  onChange={async (e) => {
+                                    const newStatus = e.target.value;
+                                    try {
+                                      await apiFetch(`/api/boq-projects/${selectedProjectId}`, {
+                                        method: 'PUT',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ project_status: newStatus }),
+                                      });
+                                      setProjects(prev => prev.map(p => p.id === selectedProjectId ? { ...p, project_status: newStatus } : p));
+                                    } catch (err) { console.error('Failed to update project status', err); }
+                                  }}
+                                >
+                                  {PROJECT_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                                </select>
+                              </div>
+                            );
+                          })()}
+
+                          {selectedVersion && (
+                            <>
+                              <div className="w-[125px] shrink-0 space-y-1.5">
+                                <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1 flex items-center gap-1"><Briefcase className="h-3 w-3 text-blue-500" /> Client</Label>
+                                <div className="h-9 flex items-center px-3 rounded-lg border border-blue-100 bg-blue-50/40 text-xs font-bold text-slate-900 truncate">
+                                  {selectedVersion.project_client || "—"}
+                                </div>
+                              </div>
+
+                              <div className="w-[125px] shrink-0 space-y-1.5">
+                                <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1 flex items-center gap-1"><MapPin className="h-3 w-3 text-indigo-500" /> Location</Label>
+                                <div className="h-9 flex items-center px-3 rounded-lg border border-indigo-100 bg-indigo-50/40 text-xs font-bold text-slate-900 truncate">
+                                  {selectedVersion.project_location || "—"}
+                                </div>
+                              </div>
+
+                              <div className="w-[125px] shrink-0 space-y-1.5">
+                                <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1 flex items-center gap-1"><IndianRupee className="h-3 w-3 text-emerald-500" /> Budget</Label>
+                                <div className="h-9 flex items-center px-3 rounded-lg border border-emerald-100 bg-emerald-50/40 text-xs font-bold text-slate-900 truncate">
+                                  ₹{currentProjectValue.toLocaleString()}
+                                </div>
+                              </div>
+                            </>
+                          )}
                         </div>
-                      )}
 
-                      {selectedProjectId && (() => {
-                        const selProj = projects.find(p => p.id === selectedProjectId);
-                        return (
-                          <div className="w-[125px] shrink-0 space-y-1.5">
-                            <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1">Status</Label>
-                            <select
-                              className="w-full h-9 text-xs border border-slate-200 rounded-lg px-2.5 bg-slate-50 font-semibold focus:ring-1 ring-blue-400 outline-none disabled:bg-slate-50 disabled:text-slate-500 hover:bg-slate-100/50 transition-colors"
-                              value={selProj?.project_status || 'started'}
-                              disabled={isReadOnlyMode}
-                              onChange={async (e) => {
-                                const newStatus = e.target.value;
-                                try {
-                                  await apiFetch(`/api/boq-projects/${selectedProjectId}`, {
-                                    method: 'PUT',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ project_status: newStatus }),
-                                  });
-                                  setProjects(prev => prev.map(p => p.id === selectedProjectId ? { ...p, project_status: newStatus } : p));
-                                } catch (err) { console.error('Failed to update project status', err); }
-                              }}
-                            >
-                              {PROJECT_STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-                            </select>
-                          </div>
-                        );
-                      })()}
-
-                      {selectedVersion && (
-                        <>
-                          <div className="w-[125px] shrink-0 space-y-1.5">
-                            <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1 flex items-center gap-1"><Briefcase className="h-3 w-3 text-blue-500" /> Client</Label>
-                            <div className="h-9 flex items-center px-3 rounded-lg border border-blue-100 bg-blue-50/40 text-xs font-bold text-slate-900 truncate">
-                              {selectedVersion.project_client || "—"}
-                            </div>
-                          </div>
-
-                          <div className="w-[125px] shrink-0 space-y-1.5">
-                            <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1 flex items-center gap-1"><MapPin className="h-3 w-3 text-indigo-500" /> Location</Label>
-                            <div className="h-9 flex items-center px-3 rounded-lg border border-indigo-100 bg-indigo-50/40 text-xs font-bold text-slate-900 truncate">
-                              {selectedVersion.project_location || "—"}
-                            </div>
-                          </div>
-
-                          <div className="w-[125px] shrink-0 space-y-1.5">
-                            <Label className="text-[10px] uppercase tracking-wider text-slate-700 font-extrabold ml-1 flex items-center gap-1"><IndianRupee className="h-3 w-3 text-emerald-500" /> Budget</Label>
-                            <div className="h-9 flex items-center px-3 rounded-lg border border-emerald-100 bg-emerald-50/40 text-xs font-bold text-slate-900 truncate">
-                              ₹{currentProjectValue.toLocaleString()}
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    </div>
-
-                    {/* Row 3: Action chips — icon + label, matching the requested layout */}
-                    {selectedProjectId && (
-                      <div className="flex flex-wrap items-center gap-2.5">
-                        {!isReadOnlyMode && (
-                          <ActionChip
-                            icon={Clock}
-                            label="New Ver"
-                            onClick={() => {
-                              if (versions.length > 0) {
-                                const last = versions[0];
-                                handleCreateNewVersion(confirm(`Copy items from V${last.version_number}?`));
-                              } else {
-                                handleCreateNewVersion(false);
-                              }
-                            }}
-                            colorClass="bg-emerald-50 border-emerald-200 text-emerald-600 hover:text-emerald-700 hover:border-emerald-300"
-                          />
-                        )}
-                        <ActionChip
-                          icon={History}
-                          label="History"
-                          onClick={() => setShowHistoryModal(true)}
-                          disabled={!selectedVersionId}
-                          colorClass="bg-blue-50 border-blue-200 text-blue-600 hover:text-blue-700 hover:border-blue-300"
-                        />
-                        {(user?.role === 'admin' || user?.role === 'software_team') && (
-                          <ActionChip
-                            icon={Trash2}
-                            label="Del"
-                            onClick={handleDeleteVersion}
-                            disabled={!selectedVersionId}
-                            colorClass="bg-red-50 border-red-200 text-red-600 hover:text-red-700 hover:border-red-300"
-                          />
-                        )}
-                        {!isReadOnlyMode && (
-                          <ActionChip
-                            icon={Settings}
-                            label="Advanced"
-                            onClick={() => setShowAdvancedActions(o => !o)}
-                            colorClass={cn(
-                              "bg-purple-50 border-purple-200 text-purple-600 hover:text-purple-700 hover:border-purple-300",
-                              showAdvancedActions && "border-purple-400 ring-2 ring-purple-100 text-purple-700"
+                        {/* Row 3: Action chips — icon + label, matching the requested layout */}
+                        {selectedProjectId && (
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            {!isReadOnlyMode && (
+                              <ActionChip
+                                icon={Clock}
+                                label="New Ver"
+                                onClick={() => {
+                                  if (versions.length > 0) {
+                                    const last = versions[0];
+                                    handleCreateNewVersion(confirm(`Copy items from V${last.version_number}?`));
+                                  } else {
+                                    handleCreateNewVersion(false);
+                                  }
+                                }}
+                                colorClass="bg-emerald-50 border-emerald-200 text-emerald-600 hover:text-emerald-700 hover:border-emerald-300"
+                              />
                             )}
-                          />
-                        )}
-                        {!isReadOnlyMode && (
-                          <ActionChip
-                            icon={isRefreshingCategories ? Loader2 : RefreshCw}
-                            label="Refresh"
-                            onClick={handleRefreshCategories}
-                            disabled={!selectedVersionId || isRefreshingCategories || boqItems.length === 0}
-                            spinning={isRefreshingCategories}
-                            colorClass="bg-teal-50 border-teal-200 text-teal-600 hover:text-teal-700 hover:border-teal-300"
-                          />
-                        )}
-
-                        <div className="w-px self-stretch bg-slate-200 mx-0.5" />
-
-                        <ActionChip
-                          icon={isSaving ? Loader2 : PackagePlus}
-                          label="Add Product"
-                          onClick={handleAddProduct}
-                          disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}
-                          spinning={isSaving}
-                          colorClass="bg-primary border-primary text-white hover:opacity-90"
-                        />
-
-                        <ActionChip
-                          icon={isSaving ? Loader2 : ListPlus}
-                          label="Add Item"
-                          onClick={handleAddProductManual}
-                          disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}
-                          spinning={isSaving}
-                          colorClass="bg-white border-slate-200 text-slate-700 hover:border-slate-300"
-                        />
-
-                        {selectedVersion && (
-                          <>
                             <ActionChip
-                              icon={MessageSquare}
-                              label="Comment"
-                              onClick={() => {
-                                if (!selectedVersionId) return;
-                                setCommentInboxView(true);
-                                setCommentTarget(null);
-                                setShowCommentDialog(true);
-                              }}
+                              icon={History}
+                              label="History"
+                              onClick={() => setShowHistoryModal(true)}
                               disabled={!selectedVersionId}
-                              colorClass="bg-white border-slate-200 text-slate-600 hover:border-blue-200 hover:text-blue-600"
-                              badge={(() => {
-                                const unreadCount = comments.filter(c => {
-                                  if (c.user_id === user?.id) return false;
-                                  const isVisible = (!c.visible_to || c.visible_to.length === 0 || c.visible_to.includes(user?.username || ""));
-                                  return isVisible && (!c.read_by || !c.read_by.includes(user?.id || ""));
-                                }).length;
-                                return unreadCount > 0 ? (
-                                  <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[9px] rounded-full h-4 min-w-4 flex items-center justify-center font-bold px-1 shadow-sm border border-white">{unreadCount}</span>
-                                ) : null;
-                              })()}
+                              colorClass="bg-blue-50 border-blue-200 text-blue-600 hover:text-blue-700 hover:border-blue-300"
                             />
-                          </>
-                        )}
-                      </div>
-                    )}
+                            {(user?.role === 'admin' || user?.role === 'software_team') && (
+                              <ActionChip
+                                icon={Trash2}
+                                label="Del"
+                                onClick={handleDeleteVersion}
+                                disabled={!selectedVersionId}
+                                colorClass="bg-red-50 border-red-200 text-red-600 hover:text-red-700 hover:border-red-300"
+                              />
+                            )}
+                            {!isReadOnlyMode && (
+                              <ActionChip
+                                icon={Settings}
+                                label="Advanced"
+                                onClick={() => setShowAdvancedActions(o => !o)}
+                                colorClass={cn(
+                                  "bg-purple-50 border-purple-200 text-purple-600 hover:text-purple-700 hover:border-purple-300",
+                                  showAdvancedActions && "border-purple-400 ring-2 ring-purple-100 text-purple-700"
+                                )}
+                              />
+                            )}
+                            {!isReadOnlyMode && (
+                              <ActionChip
+                                icon={isRefreshingCategories ? Loader2 : RefreshCw}
+                                label="Refresh"
+                                onClick={handleRefreshCategories}
+                                disabled={!selectedVersionId || isRefreshingCategories || boqItems.length === 0}
+                                spinning={isRefreshingCategories}
+                                colorClass="bg-teal-50 border-teal-200 text-teal-600 hover:text-teal-700 hover:border-teal-300"
+                              />
+                            )}
 
-                    {/* Advanced actions — used occasionally, tucked away behind the toggle above */}
-                    {!isReadOnlyMode && showAdvancedActions && (
-                      <div className="flex flex-wrap items-center gap-2 p-2 bg-slate-50 border border-slate-200 rounded-lg animate-in fade-in slide-in-from-top-1 duration-150">
-                        <span className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mr-1 whitespace-nowrap">Advanced:</span>
-                        <Button onClick={() => setShowTemplateManager(true)} variant="outline" className="border-slate-200 h-9 px-4 text-xs font-bold shadow-sm bg-white flex items-center gap-2" disabled={isVersionSubmitted || !selectedVersionId}>
-                          <History className="h-4 w-4" /> Load Template
-                        </Button>
+                            <div className="w-px self-stretch bg-slate-200 mx-0.5" />
 
-                        {approvedProposals.length > 0 && (
-                          <Button
-                            onClick={() => {
-                              setSelectedProposalImportIds([]);
-                              setShowProposalImportDialog(true);
-                            }}
-                            variant="outline"
-                            className="border-emerald-200 h-9 px-4 text-xs font-bold shadow-sm bg-white flex items-center gap-2 text-emerald-700 hover:bg-emerald-50"
-                            disabled={isVersionSubmitted || !selectedVersionId}
-                          >
-                            <CheckCircle2 className="h-4 w-4" /> Import Approved Proposals ({approvedProposals.length})
-                          </Button>
+                            <ActionChip
+                              icon={isSaving ? Loader2 : PackagePlus}
+                              label="Add Product"
+                              onClick={handleAddProduct}
+                              disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}
+                              spinning={isSaving}
+                              colorClass="bg-primary border-primary text-white hover:opacity-90"
+                            />
+
+                            <ActionChip
+                              icon={isSaving ? Loader2 : ListPlus}
+                              label="Add Item"
+                              onClick={handleAddProductManual}
+                              disabled={isVersionSubmitted || !selectedVersionId || !bomButtonsEnabled || isSaving}
+                              spinning={isSaving}
+                              colorClass="bg-white border-slate-200 text-slate-700 hover:border-slate-300"
+                            />
+
+                            {selectedVersion && (
+                              <>
+                                <ActionChip
+                                  icon={MessageSquare}
+                                  label="Comment"
+                                  onClick={() => {
+                                    if (!selectedVersionId) return;
+                                    setCommentInboxView(true);
+                                    setCommentTarget(null);
+                                    setShowCommentDialog(true);
+                                  }}
+                                  disabled={!selectedVersionId}
+                                  colorClass="bg-white border-slate-200 text-slate-600 hover:border-blue-200 hover:text-blue-600"
+                                  badge={(() => {
+                                    const unreadCount = comments.filter(c => {
+                                      if (c.user_id === user?.id) return false;
+                                      const isVisible = (!c.visible_to || c.visible_to.length === 0 || c.visible_to.includes(user?.username || ""));
+                                      return isVisible && (!c.read_by || !c.read_by.includes(user?.id || ""));
+                                    }).length;
+                                    return unreadCount > 0 ? (
+                                      <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[9px] rounded-full h-4 min-w-4 flex items-center justify-center font-bold px-1 shadow-sm border border-white">{unreadCount}</span>
+                                    ) : null;
+                                  })()}
+                                />
+                              </>
+                            )}
+                          </div>
                         )}
-                        <Button onClick={() => setShowCompareDialog(true)} variant="outline" className="border-blue-200 h-9 px-4 text-xs font-bold shadow-sm bg-blue-50 text-blue-700 hover:bg-blue-100 flex items-center gap-2" disabled={!selectedProjectId}>
-                          <ChevronsUpDown className="h-4 w-4" /> Compare
-                        </Button>
-                        <Button onClick={findDuplicatesInBOM} variant="outline" className="border-amber-200 h-9 px-4 text-xs font-bold shadow-sm bg-amber-50 text-amber-700 hover:bg-amber-100 flex items-center gap-2" disabled={!selectedProjectId}>
-                          <AlertTriangle className="h-4 w-4" /> Check Duplicates
-                        </Button>
-                      </div>
-                    )}
-                    </>
+
+                        {/* Advanced actions — used occasionally, tucked away behind the toggle above */}
+                        {!isReadOnlyMode && showAdvancedActions && (
+                          <div className="flex flex-wrap items-center gap-2 p-2 bg-slate-50 border border-slate-200 rounded-lg animate-in fade-in slide-in-from-top-1 duration-150">
+                            <span className="text-[10px] uppercase tracking-wider text-slate-400 font-bold mr-1 whitespace-nowrap">Advanced:</span>
+                            <Button onClick={() => setShowTemplateManager(true)} variant="outline" className="border-slate-200 h-9 px-4 text-xs font-bold shadow-sm bg-white flex items-center gap-2" disabled={isVersionSubmitted || !selectedVersionId}>
+                              <History className="h-4 w-4" /> Load Template
+                            </Button>
+
+                            {approvedProposals.length > 0 && (
+                              <Button
+                                onClick={() => {
+                                  setSelectedProposalImportIds([]);
+                                  setShowProposalImportDialog(true);
+                                }}
+                                variant="outline"
+                                className="border-emerald-200 h-9 px-4 text-xs font-bold shadow-sm bg-white flex items-center gap-2 text-emerald-700 hover:bg-emerald-50"
+                                disabled={isVersionSubmitted || !selectedVersionId}
+                              >
+                                <CheckCircle2 className="h-4 w-4" /> Import Approved Proposals ({approvedProposals.length})
+                              </Button>
+                            )}
+                            <Button onClick={() => setShowCompareDialog(true)} variant="outline" className="border-blue-200 h-9 px-4 text-xs font-bold shadow-sm bg-blue-50 text-blue-700 hover:bg-blue-100 flex items-center gap-2" disabled={!selectedProjectId}>
+                              <ChevronsUpDown className="h-4 w-4" /> Compare
+                            </Button>
+                            <Button onClick={findDuplicatesInBOM} variant="outline" className="border-amber-200 h-9 px-4 text-xs font-bold shadow-sm bg-amber-50 text-amber-700 hover:bg-amber-100 flex items-center gap-2" disabled={!selectedProjectId}>
+                              <AlertTriangle className="h-4 w-4" /> Check Duplicates
+                            </Button>
+                          </div>
+                        )}
+                      </>
                     )}
 
                   </div>

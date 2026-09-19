@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { useLocation } from "wouter";
 import html2pdf from "html2pdf.js";
 import { useToast } from "@/hooks/use-toast";
+import ProcurementTabBar from "@/components/ProcurementTabBar";
 
 export default function MyPORequests() {
     const [, setLocation] = useLocation();
@@ -236,7 +237,7 @@ export default function MyPORequests() {
             if (pdfElement) {
                 await html2pdf().set(opt).from(pdfElement as HTMLElement).save();
             }
-            
+
             document.body.removeChild(container);
             toast({ title: "Success", description: "Request downloaded successfully" });
         } catch (error) {
@@ -250,6 +251,7 @@ export default function MyPORequests() {
     return (
         <Layout>
             <div className="container mx-auto p-4 md:p-6 max-w-[1200px]">
+                <ProcurementTabBar active="my-po-requests" />
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
                     <div>
                         <h1 className="text-3xl font-bold tracking-tight text-slate-900">My PO Requests</h1>
@@ -376,7 +378,7 @@ export default function MyPORequests() {
                                                                                 </TableBody>
                                                                             </Table>
                                                                         </div>
-                                                                        
+
                                                                         <div className="flex justify-end pr-4">
                                                                             <div className="w-64 space-y-1">
                                                                                 {(() => {

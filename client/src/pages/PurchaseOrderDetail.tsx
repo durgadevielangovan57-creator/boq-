@@ -92,6 +92,7 @@ interface PurchaseOrderItem {
     item?: string;
     item_name?: string;
     description: string | null;
+    material_id?: string | null;
     unit: string | null;
     qty: string;
     rate: string;
@@ -349,9 +350,15 @@ export default function PurchaseOrderDetail() {
                 }
                 const currentQty = parseFloat(item.qty) || 0;
                 const balanceQty = originalQty - currentQty;
+                // Manual items (no material_id) can share the same name but differ by
+                // description — include the description in the export so they can be
+                // told apart. Catalog items (with a material_id) are left untouched.
+                const itemDetails = (!item.material_id && item.description)
+                    ? `${item.item || item.item_name || ""}\n${item.description}`
+                    : (item.item || item.item_name || "");
                 return {
                     "S.No": idx + 1,
-                    "Item Details": item.item || item.item_name || "",
+                    "Item Details": itemDetails,
                     "Unit": item.unit || "",
                     "HSN": item.hsn_code || "",
                     "SAC": item.sac_code || "",
@@ -435,6 +442,12 @@ export default function PurchaseOrderDetail() {
 
     const searchParams = new URLSearchParams(window.location.search);
     const mode = searchParams.get("mode");
+    // Optional: where "Back to List" should go when mode=approval, e.g. when
+    // this detail page was opened from the Generate PO page's Approvals
+    // dialog instead of the standalone /po-approvals page. Falls back to the
+    // existing /po-approvals destination when not provided, so nothing else
+    // changes.
+    const returnTo = searchParams.get("returnTo");
 
     useEffect(() => {
         if (id) fetchPODetail();
@@ -959,7 +972,7 @@ export default function PurchaseOrderDetail() {
                 <div className="flex justify-between items-start no-print">
                     <div className="space-y-1">
                         <Button variant="ghost" size="sm" className="-ml-2 text-muted-foreground" onClick={() => {
-                            if (mode === "approval") setLocation("/po-approvals");
+                            if (mode === "approval") setLocation(returnTo || "/po-approvals");
                             else if (mode === "delivery") setLocation(`/delivery-tracker?projectId=${po?.project_id}`);
                             else setLocation(`/purchase-orders?projectId=${po?.project_id}`);
                         }}>

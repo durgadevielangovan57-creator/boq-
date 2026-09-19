@@ -63,6 +63,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import ProjectCompareView from "@/components/ProjectCompareView";
+import OverviewTabBar from "@/components/OverviewTabBar";
 
 interface Project {
   id: string;
@@ -183,7 +184,7 @@ export default function ProjectDashboard() {
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
-  
+
   // Management Report State
   const [selectedReportProjectId, setSelectedReportProjectId] = useState<string | null>(null);
   const [reportData, setReportData] = useState<ManagementReportData | null>(null);
@@ -226,7 +227,7 @@ export default function ProjectDashboard() {
         projectList.forEach((p: Project, idx: number) => {
           versionsMap[p.id] = versionsResults[idx].versions || [];
           logsMap[p.id] = logsResults[idx].logs || [];
-          
+
           const rawProfit = profitResults[idx];
           if (rawProfit) {
             profitMap[p.id] = {
@@ -262,7 +263,7 @@ export default function ProjectDashboard() {
       const res = await apiFetch(`/api/projects/${projectId}/management-report`);
       if (res.ok) {
         const data = await res.json();
-        
+
         // Parse strings to numbers for safety
         if (data.finalVersion) {
           data.finalVersion.final_budget = Number(data.finalVersion.final_budget || 0);
@@ -341,29 +342,29 @@ export default function ProjectDashboard() {
   const generateProjectReport = (project: Project) => {
     const profitData = projectProfitability[project.id];
     const versions = projectVersions[project.id] || [];
-    
+
     const doc = new jsPDF();
-    
+
     // Header
     doc.setFillColor(41, 128, 185);
     doc.rect(0, 0, 210, 40, 'F');
-    
+
     doc.setFontSize(22);
     doc.setTextColor(255, 255, 255);
     doc.text("PROJECT SUMMARY REPORT", 14, 25);
-    
+
     doc.setFontSize(10);
     doc.text(`BUILD ESTIMATE - ${project.name.toUpperCase()}`, 14, 32);
-    
+
     // Meta info
     doc.setTextColor(100, 100, 100);
     doc.text(`Report Generated: ${new Date().toLocaleString()}`, 14, 50);
-    
+
     // Project Details Table
     doc.setFontSize(14);
     doc.setTextColor(40, 40, 40);
     doc.text("Basic Information", 14, 65);
-    
+
     autoTable(doc, {
       startY: 70,
       head: [['Property', 'Information']],
@@ -382,7 +383,7 @@ export default function ProjectDashboard() {
     // Financial Overview
     let currentY = (doc as any).lastAutoTable.finalY + 15;
     doc.text("Financial Overview (Finalized Snapshot)", 14, currentY);
-    
+
     if (profitData) {
       autoTable(doc, {
         startY: currentY + 5,
@@ -408,7 +409,7 @@ export default function ProjectDashboard() {
     doc.setTextColor(40, 40, 40);
     currentY = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 15 : currentY + 25;
     doc.text("Version History & Tracking", 14, currentY);
-    
+
     autoTable(doc, {
       startY: currentY + 5,
       head: [['Version', 'Type', 'Status', 'Last Updated']],
@@ -437,6 +438,7 @@ export default function ProjectDashboard() {
   if (loading) {
     return (
       <Layout>
+        <OverviewTabBar active="project-dashboard" />
         <div className="flex flex-col items-center justify-center min-h-[60vh]">
           <Loader2 className="h-10 w-10 animate-spin text-blue-600 mb-4" />
           <p className="text-gray-500 font-medium">Loading Dashboard...</p>
@@ -454,20 +456,21 @@ export default function ProjectDashboard() {
     <Layout>
       <div className="min-h-screen bg-[#F8F9FB] -mt-4 -mx-4 px-8 py-8">
         <div className="max-w-7xl mx-auto space-y-8">
+          <OverviewTabBar active="project-dashboard" />
 
           {/* Header Section */}
           <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
             <div className="space-y-4 flex-1">
               <div>
                 <div className="flex items-center gap-2 text-slate-400 mb-1">
-                    <LayoutDashboard size={14} />
-                    <span className="text-[10px] font-bold uppercase tracking-widest">Enterprise Dashboard</span>
+                  <LayoutDashboard size={14} />
+                  <span className="text-[10px] font-bold uppercase tracking-widest">Enterprise Dashboard</span>
                 </div>
                 <h1 className="text-2xl font-bold tracking-tight text-slate-900">
                   {selectedReportProjectId && activeTab === 'reports' ? "Management Overview" : "Project Dashboard"}
                 </h1>
                 <p className="text-slate-500 mt-1 font-medium text-xs">
-                  {selectedReportProjectId && activeTab === 'reports' 
+                  {selectedReportProjectId && activeTab === 'reports'
                     ? `Strategic insights for ${reportData?.project.name}`
                     : "Comprehensive financial overview and version tracking"}
                 </p>
@@ -493,47 +496,47 @@ export default function ProjectDashboard() {
             </div>
 
             {!selectedReportProjectId && (
-                <div className="flex gap-3">
-                    <div className="bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-200 flex items-center gap-3">
-                        <div className="h-10 w-10 bg-blue-50 rounded-full flex items-center justify-center text-blue-600">
-                            <BarChart3 size={20} />
-                        </div>
-                        <div>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Projects</p>
-                            <p className="text-lg font-bold text-slate-900 leading-none">{totalProjects}</p>
-                        </div>
-                    </div>
-                    <div className="bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-200 flex items-center gap-3">
-                        <div className="h-10 w-10 bg-amber-50 rounded-full flex items-center justify-center text-amber-600">
-                            <CheckCircle2 size={20} />
-                        </div>
-                        <div>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Finalized</p>
-                            <p className="text-lg font-bold text-slate-900 leading-none">{finalizedVersionsCount}</p>
-                        </div>
-                    </div>
+              <div className="flex gap-3">
+                <div className="bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-200 flex items-center gap-3">
+                  <div className="h-10 w-10 bg-blue-50 rounded-full flex items-center justify-center text-blue-600">
+                    <BarChart3 size={20} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Projects</p>
+                    <p className="text-lg font-bold text-slate-900 leading-none">{totalProjects}</p>
+                  </div>
                 </div>
+                <div className="bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-200 flex items-center gap-3">
+                  <div className="h-10 w-10 bg-amber-50 rounded-full flex items-center justify-center text-amber-600">
+                    <CheckCircle2 size={20} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Finalized</p>
+                    <p className="text-lg font-bold text-slate-900 leading-none">{finalizedVersionsCount}</p>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
 
           {/* Global Search Bar (Only shown in selection modes) */}
           {(!selectedReportProjectId || activeTab === 'overview') && (
             <div className="relative max-w-md group">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
-                <Input
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
+              <Input
                 placeholder="Search projects by name, client or location..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10 pr-10 h-11 bg-white border-slate-200 rounded-xl shadow-sm focus:ring-2 focus:ring-blue-100 transition-all"
-                />
-                {searchTerm && (
+              />
+              {searchTerm && (
                 <button
-                    onClick={() => setSearchTerm("")}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 hover:bg-slate-100 rounded-full text-slate-400"
+                  onClick={() => setSearchTerm("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1 hover:bg-slate-100 rounded-full text-slate-400"
                 >
-                    <X size={14} />
+                  <X size={14} />
                 </button>
-                )}
+              )}
             </div>
           )}
 
@@ -594,14 +597,14 @@ export default function ProjectDashboard() {
                             {/* Summary Metrics (Visible when collapsed) */}
                             {!isExpanded && (
                               <div className="hidden lg:flex items-center gap-8 mr-4">
-                                 <div className="text-right">
-                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Revenue</p>
-                                    <p className="text-sm font-bold text-slate-700">₹{parseFloat(project.project_value || "0").toLocaleString()}</p>
-                                 </div>
-                                 <div className="text-right">
-                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status</p>
-                                    <div className="mt-0.5">{getStatusBadge(project.status)}</div>
-                                 </div>
+                                <div className="text-right">
+                                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Revenue</p>
+                                  <p className="text-sm font-bold text-slate-700">₹{parseFloat(project.project_value || "0").toLocaleString()}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status</p>
+                                  <div className="mt-0.5">{getStatusBadge(project.status)}</div>
+                                </div>
                               </div>
                             )}
 
@@ -657,11 +660,11 @@ export default function ProjectDashboard() {
                                     <div className="grid grid-cols-1 md:grid-cols-4 gap-6 items-center">
                                       {/* Profit Gauge */}
                                       <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col items-center justify-center gap-2">
-                                         <ProfitDonut margin={profitData.margin} />
-                                         <div className="text-center">
-                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Expected Margin</p>
-                                            <p className="text-lg font-black text-slate-900">{profitData.margin.toFixed(1)}%</p>
-                                         </div>
+                                        <ProfitDonut margin={profitData.margin} />
+                                        <div className="text-center">
+                                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Expected Margin</p>
+                                          <p className="text-lg font-black text-slate-900">{profitData.margin.toFixed(1)}%</p>
+                                        </div>
                                       </div>
 
                                       {/* Metrics Cards */}
@@ -721,411 +724,411 @@ export default function ProjectDashboard() {
             </TabsContent>
 
             <TabsContent value="reports" className="m-0 space-y-8 pb-20">
-               {!selectedReportProjectId ? (
+              {!selectedReportProjectId ? (
                 /* Project Selection List for Reports */
                 <Card className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-                    <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                        <div className="flex items-center gap-3">
-                            <ClipboardList className="text-blue-600" size={20} />
-                            <div>
-                                <h3 className="text-sm font-bold text-slate-900">Project Selection</h3>
-                                <p className="text-[10px] text-slate-500 font-medium">Select a project to view its detailed Management Report Dashboard</p>
-                            </div>
-                        </div>
+                  <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                    <div className="flex items-center gap-3">
+                      <ClipboardList className="text-blue-600" size={20} />
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900">Project Selection</h3>
+                        <p className="text-[10px] text-slate-500 font-medium">Select a project to view its detailed Management Report Dashboard</p>
+                      </div>
                     </div>
-                    <CardContent className="p-0">
-                        <Table>
-                            <TableHeader>
-                                <TableRow className="bg-slate-50/30">
-                                    <TableHead className="font-bold text-[10px] uppercase tracking-wider h-12 text-slate-400">Project Name</TableHead>
-                                    <TableHead className="font-bold text-[10px] uppercase tracking-wider h-12 text-slate-400">Client</TableHead>
-                                    <TableHead className="font-bold text-[10px] uppercase tracking-wider h-12 text-slate-400">Status</TableHead>
-                                    <TableHead className="font-bold text-[10px] uppercase tracking-wider h-12 text-slate-400">Value</TableHead>
-                                    <TableHead className="text-right font-bold text-[10px] uppercase tracking-wider h-12 text-slate-400">Action</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {filteredProjects.map(p => {
-                                    const hasFinal = !!projectProfitability[p.id];
-                                    return (
-                                        <TableRow key={p.id} className="hover:bg-blue-50/30 transition-colors group">
-                                            <TableCell className="font-bold text-slate-800 text-sm">{p.name}</TableCell>
-                                            <TableCell className="text-xs text-slate-600 font-medium">{p.client || 'N/A'}</TableCell>
-                                            <TableCell>{getStatusBadge(p.status)}</TableCell>
-                                            <TableCell className="text-xs font-bold text-slate-900">₹{parseFloat(p.project_value || "0").toLocaleString()}</TableCell>
-                                            <TableCell className="text-right">
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    className="rounded-xl h-8 border-slate-200 bg-white group-hover:border-blue-300 group-hover:bg-blue-50 group-hover:text-blue-700 font-bold text-[10px] uppercase gap-2 transition-all"
-                                                    onClick={() => fetchReportData(p.id)}
-                                                    disabled={loadingReport}
-                                                >
-                                                    {loadingReport && selectedReportProjectId === p.id ? (
-                                                        <Loader2 size={12} className="animate-spin" />
-                                                    ) : (
-                                                        <ExternalLink size={12} />
-                                                    )}
-                                                    Open Management Report
-                                                </Button>
-                                            </TableCell>
-                                        </TableRow>
-                                    );
-                                })}
-                            </TableBody>
-                        </Table>
-                    </CardContent>
+                  </div>
+                  <CardContent className="p-0">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-slate-50/30">
+                          <TableHead className="font-bold text-[10px] uppercase tracking-wider h-12 text-slate-400">Project Name</TableHead>
+                          <TableHead className="font-bold text-[10px] uppercase tracking-wider h-12 text-slate-400">Client</TableHead>
+                          <TableHead className="font-bold text-[10px] uppercase tracking-wider h-12 text-slate-400">Status</TableHead>
+                          <TableHead className="font-bold text-[10px] uppercase tracking-wider h-12 text-slate-400">Value</TableHead>
+                          <TableHead className="text-right font-bold text-[10px] uppercase tracking-wider h-12 text-slate-400">Action</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {filteredProjects.map(p => {
+                          const hasFinal = !!projectProfitability[p.id];
+                          return (
+                            <TableRow key={p.id} className="hover:bg-blue-50/30 transition-colors group">
+                              <TableCell className="font-bold text-slate-800 text-sm">{p.name}</TableCell>
+                              <TableCell className="text-xs text-slate-600 font-medium">{p.client || 'N/A'}</TableCell>
+                              <TableCell>{getStatusBadge(p.status)}</TableCell>
+                              <TableCell className="text-xs font-bold text-slate-900">₹{parseFloat(p.project_value || "0").toLocaleString()}</TableCell>
+                              <TableCell className="text-right">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="rounded-xl h-8 border-slate-200 bg-white group-hover:border-blue-300 group-hover:bg-blue-50 group-hover:text-blue-700 font-bold text-[10px] uppercase gap-2 transition-all"
+                                  onClick={() => fetchReportData(p.id)}
+                                  disabled={loadingReport}
+                                >
+                                  {loadingReport && selectedReportProjectId === p.id ? (
+                                    <Loader2 size={12} className="animate-spin" />
+                                  ) : (
+                                    <ExternalLink size={12} />
+                                  )}
+                                  Open Management Report
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
                 </Card>
-               ) : (
+              ) : (
                 /* Management Overview Dashboard View */
                 <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                    {/* Sticky Management Header */}
-                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-center gap-6 sticky top-4 z-10">
-                        <div className="flex items-center gap-4">
-                            <Button 
-                                variant="ghost" 
-                                size="icon" 
-                                className="rounded-xl hover:bg-slate-100 text-slate-400"
-                                onClick={() => setSelectedReportProjectId(null)}
-                            >
-                                <ArrowLeft size={20} />
-                            </Button>
-                            <div>
-                                <div className="flex items-center gap-2">
-                                    <h2 className="text-lg font-bold text-slate-900 leading-none">{reportData?.project.name}</h2>
-                                    <Badge className="bg-blue-50 text-blue-700 border-blue-100 text-[9px] font-black uppercase">Enterprise Report</Badge>
-                                </div>
-                                <div className="flex items-center gap-3 mt-1 text-[11px] font-bold text-slate-400">
-                                    <span className="flex items-center gap-1"><User size={12} /> {reportData?.project.client}</span>
-                                    <span className="flex items-center gap-1"><MapPin size={12} /> {reportData?.project.location}</span>
-                                    <span className="flex items-center gap-1"><CheckCircle2 size={12} /> {reportData?.project.status.toUpperCase()}</span>
-                                </div>
-                            </div>
-                        </div>
+                  {/* Sticky Management Header */}
+                  <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-center gap-6 sticky top-4 z-10">
+                    <div className="flex items-center gap-4">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="rounded-xl hover:bg-slate-100 text-slate-400"
+                        onClick={() => setSelectedReportProjectId(null)}
+                      >
+                        <ArrowLeft size={20} />
+                      </Button>
+                      <div>
                         <div className="flex items-center gap-2">
-                            <Button size="sm" variant="outline" className="rounded-xl h-9 border-slate-200 font-bold text-[10px] uppercase gap-2" onClick={() => reportData && generateProjectReport(reportData.project)}>
-                                <FileDown size={14} /> PDF Summary
-                            </Button>
-                            <Button size="sm" variant="outline" className="rounded-xl h-9 border-slate-200 font-bold text-[10px] uppercase gap-2">
-                                <ExternalLink size={14} /> Share Link
-                            </Button>
-                            <Button size="sm" className="rounded-xl h-9 bg-slate-900 hover:bg-slate-800 font-bold text-[10px] uppercase gap-2" onClick={() => setLocation(`/finalize-bom?project=${reportData?.project.id}`)}>
-                                Open BOQ Tool
-                            </Button>
+                          <h2 className="text-lg font-bold text-slate-900 leading-none">{reportData?.project.name}</h2>
+                          <Badge className="bg-blue-50 text-blue-700 border-blue-100 text-[9px] font-black uppercase">Enterprise Report</Badge>
                         </div>
+                        <div className="flex items-center gap-3 mt-1 text-[11px] font-bold text-slate-400">
+                          <span className="flex items-center gap-1"><User size={12} /> {reportData?.project.client}</span>
+                          <span className="flex items-center gap-1"><MapPin size={12} /> {reportData?.project.location}</span>
+                          <span className="flex items-center gap-1"><CheckCircle2 size={12} /> {reportData?.project.status.toUpperCase()}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" variant="outline" className="rounded-xl h-9 border-slate-200 font-bold text-[10px] uppercase gap-2" onClick={() => reportData && generateProjectReport(reportData.project)}>
+                        <FileDown size={14} /> PDF Summary
+                      </Button>
+                      <Button size="sm" variant="outline" className="rounded-xl h-9 border-slate-200 font-bold text-[10px] uppercase gap-2">
+                        <ExternalLink size={14} /> Share Link
+                      </Button>
+                      <Button size="sm" className="rounded-xl h-9 bg-slate-900 hover:bg-slate-800 font-bold text-[10px] uppercase gap-2" onClick={() => setLocation(`/finalize-bom?project=${reportData?.project.id}`)}>
+                        Open BOQ Tool
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Financial Summary Cards (Section 2) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden group">
+                      <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform">
+                        <Layers size={40} className="text-slate-900" />
+                      </div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Cost (Budget)</p>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-xs font-bold text-slate-400">₹</span>
+                        <h3 className="text-2xl font-black text-slate-900">
+                          {Math.round(reportData?.finalVersion?.final_budget || 0).toLocaleString()}
+                        </h3>
+                      </div>
+                      <div className="mt-4 flex items-center gap-1.5 text-[10px] font-bold text-slate-500">
+                        <Badge className="bg-slate-50 text-slate-600 border-slate-100 h-4 px-1 text-[8px]">SNAPSHOT</Badge>
+                        <span>Based on V{reportData?.finalVersion?.version_number}</span>
+                      </div>
                     </div>
 
-                    {/* Financial Summary Cards (Section 2) */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden group">
-                            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform">
-                                <Layers size={40} className="text-slate-900" />
-                            </div>
-                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Cost (Budget)</p>
-                            <div className="flex items-baseline gap-1">
-                                <span className="text-xs font-bold text-slate-400">₹</span>
-                                <h3 className="text-2xl font-black text-slate-900">
-                                    {Math.round(reportData?.finalVersion?.final_budget || 0).toLocaleString()}
-                                </h3>
-                            </div>
-                            <div className="mt-4 flex items-center gap-1.5 text-[10px] font-bold text-slate-500">
-                                <Badge className="bg-slate-50 text-slate-600 border-slate-100 h-4 px-1 text-[8px]">SNAPSHOT</Badge>
-                                <span>Based on V{reportData?.finalVersion?.version_number}</span>
-                            </div>
-                        </div>
-
-                        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden group">
-                            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform text-blue-600">
-                                <IndianRupee size={40} />
-                            </div>
-                            <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest mb-1">Project Value</p>
-                            <div className="flex items-baseline gap-1">
-                                <span className="text-xs font-bold text-blue-600">₹</span>
-                                <h3 className="text-2xl font-black text-slate-900">
-                                    {Math.round(reportData?.finalVersion?.final_revenue || 0).toLocaleString()}
-                                </h3>
-                            </div>
-                            <div className="mt-4 flex items-center gap-1.5 text-[10px] font-bold text-blue-600 bg-blue-50/50 w-fit px-2 py-0.5 rounded border border-blue-100">
-                                <ArrowUpRight size={10} />
-                                <span>Project Value</span>
-                            </div>
-                        </div>
-
-                        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden group">
-                            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform text-emerald-600">
-                                <TrendingUp size={40} />
-                            </div>
-                            <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Revenue</p>
-                            <div className="flex items-baseline gap-1">
-                                <span className="text-xs font-bold text-emerald-600">₹</span>
-                                <h3 className="text-2xl font-black text-slate-900">
-                                    {Math.round(reportData?.finalVersion?.final_profit || 0).toLocaleString()}
-                                </h3>
-                            </div>
-                            <div className="mt-4 flex items-center gap-1.5 text-[10px] font-bold text-emerald-600">
-                                <ShieldCheck size={10} />
-                                <span>Financial Surplus</span>
-                            </div>
-                        </div>
-
-                        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden group">
-                            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform text-amber-600">
-                                <PieChartIcon size={40} />
-                            </div>
-                            <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-1">Gross Margin (%)</p>
-                            <div className="flex items-baseline gap-1">
-                                <h3 className="text-2xl font-black text-slate-900">
-                                    {(reportData?.finalVersion?.final_margin || 0).toFixed(1)}%
-                                </h3>
-                            </div>
-                            <div className="mt-4">
-                                <Progress value={reportData?.finalVersion?.final_margin || 0} className="h-1.5 bg-slate-100" />
-                                <div className="flex justify-between items-center mt-2 text-[8px] font-bold uppercase tracking-wider text-slate-400">
-                                    <span>0%</span>
-                                    <span className="text-emerald-500">Target 25%+</span>
-                                </div>
-                            </div>
-                        </div>
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden group">
+                      <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform text-blue-600">
+                        <IndianRupee size={40} />
+                      </div>
+                      <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest mb-1">Project Value</p>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-xs font-bold text-blue-600">₹</span>
+                        <h3 className="text-2xl font-black text-slate-900">
+                          {Math.round(reportData?.finalVersion?.final_revenue || 0).toLocaleString()}
+                        </h3>
+                      </div>
+                      <div className="mt-4 flex items-center gap-1.5 text-[10px] font-bold text-blue-600 bg-blue-50/50 w-fit px-2 py-0.5 rounded border border-blue-100">
+                        <ArrowUpRight size={10} />
+                        <span>Project Value</span>
+                      </div>
                     </div>
 
-                    {/* Mid Section: Visuals & Breakdown */}
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                        {/* Cost Breakdown (Section 5) */}
-                        <Card className="lg:col-span-2 rounded-2xl border border-slate-200 shadow-sm overflow-hidden bg-white">
-                            <CardHeader className="p-6 border-b border-slate-100 flex flex-row items-center justify-between">
-                                <div>
-                                    <CardTitle className="text-sm font-black uppercase tracking-widest text-slate-500">Category Cost Breakdown</CardTitle>
-                                    <p className="text-[10px] text-slate-400 font-bold">Contribution per category to total revenue</p>
-                                </div>
-                                <Layers size={20} className="text-slate-300" />
-                            </CardHeader>
-                            <CardContent className="p-0">
-                                <div className="p-6 space-y-6">
-                                    {reportData?.categoryBreakdown.map((cat, idx) => {
-                                        const percentage = (cat.revenue / (reportData?.finalVersion?.final_revenue || 1)) * 100;
-                                        return (
-                                            <div key={idx} className="space-y-2">
-                                                <div className="flex justify-between items-center text-xs font-bold">
-                                                    <span className="text-slate-700">{cat.name}</span>
-                                                    <div className="flex gap-4 items-center">
-                                                        <span className="text-slate-400 text-[10px]">₹{Math.round(cat.revenue).toLocaleString()}</span>
-                                                        <span className="text-blue-600">{percentage.toFixed(1)}%</span>
-                                                    </div>
-                                                </div>
-                                                <div className="relative h-2 bg-slate-50 rounded-full overflow-hidden border border-slate-100">
-                                                    <motion.div 
-                                                        initial={{ width: 0 }}
-                                                        animate={{ width: `${percentage}%` }}
-                                                        transition={{ duration: 1, ease: "easeOut" }}
-                                                        className={cn(
-                                                            "h-full rounded-full shadow-sm",
-                                                            idx === 0 ? "bg-blue-500" : idx === 1 ? "bg-indigo-500" : "bg-slate-400"
-                                                        )}
-                                                    />
-                                                </div>
-                                                <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
-                                                    <span className="uppercase tracking-widest">Margin: {cat.margin.toFixed(1)}%</span>
-                                                    <span className={cn(cat.margin >= 15 ? "text-emerald-500" : "text-amber-500")}>
-                                                        {cat.margin >= 15 ? "HEALTHY" : "OPTIMIZE"}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            </CardContent>
-                        </Card>
-
-                        {/* Material vs Labour Split (Section 6) */}
-                        <Card className="rounded-2xl border border-slate-200 shadow-sm overflow-hidden bg-white">
-                            <CardHeader className="p-6 border-b border-slate-100 flex flex-row items-center justify-between">
-                                <div>
-                                    <CardTitle className="text-sm font-black uppercase tracking-widest text-slate-500">Resource Split</CardTitle>
-                                    <p className="text-[10px] text-slate-400 font-bold">Material vs Labour contribution</p>
-                                </div>
-                                <Zap size={20} className="text-slate-300" />
-                            </CardHeader>
-                            <CardContent className="p-8">
-                                <div className="space-y-8">
-                                    {/* Material Card */}
-                                    <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <div className="h-10 w-10 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center">
-                                                <Layers size={20} />
-                                            </div>
-                                            <div>
-                                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Material Cost</p>
-                                                <p className="text-sm font-bold text-slate-900">₹{Math.round(reportData?.split.material || 0).toLocaleString()}</p>
-                                            </div>
-                                        </div>
-                                        <div className="text-right">
-                                            <p className="text-xs font-black text-blue-600">
-                                                {((reportData?.split.material || 0) / ((reportData?.split.material || 1) + (reportData?.split.labour || 0)) * 100).toFixed(0)}%
-                                            </p>
-                                        </div>
-                                    </div>
-
-                                    {/* Labour Card */}
-                                    <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <div className="h-10 w-10 bg-amber-100 text-amber-600 rounded-lg flex items-center justify-center">
-                                                <Activity size={20} />
-                                            </div>
-                                            <div>
-                                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Labour Cost</p>
-                                                <p className="text-sm font-bold text-slate-900">₹{Math.round(reportData?.split.labour || 0).toLocaleString()}</p>
-                                            </div>
-                                        </div>
-                                        <div className="text-right">
-                                            <p className="text-xs font-black text-amber-600">
-                                                {((reportData?.split.labour || 0) / ((reportData?.split.material || 1) + (reportData?.split.labour || 0)) * 100).toFixed(0)}%
-                                            </p>
-                                        </div>
-                                    </div>
-
-                                    {/* Small Gauge for split */}
-                                    <div className="pt-4 text-center space-y-2">
-                                        <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 uppercase tracking-widest px-2">
-                                            <span>Material</span>
-                                            <span>Labour</span>
-                                        </div>
-                                        <div className="flex h-3 rounded-full overflow-hidden border border-slate-200">
-                                            <div 
-                                                className="bg-blue-500 h-full" 
-                                                style={{ width: `${((reportData?.split.material || 0) / ((reportData?.split.material || 1) + (reportData?.split.labour || 0)) * 100)}%` }} 
-                                            />
-                                            <div 
-                                                className="bg-amber-500 h-full" 
-                                                style={{ width: `${((reportData?.split.labour || 0) / ((reportData?.split.material || 1) + (reportData?.split.labour || 0)) * 100)}%` }} 
-                                            />
-                                        </div>
-                                        <p className="text-[10px] text-slate-400 italic">Material to Labour Ratio: {((reportData?.split.material || 0) / (reportData?.split.labour || 1)).toFixed(1)}:1</p>
-                                    </div>
-                                </div>
-                            </CardContent>
-                        </Card>
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden group">
+                      <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform text-emerald-600">
+                        <TrendingUp size={40} />
+                      </div>
+                      <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Revenue</p>
+                      <div className="flex items-baseline gap-1">
+                        <span className="text-xs font-bold text-emerald-600">₹</span>
+                        <h3 className="text-2xl font-black text-slate-900">
+                          {Math.round(reportData?.finalVersion?.final_profit || 0).toLocaleString()}
+                        </h3>
+                      </div>
+                      <div className="mt-4 flex items-center gap-1.5 text-[10px] font-bold text-emerald-600">
+                        <ShieldCheck size={10} />
+                        <span>Financial Surplus</span>
+                      </div>
                     </div>
 
-                    {/* Bottom Section: Timeline & Activity */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                        {/* BOQ Version Timeline (Section 4) */}
-                        <Card className="rounded-2xl border border-slate-200 shadow-sm overflow-hidden bg-white">
-                            <CardHeader className="p-6 border-b border-slate-100 flex flex-row items-center justify-between">
-                                <div>
-                                    <CardTitle className="text-sm font-black uppercase tracking-widest text-slate-500">Version History Timeline</CardTitle>
-                                    <p className="text-[10px] text-slate-400 font-bold">Lifecycle tracking of BOQ and BOM iterations</p>
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden group">
+                      <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform text-amber-600">
+                        <PieChartIcon size={40} />
+                      </div>
+                      <p className="text-[10px] font-black text-amber-600 uppercase tracking-widest mb-1">Gross Margin (%)</p>
+                      <div className="flex items-baseline gap-1">
+                        <h3 className="text-2xl font-black text-slate-900">
+                          {(reportData?.finalVersion?.final_margin || 0).toFixed(1)}%
+                        </h3>
+                      </div>
+                      <div className="mt-4">
+                        <Progress value={reportData?.finalVersion?.final_margin || 0} className="h-1.5 bg-slate-100" />
+                        <div className="flex justify-between items-center mt-2 text-[8px] font-bold uppercase tracking-wider text-slate-400">
+                          <span>0%</span>
+                          <span className="text-emerald-500">Target 25%+</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Mid Section: Visuals & Breakdown */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    {/* Cost Breakdown (Section 5) */}
+                    <Card className="lg:col-span-2 rounded-2xl border border-slate-200 shadow-sm overflow-hidden bg-white">
+                      <CardHeader className="p-6 border-b border-slate-100 flex flex-row items-center justify-between">
+                        <div>
+                          <CardTitle className="text-sm font-black uppercase tracking-widest text-slate-500">Category Cost Breakdown</CardTitle>
+                          <p className="text-[10px] text-slate-400 font-bold">Contribution per category to total revenue</p>
+                        </div>
+                        <Layers size={20} className="text-slate-300" />
+                      </CardHeader>
+                      <CardContent className="p-0">
+                        <div className="p-6 space-y-6">
+                          {reportData?.categoryBreakdown.map((cat, idx) => {
+                            const percentage = (cat.revenue / (reportData?.finalVersion?.final_revenue || 1)) * 100;
+                            return (
+                              <div key={idx} className="space-y-2">
+                                <div className="flex justify-between items-center text-xs font-bold">
+                                  <span className="text-slate-700">{cat.name}</span>
+                                  <div className="flex gap-4 items-center">
+                                    <span className="text-slate-400 text-[10px]">₹{Math.round(cat.revenue).toLocaleString()}</span>
+                                    <span className="text-blue-600">{percentage.toFixed(1)}%</span>
+                                  </div>
                                 </div>
-                                <History size={20} className="text-slate-300" />
-                            </CardHeader>
-                            <CardContent className="p-6">
-                                <div className="space-y-6 relative ml-4 before:absolute before:left-[-1px] before:top-2 before:bottom-2 before:w-[2px] before:bg-slate-100">
-                                    {reportData?.versions.slice(0, 6).map((v, idx) => (
-                                        <div key={v.id} className="relative pl-8">
-                                            {/* Dot */}
-                                            <div className={cn(
-                                                "absolute left-[-5px] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-white shadow-sm ring-2",
-                                                v.is_last_final ? "bg-amber-500 ring-amber-100" : "bg-slate-300 ring-slate-100"
-                                            )} />
-                                            
-                                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-50/50 p-3 rounded-xl border border-slate-100 group hover:bg-blue-50/30 transition-colors">
-                                                <div>
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="text-xs font-black text-slate-900 uppercase">Version {v.version_number}</span>
-                                                        <Badge variant="outline" className={cn("text-[8px] h-4 font-bold uppercase", v.type === 'boq' ? "text-purple-600 bg-purple-50" : "text-blue-600 bg-blue-50")}>
-                                                            {v.type.toUpperCase()}
-                                                        </Badge>
-                                                        {v.is_last_final && <Badge className="bg-amber-500 text-white text-[8px] h-4 font-black">FINAL</Badge>}
-                                                    </div>
-                                                    <p className="text-[10px] text-slate-400 mt-0.5 font-bold">{formatDate(v.created_at)}</p>
-                                                </div>
-                                                <div className="flex items-center gap-2">
-                                                    {getStatusBadge(v.status)}
-                                                    <Button variant="ghost" size="icon" className="h-6 w-6 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity">
-                                                        <ChevronRight size={14} />
-                                                    </Button>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    ))}
-                                    {reportData?.versions.length && reportData.versions.length > 6 && (
-                                        <p className="text-[10px] text-center text-slate-400 font-bold py-2 uppercase tracking-widest">+{reportData.versions.length - 6} More Versions</p>
+                                <div className="relative h-2 bg-slate-50 rounded-full overflow-hidden border border-slate-100">
+                                  <motion.div
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${percentage}%` }}
+                                    transition={{ duration: 1, ease: "easeOut" }}
+                                    className={cn(
+                                      "h-full rounded-full shadow-sm",
+                                      idx === 0 ? "bg-blue-500" : idx === 1 ? "bg-indigo-500" : "bg-slate-400"
                                     )}
+                                  />
                                 </div>
-                            </CardContent>
-                        </Card>
+                                <div className="flex justify-between items-center text-[9px] font-bold text-slate-400">
+                                  <span className="uppercase tracking-widest">Margin: {cat.margin.toFixed(1)}%</span>
+                                  <span className={cn(cat.margin >= 15 ? "text-emerald-500" : "text-amber-500")}>
+                                    {cat.margin >= 15 ? "HEALTHY" : "OPTIMIZE"}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </CardContent>
+                    </Card>
 
-                        {/* Recent Activities & Risk Section (Sections 11 & 12) */}
+                    {/* Material vs Labour Split (Section 6) */}
+                    <Card className="rounded-2xl border border-slate-200 shadow-sm overflow-hidden bg-white">
+                      <CardHeader className="p-6 border-b border-slate-100 flex flex-row items-center justify-between">
+                        <div>
+                          <CardTitle className="text-sm font-black uppercase tracking-widest text-slate-500">Resource Split</CardTitle>
+                          <p className="text-[10px] text-slate-400 font-bold">Material vs Labour contribution</p>
+                        </div>
+                        <Zap size={20} className="text-slate-300" />
+                      </CardHeader>
+                      <CardContent className="p-8">
                         <div className="space-y-8">
-                            {/* Risk Alerts */}
-                            <Card className="rounded-2xl border border-rose-100 bg-rose-50/30 shadow-sm overflow-hidden">
-                                <CardHeader className="p-4 border-b border-rose-100 flex flex-row items-center gap-3">
-                                    <AlertTriangle className="text-rose-600" size={18} />
-                                    <CardTitle className="text-[11px] font-black uppercase tracking-widest text-rose-700">Project Risk Watch</CardTitle>
-                                </CardHeader>
-                                <CardContent className="p-4 space-y-3">
-                                    {(reportData?.finalVersion?.final_margin || 0) < 15 && (
-                                        <div className="flex items-start gap-3 p-3 bg-white rounded-xl border border-rose-200">
-                                            <div className="h-6 w-6 bg-rose-100 text-rose-600 rounded flex items-center justify-center shrink-0">
-                                                <TrendingUp size={14} />
-                                            </div>
-                                            <div>
-                                                <p className="text-[11px] font-bold text-slate-900">Low Profit Margin</p>
-                                                <p className="text-[10px] text-slate-500">Current margin ({(reportData?.finalVersion?.final_margin || 0).toFixed(1)}%) is below the healthy threshold of 15%.</p>
-                                            </div>
-                                        </div>
-                                    )}
-                                    {reportData?.versions.length && reportData.versions.length > 5 && (
-                                        <div className="flex items-start gap-3 p-3 bg-white rounded-xl border border-amber-200">
-                                            <div className="h-6 w-6 bg-amber-100 text-amber-600 rounded flex items-center justify-center shrink-0">
-                                                <Layers size={14} />
-                                            </div>
-                                            <div>
-                                                <p className="text-[11px] font-bold text-slate-900">High Revision Count</p>
-                                                <p className="text-[10px] text-slate-500">Project has {reportData.versions.length} revisions. Review scope changes for potential cost creep.</p>
-                                            </div>
-                                        </div>
-                                    )}
-                                    <div className="flex items-start gap-3 p-3 bg-white rounded-xl border border-blue-200">
-                                        <div className="h-6 w-6 bg-blue-100 text-blue-600 rounded flex items-center justify-center shrink-0">
-                                            <ShieldCheck size={14} />
-                                        </div>
-                                        <div>
-                                            <p className="text-[11px] font-bold text-slate-900">Governance Status</p>
-                                            <p className="text-[10px] text-slate-500">Final version V{reportData?.finalVersion?.version_number} is locked and approved.</p>
-                                        </div>
-                                    </div>
-                                </CardContent>
-                            </Card>
+                          {/* Material Card */}
+                          <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className="h-10 w-10 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center">
+                                <Layers size={20} />
+                              </div>
+                              <div>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Material Cost</p>
+                                <p className="text-sm font-bold text-slate-900">₹{Math.round(reportData?.split.material || 0).toLocaleString()}</p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-xs font-black text-blue-600">
+                                {((reportData?.split.material || 0) / ((reportData?.split.material || 1) + (reportData?.split.labour || 0)) * 100).toFixed(0)}%
+                              </p>
+                            </div>
+                          </div>
 
-                            {/* Smart Insights (Section 15) */}
-                            <Card className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-                                <CardHeader className="p-4 border-b border-slate-100 flex flex-row items-center gap-3">
-                                    <Zap className="text-blue-600" size={18} />
-                                    <CardTitle className="text-[11px] font-black uppercase tracking-widest text-slate-500">Executive Insights</CardTitle>
-                                </CardHeader>
-                                <CardContent className="p-4">
-                                    <div className="space-y-4">
-                                        {reportData?.topCategories[0] && (
-                                            <p className="text-[11px] font-medium text-slate-600 flex gap-2">
-                                                <span className="text-blue-500 font-bold">•</span>
-                                                <span>The <strong className="text-slate-900">{reportData.topCategories[0].name}</strong> category contributes {((reportData.topCategories[0].revenue / (reportData.finalVersion?.final_revenue || 1)) * 100).toFixed(0)}% of total project revenue.</span>
-                                            </p>
-                                        )}
-                                        <p className="text-[11px] font-medium text-slate-600 flex gap-2">
-                                            <span className="text-blue-500 font-bold">•</span>
-                                            <span>Labour costs are optimized at {((reportData?.split.labour || 0) / ((reportData?.split.material || 1) + (reportData?.split.labour || 0)) * 100).toFixed(0)}% of total cost.</span>
-                                        </p>
-                                        <p className="text-[11px] font-medium text-slate-600 flex gap-2">
-                                            <span className="text-blue-500 font-bold">•</span>
-                                            <span>Project margin is currently <strong className={cn(reportData?.finalVersion?.final_margin && reportData.finalVersion.final_margin > 20 ? "text-emerald-600" : "text-slate-900")}>{(reportData?.finalVersion?.final_margin || 0).toFixed(1)}%</strong>.</span>
-                                        </p>
-                                    </div>
-                                </CardContent>
-                            </Card>
+                          {/* Labour Card */}
+                          <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-100 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className="h-10 w-10 bg-amber-100 text-amber-600 rounded-lg flex items-center justify-center">
+                                <Activity size={20} />
+                              </div>
+                              <div>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Labour Cost</p>
+                                <p className="text-sm font-bold text-slate-900">₹{Math.round(reportData?.split.labour || 0).toLocaleString()}</p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-xs font-black text-amber-600">
+                                {((reportData?.split.labour || 0) / ((reportData?.split.material || 1) + (reportData?.split.labour || 0)) * 100).toFixed(0)}%
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Small Gauge for split */}
+                          <div className="pt-4 text-center space-y-2">
+                            <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 uppercase tracking-widest px-2">
+                              <span>Material</span>
+                              <span>Labour</span>
+                            </div>
+                            <div className="flex h-3 rounded-full overflow-hidden border border-slate-200">
+                              <div
+                                className="bg-blue-500 h-full"
+                                style={{ width: `${((reportData?.split.material || 0) / ((reportData?.split.material || 1) + (reportData?.split.labour || 0)) * 100)}%` }}
+                              />
+                              <div
+                                className="bg-amber-500 h-full"
+                                style={{ width: `${((reportData?.split.labour || 0) / ((reportData?.split.material || 1) + (reportData?.split.labour || 0)) * 100)}%` }}
+                              />
+                            </div>
+                            <p className="text-[10px] text-slate-400 italic">Material to Labour Ratio: {((reportData?.split.material || 0) / (reportData?.split.labour || 1)).toFixed(1)}:1</p>
+                          </div>
                         </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  {/* Bottom Section: Timeline & Activity */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    {/* BOQ Version Timeline (Section 4) */}
+                    <Card className="rounded-2xl border border-slate-200 shadow-sm overflow-hidden bg-white">
+                      <CardHeader className="p-6 border-b border-slate-100 flex flex-row items-center justify-between">
+                        <div>
+                          <CardTitle className="text-sm font-black uppercase tracking-widest text-slate-500">Version History Timeline</CardTitle>
+                          <p className="text-[10px] text-slate-400 font-bold">Lifecycle tracking of BOQ and BOM iterations</p>
+                        </div>
+                        <History size={20} className="text-slate-300" />
+                      </CardHeader>
+                      <CardContent className="p-6">
+                        <div className="space-y-6 relative ml-4 before:absolute before:left-[-1px] before:top-2 before:bottom-2 before:w-[2px] before:bg-slate-100">
+                          {reportData?.versions.slice(0, 6).map((v, idx) => (
+                            <div key={v.id} className="relative pl-8">
+                              {/* Dot */}
+                              <div className={cn(
+                                "absolute left-[-5px] top-1.5 h-2.5 w-2.5 rounded-full border-2 border-white shadow-sm ring-2",
+                                v.is_last_final ? "bg-amber-500 ring-amber-100" : "bg-slate-300 ring-slate-100"
+                              )} />
+
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-50/50 p-3 rounded-xl border border-slate-100 group hover:bg-blue-50/30 transition-colors">
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-black text-slate-900 uppercase">Version {v.version_number}</span>
+                                    <Badge variant="outline" className={cn("text-[8px] h-4 font-bold uppercase", v.type === 'boq' ? "text-purple-600 bg-purple-50" : "text-blue-600 bg-blue-50")}>
+                                      {v.type.toUpperCase()}
+                                    </Badge>
+                                    {v.is_last_final && <Badge className="bg-amber-500 text-white text-[8px] h-4 font-black">FINAL</Badge>}
+                                  </div>
+                                  <p className="text-[10px] text-slate-400 mt-0.5 font-bold">{formatDate(v.created_at)}</p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {getStatusBadge(v.status)}
+                                  <Button variant="ghost" size="icon" className="h-6 w-6 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <ChevronRight size={14} />
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                          {reportData?.versions.length && reportData.versions.length > 6 && (
+                            <p className="text-[10px] text-center text-slate-400 font-bold py-2 uppercase tracking-widest">+{reportData.versions.length - 6} More Versions</p>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {/* Recent Activities & Risk Section (Sections 11 & 12) */}
+                    <div className="space-y-8">
+                      {/* Risk Alerts */}
+                      <Card className="rounded-2xl border border-rose-100 bg-rose-50/30 shadow-sm overflow-hidden">
+                        <CardHeader className="p-4 border-b border-rose-100 flex flex-row items-center gap-3">
+                          <AlertTriangle className="text-rose-600" size={18} />
+                          <CardTitle className="text-[11px] font-black uppercase tracking-widest text-rose-700">Project Risk Watch</CardTitle>
+                        </CardHeader>
+                        <CardContent className="p-4 space-y-3">
+                          {(reportData?.finalVersion?.final_margin || 0) < 15 && (
+                            <div className="flex items-start gap-3 p-3 bg-white rounded-xl border border-rose-200">
+                              <div className="h-6 w-6 bg-rose-100 text-rose-600 rounded flex items-center justify-center shrink-0">
+                                <TrendingUp size={14} />
+                              </div>
+                              <div>
+                                <p className="text-[11px] font-bold text-slate-900">Low Profit Margin</p>
+                                <p className="text-[10px] text-slate-500">Current margin ({(reportData?.finalVersion?.final_margin || 0).toFixed(1)}%) is below the healthy threshold of 15%.</p>
+                              </div>
+                            </div>
+                          )}
+                          {reportData?.versions.length && reportData.versions.length > 5 && (
+                            <div className="flex items-start gap-3 p-3 bg-white rounded-xl border border-amber-200">
+                              <div className="h-6 w-6 bg-amber-100 text-amber-600 rounded flex items-center justify-center shrink-0">
+                                <Layers size={14} />
+                              </div>
+                              <div>
+                                <p className="text-[11px] font-bold text-slate-900">High Revision Count</p>
+                                <p className="text-[10px] text-slate-500">Project has {reportData.versions.length} revisions. Review scope changes for potential cost creep.</p>
+                              </div>
+                            </div>
+                          )}
+                          <div className="flex items-start gap-3 p-3 bg-white rounded-xl border border-blue-200">
+                            <div className="h-6 w-6 bg-blue-100 text-blue-600 rounded flex items-center justify-center shrink-0">
+                              <ShieldCheck size={14} />
+                            </div>
+                            <div>
+                              <p className="text-[11px] font-bold text-slate-900">Governance Status</p>
+                              <p className="text-[10px] text-slate-500">Final version V{reportData?.finalVersion?.version_number} is locked and approved.</p>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {/* Smart Insights (Section 15) */}
+                      <Card className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                        <CardHeader className="p-4 border-b border-slate-100 flex flex-row items-center gap-3">
+                          <Zap className="text-blue-600" size={18} />
+                          <CardTitle className="text-[11px] font-black uppercase tracking-widest text-slate-500">Executive Insights</CardTitle>
+                        </CardHeader>
+                        <CardContent className="p-4">
+                          <div className="space-y-4">
+                            {reportData?.topCategories[0] && (
+                              <p className="text-[11px] font-medium text-slate-600 flex gap-2">
+                                <span className="text-blue-500 font-bold">•</span>
+                                <span>The <strong className="text-slate-900">{reportData.topCategories[0].name}</strong> category contributes {((reportData.topCategories[0].revenue / (reportData.finalVersion?.final_revenue || 1)) * 100).toFixed(0)}% of total project revenue.</span>
+                              </p>
+                            )}
+                            <p className="text-[11px] font-medium text-slate-600 flex gap-2">
+                              <span className="text-blue-500 font-bold">•</span>
+                              <span>Labour costs are optimized at {((reportData?.split.labour || 0) / ((reportData?.split.material || 1) + (reportData?.split.labour || 0)) * 100).toFixed(0)}% of total cost.</span>
+                            </p>
+                            <p className="text-[11px] font-medium text-slate-600 flex gap-2">
+                              <span className="text-blue-500 font-bold">•</span>
+                              <span>Project margin is currently <strong className={cn(reportData?.finalVersion?.final_margin && reportData.finalVersion.final_margin > 20 ? "text-emerald-600" : "text-slate-900")}>{(reportData?.finalVersion?.final_margin || 0).toFixed(1)}%</strong>.</span>
+                            </p>
+                          </div>
+                        </CardContent>
+                      </Card>
                     </div>
+                  </div>
                 </div>
-               )}
+              )}
             </TabsContent>
 
             <TabsContent value="compare" className="m-0 space-y-8 pb-20">
@@ -1137,4 +1140,3 @@ export default function ProjectDashboard() {
     </Layout>
   );
 }
-

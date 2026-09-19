@@ -9,6 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import apiFetch from "@/lib/api";
 import { Pencil, Trash2, Plus, Search } from "lucide-react";
 import { DeleteConfirmationDialog } from "@/components/ui/DeleteConfirmationDialog";
+import CreationsTabBar from "@/components/CreationsTabBar";
 
 type VendorCategory = {
   id: string;
@@ -37,7 +38,7 @@ export default function VendorCategories() {
     } finally {
       setLoading(false);
     }
-  };        
+  };
 
   useEffect(() => { loadCategories(); }, []);
 
@@ -105,13 +106,14 @@ export default function VendorCategories() {
   return (
     <Layout>
       <div className="space-y-6">
+        <CreationsTabBar active="vendor-category" />
         <div>
           <h2 className="text-3xl font-bold tracking-tight font-heading">Vendor Categories</h2>
           <p className="text-muted-foreground">Manage vendor categories for shops and materials</p>
         </div>
 
         {genericDelete && (
-          <DeleteConfirmationDialog 
+          <DeleteConfirmationDialog
             isOpen={genericDelete.isOpen}
             onOpenChange={(open) => !open && setGenericDelete(null)}
             onConfirm={confirmDelete}
@@ -164,8 +166,8 @@ export default function VendorCategories() {
                 )}
               </div>
             </form>
-          </CardContent>                     
-        </Card> 
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>
@@ -215,4 +217,3 @@ export default function VendorCategories() {
     </Layout>
   );
 }
-  

@@ -61,6 +61,9 @@ interface DataContextType {
   currentProjectId: string | null;
   setActiveProject: (projectId: string | null) => Promise<void>;
   refreshPermissions: () => Promise<void>;
+  customModules: Set<string>;
+  isCustomManaged: boolean;
+  permsLoaded: boolean;
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
@@ -88,6 +91,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [assignedProjects, setAssignedProjects] = useState<string[]>([]);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
 
+  const [customModules, setCustomModules] = useState<Set<string>>(new Set());
+  const [isCustomManaged, setIsCustomManaged] = useState(false);
+  const [permsLoaded, setPermsLoaded] = useState(false);
+
   /* =========================
      SYNC AUTH USER WITH DATA STORE USER
   ========================= */
@@ -105,9 +112,18 @@ export function DataProvider({ children }: { children: ReactNode }) {
         const data = await res.json();
         setAssignedProjects(data.projects || []);
         setCurrentProjectId(data.currentProjectId || null);
+        setIsCustomManaged(!!data.isCustomManaged);
+        setCustomModules(new Set(data.modules || []));
+      } else {
+        setIsCustomManaged(false);
+        setCustomModules(new Set());
       }
     } catch (e) {
       console.warn('refreshPermissions failed', e);
+      setIsCustomManaged(false);
+      setCustomModules(new Set());
+    } finally {
+      setPermsLoaded(true);
     }
   };
 
@@ -614,6 +630,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
     currentProjectId,
     setActiveProject,
     refreshPermissions,
+    customModules,
+    isCustomManaged,
+    permsLoaded,
   };
 
   return (

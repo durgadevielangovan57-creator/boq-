@@ -32,12 +32,13 @@ import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Layout } from "@/components/layout/Layout";
 import { cn } from "@/lib/utils";
+import SiteManagementTabBar from "@/components/SiteManagementTabBar";
 
 function SearchableItemDialog({ items, onSelect, selectedId }: { items: any[], onSelect: (val: string) => void, selectedId: string }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  
-  const filteredItems = items.filter(item => 
+
+  const filteredItems = items.filter(item =>
     item.itemName.toLowerCase().includes(search.toLowerCase()) ||
     item.category?.toLowerCase().includes(search.toLowerCase())
   );
@@ -94,16 +95,16 @@ function SearchableItemDialog({ items, onSelect, selectedId }: { items: any[], o
   );
 }
 
-function MultiSearchableItemDialog({ items, selectedItems, onAddItem, onRemoveItem }: { 
-  items: any[], 
-  selectedItems: any[], 
-  onAddItem: (itemId: string) => void, 
-  onRemoveItem: (itemId: string) => void 
+function MultiSearchableItemDialog({ items, selectedItems, onAddItem, onRemoveItem }: {
+  items: any[],
+  selectedItems: any[],
+  onAddItem: (itemId: string) => void,
+  onRemoveItem: (itemId: string) => void
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  
-  const filteredItems = items.filter(item => 
+
+  const filteredItems = items.filter(item =>
     item.itemName.toLowerCase().includes(search.toLowerCase()) ||
     item.category?.toLowerCase().includes(search.toLowerCase())
   ).filter(item => !selectedItems.some(si => si.id === item.id));
@@ -346,8 +347,8 @@ export default function CreateSiteReport() {
 
     const selectedProject = projects.find(p => p.id === selectedProjectId);
     const cleanedTasks = tasks
-      .map((task) => ({ 
-        ...task, 
+      .map((task) => ({
+        ...task,
         selected_items: task.selected_items || []
       }))
       .filter((task) => task.selected_items && task.selected_items.length > 0);
@@ -358,7 +359,7 @@ export default function CreateSiteReport() {
     }
 
     // Flatten tasks: create one task per selected item
-    const flattenedTasks = cleanedTasks.flatMap(task => 
+    const flattenedTasks = cleanedTasks.flatMap(task =>
       task.selected_items.map((item: any) => ({
         item_type: task.item_type,
         item_id: item.id,
@@ -407,6 +408,7 @@ export default function CreateSiteReport() {
   return (
     <Layout>
       <form onSubmit={handleSubmit} className="max-w-5xl mx-auto py-4 px-4">
+        <SiteManagementTabBar active="site-reports" />
         <div className="flex items-center justify-between mb-4">
           <div>
             <h1 className="text-2xl font-bold text-gray-900 leading-tight">Create Site Report</h1>
@@ -467,8 +469,8 @@ export default function CreateSiteReport() {
               <CardTitle className="text-xs font-bold uppercase tracking-wider text-gray-500">Overall Summary</CardTitle>
             </CardHeader>
             <CardContent className="p-3">
-              <Textarea 
-                placeholder="Site progress summary..." 
+              <Textarea
+                placeholder="Site progress summary..."
                 value={summary}
                 onChange={(e) => setSummary(e.target.value)}
                 className="min-h-[64px] text-xs border-gray-300 resize-none p-2"
@@ -501,7 +503,7 @@ export default function CreateSiteReport() {
                         {index + 1}
                       </span>
                       <CardTitle className="text-xs font-bold text-gray-700">
-                        {task.selected_items && task.selected_items.length > 0 
+                        {task.selected_items && task.selected_items.length > 0
                           ? `${task.selected_items.length} item${task.selected_items.length > 1 ? 's' : ''} selected`
                           : 'New Task'
                         }
@@ -511,32 +513,32 @@ export default function CreateSiteReport() {
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </CardHeader>
-                  
+
                   <CardContent className="p-4 space-y-4">
                     <div className="grid md:grid-cols-4 gap-4 items-start">
                       <div className="md:col-span-2 space-y-1">
                         <Label className="text-[10px] font-bold text-gray-400 uppercase">Items / Work</Label>
-                        <MultiSearchableItemDialog 
-                          items={projectItems} 
-                          selectedItems={task.selected_items || []} 
-                          onAddItem={(itemId) => updateTask(task.id, 'add_item', itemId)} 
-                          onRemoveItem={(itemId) => updateTask(task.id, 'remove_item', itemId)} 
+                        <MultiSearchableItemDialog
+                          items={projectItems}
+                          selectedItems={task.selected_items || []}
+                          onAddItem={(itemId) => updateTask(task.id, 'add_item', itemId)}
+                          onRemoveItem={(itemId) => updateTask(task.id, 'remove_item', itemId)}
                         />
                       </div>
                       <div className="md:col-span-1 space-y-1">
                         <Label className="text-[10px] font-bold text-gray-400 uppercase">Completion: {task.completion_percentage}%</Label>
-                        <Input 
-                          type="range" 
-                          min="0" max="100" 
+                        <Input
+                          type="range"
+                          min="0" max="100"
                           className="h-8 accent-gray-900"
-                          value={task.completion_percentage} 
-                          onChange={(e) => updateTask(task.id, 'completion_percentage', parseInt(e.target.value))} 
+                          value={task.completion_percentage}
+                          onChange={(e) => updateTask(task.id, 'completion_percentage', parseInt(e.target.value))}
                         />
                       </div>
                       <div className="md:col-span-1 space-y-1">
                         <Label className="text-[10px] font-bold text-gray-400 uppercase">Description</Label>
-                        <Input 
-                          placeholder="What was completed?" 
+                        <Input
+                          placeholder="What was completed?"
                           className="h-8 text-sm border-gray-300"
                           value={task.task_description}
                           onChange={(e) => updateTask(task.id, 'task_description', e.target.value)}
@@ -561,14 +563,14 @@ export default function CreateSiteReport() {
                               const nL = [...task.labour];
                               nL[lIdx].labour_name = e.target.value;
                               updateTask(task.id, 'labour', nL);
-                            }}/>
+                            }} />
                             <div className="flex items-center gap-1.5 border-l border-gray-200 pl-2">
                               <span className="text-[9px] font-bold text-gray-400 uppercase">Qty</span>
                               <Input type="number" min="1" className="h-6 w-10 border-gray-200 text-xs text-center p-0" value={l.count} onChange={(e) => {
                                 const nL = [...task.labour];
                                 nL[lIdx].count = parseInt(e.target.value);
                                 updateTask(task.id, 'labour', nL);
-                              }}/>
+                              }} />
                             </div>
                             <div className="flex items-center gap-1.5 border-l border-gray-200 pl-2">
                               <span className="text-[9px] font-bold text-gray-400 uppercase">In</span>
@@ -576,7 +578,7 @@ export default function CreateSiteReport() {
                                 const nL = [...task.labour];
                                 nL[lIdx].in_time = e.target.value;
                                 updateTask(task.id, 'labour', nL);
-                              }}/>
+                              }} />
                             </div>
                             <div className="flex items-center gap-1.5 border-l border-gray-200 pl-2">
                               <span className="text-[9px] font-bold text-gray-400 uppercase">Out</span>
@@ -584,10 +586,10 @@ export default function CreateSiteReport() {
                                 const nL = [...task.labour];
                                 nL[lIdx].out_time = e.target.value;
                                 updateTask(task.id, 'labour', nL);
-                              }}/>
+                              }} />
                             </div>
                             <Button type="button" variant="ghost" size="sm" className="h-6 w-6 p-0 text-gray-300 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => {
-                              updateTask(task.id, 'labour', task.labour.filter((_:any, i:number) => i !== lIdx));
+                              updateTask(task.id, 'labour', task.labour.filter((_: any, i: number) => i !== lIdx));
                             }}>
                               <X className="h-3 w-3" />
                             </Button>
@@ -613,14 +615,14 @@ export default function CreateSiteReport() {
                               const nM = [...(task.materials || [])];
                               nM[mIdx].material_name = e.target.value;
                               updateTask(task.id, 'materials', nM);
-                            }}/>
+                            }} />
                             <div className="flex items-center gap-1.5 border-l border-gray-200 pl-2">
                               <span className="text-[9px] font-bold text-gray-400 uppercase">Qty</span>
                               <Input type="number" step="any" min="0" className="h-6 w-16 border-gray-200 text-xs text-center p-0" value={m.quantity} onChange={(e) => {
                                 const nM = [...(task.materials || [])];
                                 nM[mIdx].quantity = parseFloat(e.target.value);
                                 updateTask(task.id, 'materials', nM);
-                              }}/>
+                              }} />
                             </div>
                             <div className="flex items-center gap-1.5 border-l border-gray-200 pl-2">
                               <span className="text-[9px] font-bold text-gray-400 uppercase">Unit</span>
@@ -628,10 +630,10 @@ export default function CreateSiteReport() {
                                 const nM = [...(task.materials || [])];
                                 nM[mIdx].unit = e.target.value;
                                 updateTask(task.id, 'materials', nM);
-                              }}/>
+                              }} />
                             </div>
                             <Button type="button" variant="ghost" size="sm" className="h-6 w-6 p-0 text-gray-300 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => {
-                              updateTask(task.id, 'materials', (task.materials || []).filter((_:any, i:number) => i !== mIdx));
+                              updateTask(task.id, 'materials', (task.materials || []).filter((_: any, i: number) => i !== mIdx));
                             }}>
                               <X className="h-3 w-3" />
                             </Button>
@@ -653,8 +655,8 @@ export default function CreateSiteReport() {
                       <div className="space-y-1">
                         {task.issues.map((issue: any, iIdx: number) => (
                           <div key={iIdx} className="flex gap-2 items-center p-1 px-2 bg-red-50/30 rounded border border-red-100 group">
-                            <Input 
-                              placeholder="Describe obstruction..." 
+                            <Input
+                              placeholder="Describe obstruction..."
                               className="h-7 border-none bg-transparent text-xs flex-1 shadow-none focus-visible:ring-0 p-0"
                               value={issue.description}
                               onChange={(e) => {
@@ -664,7 +666,7 @@ export default function CreateSiteReport() {
                               }}
                             />
                             <Button type="button" variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-200 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => {
-                              updateTask(task.id, 'issues', task.issues.filter((_:any, i:number) => i !== iIdx));
+                              updateTask(task.id, 'issues', task.issues.filter((_: any, i: number) => i !== iIdx));
                             }}>
                               <X className="h-3 w-3" />
                             </Button>

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Reorder, useDragControls } from "framer-motion";
-import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, AlertCircle, FileText, GripVertical, Plus, Search } from "lucide-react";
+import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, AlertCircle, FileText, GripVertical, Plus, Search, Users } from "lucide-react";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
@@ -22,6 +23,8 @@ import Step11Preview from "@/components/Step11Preview";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import * as XLSX from 'xlsx';
+import BoqTabBar from "@/components/BoqTabBar";
+import PoApprovalsPanel from "@/components/PoApprovalsPanel";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -657,6 +660,39 @@ export default function GeneratePo() {
   const { user } = useAuth();
   const { products: storeProducts, materials: storeMaterials } = useData();
   const isPurchaseTeam = user?.role === 'purchase_team';
+
+  // ── Generate PO: standalone "Approvals" icon + dialog (NEW, isolated) ──
+  // Mirrors the icon + dialog pattern already on Finalize BOQ and Generate
+  // BOM. The dialog renders the exact PO Approvals page (status filter,
+  // combined Annexures + Requests, View, Approve/Reject with comment) via
+  // the shared <PoApprovalsPanel />, reused as-is from /po-approvals; this
+  // block only owns the icon's badge count and the dialog open state, and
+  // doesn't read or write any of the existing Generate PO state.
+  const [poApprovalsQuickCount, setPoApprovalsQuickCount] = useState(0);
+  const [poApprovalsQuickOpen, setPoApprovalsQuickOpen] = useState(false);
+  const canSeePoApprovalsQuickList = user?.role === 'admin' || user?.role === 'software_team' || user?.role === 'purchase_team';
+
+  const fetchPoApprovalsQuickCount = useCallback(async () => {
+    if (!canSeePoApprovalsQuickList) return;
+    try {
+      const [poRes, reqRes] = await Promise.all([
+        apiFetch("/api/purchase-orders?status=pending_approval"),
+        apiFetch("/api/po-requests?status=pending_approval"),
+      ]);
+      const poData = poRes.ok ? await poRes.json() : { purchaseOrders: [] };
+      const reqData = reqRes.ok ? await reqRes.json() : { poRequests: [] };
+      setPoApprovalsQuickCount((poData.purchaseOrders || []).length + (reqData.poRequests || []).length);
+    } catch (err) {
+      console.error("Failed to load Generate PO approvals count:", err);
+    }
+  }, [canSeePoApprovalsQuickList]);
+
+  useEffect(() => {
+    if (!canSeePoApprovalsQuickList) return;
+    fetchPoApprovalsQuickCount();
+    const interval = setInterval(fetchPoApprovalsQuickCount, 30000);
+    return () => clearInterval(interval);
+  }, [canSeePoApprovalsQuickList, fetchPoApprovalsQuickCount]);
 
   const handleOpenPOModal = async () => {
     if (!selectedVersionId) return;
@@ -1397,9 +1433,10 @@ export default function GeneratePo() {
     const td = parseTableData(boqItem.table_data);
     const step11 = Array.isArray(td.step11_items) ? td.step11_items : [];
     if (td.materialLines && td.targetRequiredQty !== undefined) {
-      // For PO: revert any pending amendments to original rate
+      // For PO: revert any pending amendments to original rate, unless the user has
+      // explicitly checked "use amended rate for PO" on that line.
       const safeLines = td.materialLines.map((l: any) => {
-        if (String(l.rate_amendment_status) === 'pending' && l.original_rate !== undefined) {
+        if (String(l.rate_amendment_status) === 'pending' && l.original_rate !== undefined && l.po_use_amended_rate !== true) {
           return { ...l, applyWastage: false, supplyRate: l.original_rate, rateSqft: l.original_rate };
         }
         return { ...l, applyWastage: false };
@@ -1408,8 +1445,9 @@ export default function GeneratePo() {
     }
     return step11.map((it: any, idx: number) => {
       const key = `${boqItem.id}-${idx}`;
-      // For PO: use original_rate if amendment is pending
-      const sr = String(it.rate_amendment_status) === 'pending' && it.original_rate !== undefined
+      // For PO: use original_rate if amendment is pending, unless the user has
+      // explicitly checked "use amended rate for PO" on that line.
+      const sr = String(it.rate_amendment_status) === 'pending' && it.original_rate !== undefined && it.po_use_amended_rate !== true
         ? it.original_rate
         : getEditedValue(key, "supply_rate", it.supply_rate ?? 0);
       return { ...it, qty: getEditedValue(key, "qty", it.qty ?? 0), supply_rate: sr, install_rate: getEditedValue(key, "install_rate", it.install_rate ?? 0), description: getEditedValue(key, "description", it.description ?? ""), unit: getEditedValue(key, "unit", it.unit ?? "") };
@@ -1773,13 +1811,36 @@ export default function GeneratePo() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  if (loading) return <Layout><div className="text-center py-8">Loading projects...</div></Layout>;
+  if (loading) return <Layout><div className="space-y-6"><BoqTabBar active="po" /><div className="text-center py-8">Loading projects...</div></div></Layout>;
 
   return (
     <>
       <Layout>
         <div className="space-y-6">
-          <h1 className="text-2xl font-semibold">Generate Annexure</h1>
+          <BoqTabBar active="po" />
+          <div className="flex items-center justify-between gap-2">
+            <h1 className="text-2xl font-semibold">Generate Annexure</h1>
+            {canSeePoApprovalsQuickList && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => { setPoApprovalsQuickOpen(true); fetchPoApprovalsQuickCount(); }}
+                    aria-label="Approvals"
+                    className="relative flex items-center justify-center h-8 w-8 rounded-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md shadow-indigo-500/25 hover:opacity-95 transition-all"
+                  >
+                    <Users className="h-3.5 w-3.5" />
+                    {poApprovalsQuickCount > 0 && (
+                      <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] text-white font-bold border border-white">
+                        {poApprovalsQuickCount}
+                      </span>
+                    )}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">Approvals</TooltipContent>
+              </Tooltip>
+            )}
+          </div>
 
           {/* Project Selector */}
           {/* Project & Version Selector (Compact & Professional) */}
@@ -2040,6 +2101,24 @@ export default function GeneratePo() {
           )}
         </div>
       </Layout>
+
+      {/* ── Generate PO: standalone "Approvals" dialog (NEW) ────────────────
+          Purely additive — renders the exact PO Approvals page (status
+          filter, combined Annexures + Requests, View, Approve/Reject with
+          comment) via the shared <PoApprovalsPanel />, reused as-is from
+          /po-approvals — without touching any existing Generate PO state
+          or markup. */}
+      <Dialog open={poApprovalsQuickOpen} onOpenChange={setPoApprovalsQuickOpen}>
+        <DialogContent className="max-w-5xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Annexure Approvals</DialogTitle>
+            <DialogDescription>Review and act on Annexures and Requests awaiting approval.</DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <PoApprovalsPanel onActioned={fetchPoApprovalsQuickCount} onNavigate={() => setPoApprovalsQuickOpen(false)} returnPath="/generate-po" />
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Target Qty Modal */}
       <Dialog open={targetQtyModalOpen} onOpenChange={setTargetQtyModalOpen}>

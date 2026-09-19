@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import apiFetch from "@/lib/api";
 import { RefreshCw, Trash2, Archive as ArchiveIcon, Search } from "lucide-react";
 import { format } from "date-fns";
+import StorageTabBar from "@/components/StorageTabBar";
 
 interface ArchiveItem {
   id: string;
@@ -135,6 +136,7 @@ export default function Archive() {
   return (
     <Layout>
       <div className="container mx-auto px-4 py-8 max-w-7xl">
+        <StorageTabBar active="archive" />
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <ArchiveIcon className="text-gray-500 h-8 w-8" />

@@ -9,7 +9,7 @@ const isVersionEditable = async (versionId: string) => {
     if (res.rows.length === 0) return false;
     const v = res.rows[0];
     if (v.is_locked) return false;
-    if (v.status && ['approved', 'submitted', 'final'].includes(String(v.status))) return false;
+    if (v.status && ['approved', 'submitted', 'final', 'pending_approval', 'edit_requested'].includes(String(v.status))) return false;
     return true;
   } catch (err) {
     console.error("[bom_sketch_sync] isVersionEditable error", err);
@@ -23,7 +23,7 @@ export async function linkVersionToSketchPlan(versionId: string, sketchPlanId: s
     return;
   }
   try {
-    const linkId = `bsl-${Date.now()}-${Math.random().toString(36).substr(2,9)}`;
+    const linkId = `bsl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     // Enforce 1-to-1 active relationship from BOTH sides:
     // 1. Deactivate any previous BOM links for this Sketch Plan
     await query(`UPDATE bom_sketch_links SET is_active = FALSE WHERE sketch_plan_id = $1`, [sketchPlanId]);
@@ -46,7 +46,7 @@ export async function linkVersionToSketchPlan(versionId: string, sketchPlanId: s
       }
       const sketchItemId = td?.sketch_item_id;
       if (sketchItemId) {
-        const mapId = `bm-${Date.now()}-${Math.random().toString(36).substr(2,9)}`;
+        const mapId = `bm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         try {
           await query(
             `INSERT INTO bom_item_sketch_item_map (id, boq_item_id, sketch_item_id, created_at)
@@ -66,6 +66,18 @@ export async function linkVersionToSketchPlan(versionId: string, sketchPlanId: s
     console.error("[bom_sketch_sync] linkVersionToSketchPlan error", err);
   }
 }
+
+// The sketch-owned values of a converted sketch item. Stored on the BOQ item as
+// `sketch_sync_snapshot` so the next sync can tell which fields the SKETCH actually
+// changed, as opposed to fields someone edited on the BOM/BOQ side.
+const sketchSnapshotOf = (t: any) => ({
+  product_name: t.product_name,
+  targetRequiredQty: t.targetRequiredQty,
+  requiredUnitType: t.requiredUnitType,
+  category: t.category || t.category_name || "",
+  remarks: t.remarks,
+  finalize_description: t.finalize_description,
+});
 
 export async function syncSketchPlanToBoq(sketchPlanId: string) {
   if (!FEATURE_FLAG) {
@@ -110,8 +122,8 @@ export async function syncSketchPlanToBoq(sketchPlanId: string) {
         `SELECT m.boq_item_id 
          FROM bom_item_sketch_item_map m
          JOIN boq_items b ON m.boq_item_id = b.id
-         WHERE m.sketch_item_id = $1 AND b.version_id = $2 LIMIT 1`, 
-         [sketchItemId, versionId]
+         WHERE m.sketch_item_id = $1 AND b.version_id = $2 LIMIT 1`,
+        [sketchItemId, versionId]
       );
       if (mapRes.rows.length > 0) {
         const boqItemId = mapRes.rows[0].boq_item_id;
@@ -123,31 +135,43 @@ export async function syncSketchPlanToBoq(sketchPlanId: string) {
         if (typeof existing === 'string') {
           try { existing = JSON.parse(existing); } catch { existing = {}; }
         }
+        // Only take a field from the sketch when the SKETCH changed it since the
+        // last sync. Previously every sketch save overwrote target qty, unit,
+        // name, category, remarks and description on every mapped BOM item with the
+        // sketch's values, silently reverting anything edited on the BOM side
+        // (e.g. a description or project target changed the day before).
+        // Items with no snapshot yet (created before this change) are only
+        // seeded here, not overwritten; from the next sync on, sketch edits apply.
+        const sketchNow: Record<string, any> = sketchSnapshotOf(tData);
+        const lastSeen = existing && typeof existing.sketch_sync_snapshot === 'object' ? existing.sketch_sync_snapshot : null;
         const newTd = { ...existing };
-        newTd.product_name = tData.product_name;
-        newTd.targetRequiredQty = tData.targetRequiredQty;
-        newTd.requiredUnitType = tData.requiredUnitType;
-        newTd.category = tData.category || tData.category_name || newTd.category;
-        
-        if (tData.remarks !== undefined) newTd.remarks = tData.remarks;
-        if (tData.finalize_description) newTd.finalize_description = tData.finalize_description;
+        if (lastSeen) {
+          for (const f of Object.keys(sketchNow)) {
+            const v = sketchNow[f];
+            if (v === undefined) continue;
+            if ((f === 'category' || f === 'finalize_description') && !v) continue;
+            if (JSON.stringify(lastSeen[f]) !== JSON.stringify(v)) newTd[f] = v;
+          }
+          if (sketchNow.category && JSON.stringify(lastSeen.category) !== JSON.stringify(sketchNow.category)) newTd.category_name = sketchNow.category;
+        }
+        newTd.sketch_sync_snapshot = sketchNow;
 
         await query(`UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`, [JSON.stringify(newTd), compVal, boqItemId]);
         synced++;
       } else {
         // Insert new BOQ item for this sketch item
-        const newItemId = `item-${Date.now()}-${Math.random().toString(36).substr(2,9)}`;
+        const newItemId = `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         console.log(`[bom_sketch_sync] Inserting new BOQ item ${newItemId} for sketch item ${sketchItemId} (${tData.product_name})`);
         await query(
           `INSERT INTO boq_items (id, project_id, estimator, table_data, version_id, user_added, sort_order, computed_value, created_at)
            VALUES ($1, $2, $3, $4, $5, true, $6, $7, NOW())`,
-          [newItemId, projectId, (tData.product_name || 'Sketch Item').substring(0,50), JSON.stringify(tData), versionId, 99999, 0]
+          [newItemId, projectId, (tData.product_name || 'Sketch Item').substring(0, 50), JSON.stringify({ ...tData, sketch_sync_snapshot: sketchSnapshotOf(tData) }), versionId, 99999, 0]
         );
-        const mapId = `bm-${Date.now()}-${Math.random().toString(36).substr(2,9)}`;
+        const mapId = `bm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         try {
           await query(
             `INSERT INTO bom_item_sketch_item_map (id, boq_item_id, sketch_item_id, created_at) VALUES ($1, $2, $3, NOW())
-             ON CONFLICT (sketch_item_id) DO UPDATE SET boq_item_id = EXCLUDED.boq_item_id, created_at = NOW()`, 
+             ON CONFLICT (sketch_item_id) DO UPDATE SET boq_item_id = EXCLUDED.boq_item_id, created_at = NOW()`,
             [mapId, newItemId, sketchItemId]
           );
         } catch (e) {
@@ -228,7 +252,7 @@ export async function syncBoqItemToSketch(boqItemId: string, tableData: any) {
       if (!editable) { console.log(`[bom_sketch_sync] Version ${versionId} is NOT editable, returning`); return; }
 
       // Create a new sketch_plan_items row mapped from tableData
-      const newSketchItemId = `ski-${Date.now()}-${Math.random().toString(36).substr(2,5)}`;
+      const newSketchItemId = `ski-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
       try {
         // Determine next sort_order
         const maxSortRes = await query(`SELECT COALESCE(MAX(sort_order), 0) as max_sort FROM sketch_plan_items WHERE plan_id = $1`, [sketchPlanId]);
@@ -247,7 +271,7 @@ export async function syncBoqItemToSketch(boqItemId: string, tableData: any) {
         );
 
         // Insert mapping row
-        const mapId = `bm-${Date.now()}-${Math.random().toString(36).substr(2,9)}`;
+        const mapId = `bm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         await query(`INSERT INTO bom_item_sketch_item_map (id, boq_item_id, sketch_item_id, created_at) VALUES ($1, $2, $3, NOW())`, [mapId, boqItemId, newSketchItemId]);
 
         // Update BOQ item's table_data to include sketch_item_id so further edits will sync
@@ -278,7 +302,7 @@ export async function syncBoqItemToSketch(boqItemId: string, tableData: any) {
     if (tableData.targetRequiredQty !== undefined) updates.qty = tableData.targetRequiredQty;
     if (tableData.requiredUnitType !== undefined) updates.unit = tableData.requiredUnitType;
     if (tableData.category !== undefined) updates.category = tableData.category;
-    
+
     if (tableData.remarks !== undefined) updates.description = tableData.remarks;
     if (tableData.finalize_description !== undefined) updates.description = updates.description ?? tableData.finalize_description;
 
@@ -288,8 +312,8 @@ export async function syncBoqItemToSketch(boqItemId: string, tableData: any) {
     if (setKeys.length === 0) { console.log(`[bom_sketch_sync] No fields to update, returning`); return; }
 
     const params = setKeys.map(k => updates[k]);
-    const setSql = setKeys.map((k, idx) => `${k} = $${idx+1}`).join(', ');
-    const updateSql = `UPDATE sketch_plan_items SET ${setSql} WHERE id = $${setKeys.length+1}`;
+    const setSql = setKeys.map((k, idx) => `${k} = $${idx + 1}`).join(', ');
+    const updateSql = `UPDATE sketch_plan_items SET ${setSql} WHERE id = $${setKeys.length + 1}`;
     console.log(`[bom_sketch_sync] SQL: ${updateSql}`);
     console.log(`[bom_sketch_sync] Params: ${JSON.stringify([...params, sketchItemId])}`);
     const result = await query(updateSql, [...params, sketchItemId]);

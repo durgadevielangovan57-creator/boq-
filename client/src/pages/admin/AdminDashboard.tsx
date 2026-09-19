@@ -73,6 +73,7 @@ import {
   ChevronRight,
   FileDown,
   RefreshCw,
+  Edit,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { postJSON, apiFetch } from "@/lib/api";
@@ -80,6 +81,8 @@ import { Link, useLocation } from "wouter";
 import * as XLSX from "xlsx";
 import { AllMaterialsSplitView } from "@/components/admin/AllMaterialsSplitView";
 import { AllProductsSplitView } from "@/components/admin/AllProductsSplitView";
+import OverviewTabBar from "@/components/OverviewTabBar";
+import CreationsTabBar from "@/components/CreationsTabBar";
 
 /* 🔴 REQUIRED ASTERISK */
 const Required = () => <span className="text-red-500 ml-1">*</span>;
@@ -2401,6 +2404,30 @@ export default function AdminDashboard() {
   return (
     <Layout>
       <div className="space-y-6">
+        {/* Only show the Overview tab bar on the tabs that belong to the Overview
+            section (Dashboard / Alerts); this same page is reused by other sidebar
+            sections (materials, shops, approvals, messages, etc.) via ?tab=, and
+            those keep their own entry points. */}
+        {(activeTab === "dashboard" || activeTab === "alerts") && (
+          <OverviewTabBar active={activeTab === "alerts" ? "alerts" : "dashboard"} />
+        )}
+
+        {/* Creations section: this same page serves the "Item" (?tab=materials),
+            "Product" (?tab=create-product) and "Create Shops" (?tab=shops, formerly
+            "Manage Shops" in the Management section) tabs of the Create flow.
+            Vendor Category and Create Project are separate routes but render the
+            same tab bar. */}
+        {(activeTab === "materials" || activeTab === "create-product" || activeTab === "shops") && (
+          <CreationsTabBar
+            active={
+              activeTab === "materials"
+                ? "item"
+                : activeTab === "create-product"
+                  ? "product"
+                  : "create-shops"
+            }
+          />
+        )}
         <div>
           <h2 className="text-3xl font-bold tracking-tight font-heading">
             {user?.role === "supplier"
@@ -2417,7 +2444,7 @@ export default function AdminDashboard() {
         {/* Stats Overview (shown only on Dashboard tab) */}
         {activeTab === "dashboard" && !isProductManager && (
           <div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4 max-w-3xl">
               <div
                 className="rounded-2xl p-5 flex items-center gap-4 transition-all duration-700"
                 style={{
@@ -2494,327 +2521,362 @@ export default function AdminDashboard() {
 
             {(isAdminOrSoftwareTeam || user?.role === "purchase_team" || user?.role === "pre_sales") && (
               <div className="space-y-6">
-                <div className="space-y-3">
-                  <Card className="px-4 py-3 cursor-pointer select-none" onClick={() => setShowShopsList(!showShopsList)}>
-                    <div className="flex items-center gap-3">
-                      <div className="p-2.5 rounded-xl bg-green-50">
-                        <Store className="h-5 w-5 text-green-600" />
-                      </div>
-                      <div className="flex-1">
-                        <p className="font-semibold text-base">All Shops</p>
-                        <p className="text-xs text-muted-foreground">
-                          List of registered shops
-                        </p>
-                      </div>
-                      <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-green-100 text-green-700">
-                        {shops.length}
-                      </span>
-                      <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform", showShopsList && "rotate-90")} />
+                <div className="rounded-xl border bg-white p-4">
+                  <div className="flex items-center gap-2.5 mb-3">
+                    <div className="p-1.5 rounded-lg bg-violet-100">
+                      <Layers className="h-4 w-4 text-violet-600" />
                     </div>
-                    {showShopsList && (
-                      <div onClick={(e) => e.stopPropagation()} className="mt-4 space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                        <div className="flex flex-col md:flex-row items-center gap-3">
-                          <div className="relative flex-1">
-                            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                            <Input
-                              value={shopSearch}
-                              onChange={(e) => setShopSearch(e.target.value)}
-                              placeholder="Search shops by name, city or location..."
-                              className="h-10 pl-9"
-                            />
-                          </div>
-                          <Select
-                            value={shopVendorCategoryFilter}
-                            onValueChange={setShopVendorCategoryFilter}
-                          >
-                            <SelectTrigger className="w-full md:w-[220px] h-10">
-                              <SelectValue placeholder="All Vendor Categories" />
-                            </SelectTrigger>
-                            <SelectContent className="max-h-[300px]">
-                              <SelectItem value="all">All Vendor Categories</SelectItem>
-                              {vendorCategories.map((vc: any) => (
-                                <SelectItem key={vc.id} value={vc.name}>{vc.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                    <div>
+                      <h3 className="text-sm font-bold text-foreground leading-tight">Quick Access to Registries</h3>
+                      <p className="text-xs text-muted-foreground leading-tight">Manage and view your data easily</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 max-w-3xl">
+                    {/* Shops tile */}
+                    <div className="rounded-lg border bg-slate-50/60 p-3 flex items-center gap-3 hover:bg-slate-50 hover:shadow-sm transition-all duration-200">
+                      <div className="p-2 rounded-lg bg-green-100 shrink-0">
+                        <Store className="h-4 w-4 text-green-600" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-sm leading-tight truncate">Shops</p>
+                        <p className="text-[11px] text-muted-foreground leading-tight truncate">Registered shops</p>
+                      </div>
+                      <div className="w-24 text-right pr-4 mr-1 border-r shrink-0">
+                        <p className="text-lg font-bold leading-none text-foreground">{shops.length}</p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">records</p>
+                      </div>
+                      <div className="w-40 flex items-center justify-end gap-1.5 shrink-0">
+                        <Button
+                          size="sm"
+                          onClick={() => setShowShopsList(!showShopsList)}
+                          className="h-8 px-2.5 text-xs bg-violet-600 hover:bg-violet-700 text-white gap-1"
+                        >
+                          View <ChevronRight className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          title="Download Shops Excel"
+                          onClick={handleExportShops}
+                          className="h-8 w-8 border-green-200 bg-green-50 hover:bg-green-100 text-green-700 shrink-0"
+                        >
+                          <FileDown className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Materials tile */}
+                    <div className="rounded-lg border bg-slate-50/60 p-3 flex items-center gap-3 hover:bg-slate-50 hover:shadow-sm transition-all duration-200">
+                      <div className="p-2 rounded-lg bg-purple-100 shrink-0">
+                        <Layers className="h-4 w-4 text-purple-600" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-sm leading-tight truncate">Materials</p>
+                        <p className="text-[11px] text-muted-foreground leading-tight truncate">Material registry</p>
+                      </div>
+                      <div className="w-24 text-right pr-4 mr-1 border-r shrink-0">
+                        <p className="text-lg font-bold leading-none text-foreground">{materials.length}</p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">records</p>
+                      </div>
+                      <div className="w-40 flex items-center justify-end gap-1.5 shrink-0">
+                        <Button
+                          size="sm"
+                          onClick={() => setShowMaterialsList(!showMaterialsList)}
+                          className="h-8 px-2.5 text-xs bg-violet-600 hover:bg-violet-700 text-white gap-1"
+                        >
+                          View <ChevronRight className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          title="Download Materials Excel"
+                          onClick={handleExportMaterials}
+                          className="h-8 w-8 border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 shrink-0"
+                        >
+                          <FileDown className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          title="Check Duplicates"
+                          onClick={handleCheckDuplicates}
+                          className="h-8 w-8 border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-700 shrink-0"
+                        >
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Products tile */}
+                    <div className="rounded-lg border bg-slate-50/60 p-3 flex items-center gap-3 hover:bg-slate-50 hover:shadow-sm transition-all duration-200">
+                      <div className="p-2 rounded-lg bg-blue-100 shrink-0">
+                        <Package className="h-4 w-4 text-blue-600" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-sm leading-tight truncate">Products</p>
+                        <p className="text-[11px] text-muted-foreground leading-tight truncate">Approved products</p>
+                      </div>
+                      <div className="w-24 text-right pr-4 mr-1 border-r shrink-0">
+                        <p className="text-lg font-bold leading-none text-foreground">{products.filter((p: any) => p.is_approved).length}</p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">records</p>
+                      </div>
+                      <div className="w-40 flex items-center justify-end gap-1.5 shrink-0">
+                        <Button
+                          size="sm"
+                          onClick={() => setShowProductsList(!showProductsList)}
+                          className="h-8 px-2.5 text-xs bg-violet-600 hover:bg-violet-700 text-white gap-1"
+                        >
+                          View <ChevronRight className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {showShopsList && (
+                  <Card className="p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="font-semibold text-base flex items-center gap-2">
+                        <Store className="h-4 w-4 text-green-600" /> All Shops
+                      </p>
+                      <button type="button" onClick={() => setShowShopsList(false)} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                      <div className="flex flex-col md:flex-row items-center gap-3">
+                        <div className="relative flex-1">
+                          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                          <Input
+                            value={shopSearch}
+                            onChange={(e) => setShopSearch(e.target.value)}
+                            placeholder="Search shops by name, city or location..."
+                            className="h-10 pl-9"
+                          />
                         </div>
-                        <div className="max-h-[800px] overflow-y-auto pr-2 border rounded-md">
-                          {filteredShops.length === 0 ? (
-                            <p className="text-muted-foreground">No shops available</p>
-                          ) : (
-                            filteredShops.map((shop: any) => (
-                              <div key={shop.id} className="p-3 border-b hover:bg-muted/30 transition-colors">
-                                {editingShopId === shop.id ? (
-                                  <div className="space-y-4 p-2 bg-muted/20 rounded-lg">
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                      <div>
-                                        <Label className="text-xs font-semibold">Shop Name</Label>
-                                        <Input value={newShop.name || ''} onChange={(e) => setNewShop({ ...newShop, name: e.target.value })} placeholder="Shop Name" />
-                                      </div>
-                                      <div>
-                                        <Label className="text-xs font-semibold">Address</Label>
-                                        <Input value={newShop.location || ''} onChange={(e) => setNewShop({ ...newShop, location: e.target.value })} placeholder="Address" />
-                                      </div>
-                                      <div>
-                                        <Label className="text-xs font-semibold">Location</Label>
-                                        <Input value={newShop.new_location || ''} onChange={(e) => setNewShop({ ...newShop, new_location: e.target.value })} placeholder="Location" />
-                                      </div>
-                                      <div>
-                                        <Label className="text-xs font-semibold">City</Label>
-                                        <Input value={newShop.city || ''} onChange={(e) => setNewShop({ ...newShop, city: e.target.value })} placeholder="City" />
-                                      </div>
-                                      <div>
-                                        <Label className="text-xs font-semibold">Contact Number</Label>
-                                        <Input value={newShop.contactNumber || ''} onChange={(e) => setNewShop({ ...newShop, contactNumber: e.target.value })} placeholder="Phone Number" />
-                                      </div>
-                                      <div>
-                                        <Label className="text-xs font-semibold">GST No</Label>
-                                        <Input value={newShop.gstNo || ''} onChange={(e) => setNewShop({ ...newShop, gstNo: e.target.value })} placeholder="GST No" />
-                                      </div>
-                                      <div>
-                                        <Label className="text-xs font-semibold">Terms and Conditions</Label>
-                                        <Input value={newShop.terms_and_conditions || ''} onChange={(e) => setNewShop({ ...newShop, terms_and_conditions: e.target.value })} placeholder="Terms and Conditions" />
-                                      </div>
-                                      <div>
-                                        <Label className="text-xs font-semibold">Vendor Category</Label>
-                                        <Select value={newShop.vendorCategory || ''} onValueChange={(v) => setNewShop({ ...newShop, vendorCategory: v })}>
-                                          <SelectTrigger>
-                                            <SelectValue placeholder="Select Vendor Category" />
-                                          </SelectTrigger>
-                                          <SelectContent className="max-h-60 overflow-y-auto">
-                                            {vendorCategories.map((vc: any) => (
-                                              <SelectItem key={vc.id} value={vc.name}>{vc.name}</SelectItem>
-                                            ))}
-                                          </SelectContent>
-                                        </Select>
-                                      </div>
+                        <Select
+                          value={shopVendorCategoryFilter}
+                          onValueChange={setShopVendorCategoryFilter}
+                        >
+                          <SelectTrigger className="w-full md:w-[220px] h-10">
+                            <SelectValue placeholder="All Vendor Categories" />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-[300px]">
+                            <SelectItem value="all">All Vendor Categories</SelectItem>
+                            {vendorCategories.map((vc: any) => (
+                              <SelectItem key={vc.id} value={vc.name}>{vc.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="max-h-[800px] overflow-y-auto pr-2 border rounded-md">
+                        {filteredShops.length === 0 ? (
+                          <p className="text-muted-foreground">No shops available</p>
+                        ) : (
+                          filteredShops.map((shop: any) => (
+                            <div key={shop.id} className="p-3 border-b hover:bg-muted/30 transition-colors">
+                              {editingShopId === shop.id ? (
+                                <div className="space-y-4 p-2 bg-muted/20 rounded-lg">
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                      <Label className="text-xs font-semibold">Shop Name</Label>
+                                      <Input value={newShop.name || ''} onChange={(e) => setNewShop({ ...newShop, name: e.target.value })} placeholder="Shop Name" />
                                     </div>
-                                    <div className="flex gap-2 pt-2">
-                                      <Button size="sm" onClick={handleUpdateShop}>Save Changes</Button>
-                                      <Button size="sm" variant="ghost" onClick={() => { setEditingShopId(null); setNewShop({ name: '', location: '', city: '', phoneCountryCode: '+91', state: '', country: '', pincode: '', gstNo: '' }); }}>Cancel</Button>
+                                    <div>
+                                      <Label className="text-xs font-semibold">Address</Label>
+                                      <Input value={newShop.location || ''} onChange={(e) => setNewShop({ ...newShop, location: e.target.value })} placeholder="Address" />
+                                    </div>
+                                    <div>
+                                      <Label className="text-xs font-semibold">Location</Label>
+                                      <Input value={newShop.new_location || ''} onChange={(e) => setNewShop({ ...newShop, new_location: e.target.value })} placeholder="Location" />
+                                    </div>
+                                    <div>
+                                      <Label className="text-xs font-semibold">City</Label>
+                                      <Input value={newShop.city || ''} onChange={(e) => setNewShop({ ...newShop, city: e.target.value })} placeholder="City" />
+                                    </div>
+                                    <div>
+                                      <Label className="text-xs font-semibold">Contact Number</Label>
+                                      <Input value={newShop.contactNumber || ''} onChange={(e) => setNewShop({ ...newShop, contactNumber: e.target.value })} placeholder="Phone Number" />
+                                    </div>
+                                    <div>
+                                      <Label className="text-xs font-semibold">GST No</Label>
+                                      <Input value={newShop.gstNo || ''} onChange={(e) => setNewShop({ ...newShop, gstNo: e.target.value })} placeholder="GST No" />
+                                    </div>
+                                    <div>
+                                      <Label className="text-xs font-semibold">Terms and Conditions</Label>
+                                      <Input value={newShop.terms_and_conditions || ''} onChange={(e) => setNewShop({ ...newShop, terms_and_conditions: e.target.value })} placeholder="Terms and Conditions" />
+                                    </div>
+                                    <div>
+                                      <Label className="text-xs font-semibold">Vendor Category</Label>
+                                      <Select value={newShop.vendorCategory || ''} onValueChange={(v) => setNewShop({ ...newShop, vendorCategory: v })}>
+                                        <SelectTrigger>
+                                          <SelectValue placeholder="Select Vendor Category" />
+                                        </SelectTrigger>
+                                        <SelectContent className="max-h-60 overflow-y-auto">
+                                          {vendorCategories.map((vc: any) => (
+                                            <SelectItem key={vc.id} value={vc.name}>{vc.name}</SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
                                     </div>
                                   </div>
-                                ) : (
-                                  <div>
-                                    <div className="flex items-center justify-between">
-                                      <div className="flex items-start gap-3">
-                                        <button
-                                          onClick={() => setExpandedShops(prev => prev.includes(shop.id) ? prev.filter(id => id !== shop.id) : [...prev, shop.id])}
-                                          aria-label={expandedShops.includes(shop.id) ? 'Collapse materials' : 'Expand materials'}
-                                          className="p-1 mt-1"
-                                        >
-                                          {expandedShops.includes(shop.id) ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                                        </button>
-                                        <div>
-                                          <div className="font-bold text-lg text-foreground">{shop.name}</div>
-                                          <div className="text-sm text-foreground/80">
-                                            {shop.location}, {shop.city}
-                                            {shop.new_location && <div className="text-xs text-muted-foreground mt-0.5 italic">Alt Location: {shop.new_location}</div>}
-                                            {shop.terms_and_conditions && <div className="text-xs text-blue-600 mt-0.5 line-clamp-1">T&C: {shop.terms_and_conditions}</div>}
-                                          </div>
-                                          <div className="text-xs text-muted-foreground mt-1 font-medium">
-                                            {(shop.phone_country_code || shop.phoneCountryCode || shop.phonecountrycode || '+91')}{" "}{(shop.contact_number || shop.contactNumber || shop.contactnumber || shop.phone || shop.mobile)} • {shop.gst_no || shop.gstNo || shop.gstno || 'No GST'}
-                                          </div>
+                                  <div className="flex gap-2 pt-2">
+                                    <Button size="sm" onClick={handleUpdateShop}>Save Changes</Button>
+                                    <Button size="sm" variant="ghost" onClick={() => { setEditingShopId(null); setNewShop({ name: '', location: '', city: '', phoneCountryCode: '+91', state: '', country: '', pincode: '', gstNo: '' }); }}>Cancel</Button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div>
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-start gap-3">
+                                      <button
+                                        onClick={() => setExpandedShops(prev => prev.includes(shop.id) ? prev.filter(id => id !== shop.id) : [...prev, shop.id])}
+                                        aria-label={expandedShops.includes(shop.id) ? 'Collapse materials' : 'Expand materials'}
+                                        className="p-1 mt-1"
+                                      >
+                                        {expandedShops.includes(shop.id) ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                                      </button>
+                                      <div>
+                                        <div className="font-bold text-lg text-foreground">{shop.name}</div>
+                                        <div className="text-sm text-foreground/80">
+                                          {shop.location}, {shop.city}
+                                          {shop.new_location && <div className="text-xs text-muted-foreground mt-0.5 italic">Alt Location: {shop.new_location}</div>}
+                                          {shop.terms_and_conditions && <div className="text-xs text-blue-600 mt-0.5 line-clamp-1">T&C: {shop.terms_and_conditions}</div>}
+                                        </div>
+                                        <div className="text-xs text-muted-foreground mt-1 font-medium">
+                                          {(shop.phone_country_code || shop.phoneCountryCode || shop.phonecountrycode || '+91')}{" "}{(shop.contact_number || shop.contactNumber || shop.contactnumber || shop.phone || shop.mobile)} • {shop.gst_no || shop.gstNo || shop.gstno || 'No GST'}
                                         </div>
                                       </div>
-                                      <div className="flex items-center gap-2">
-                                        <Button
-                                          variant="ghost"
-                                          size="icon"
-                                          className="text-green-700 hover:text-green-800 hover:bg-green-50"
-                                          title={`Download ${shop.name || "shop"}'s materials as Excel`}
-                                          onClick={(e) => { e.stopPropagation(); handleExportShopMaterials(shop); }}
-                                        >
-                                          <FileDown className="h-4 w-4" />
-                                        </Button>
-                                        {(canEditDelete || user?.role === "pre_sales") && (
-                                          <>
-                                            <Button size="sm" variant="outline" onClick={() => handleEditShop(shop)}>Edit</Button>
-                                            {canEditDelete && (
-                                              <>
-                                                <Button size="sm" variant="ghost" onClick={() => setLocalShops((prev: any[]) => prev.map((s: any) => s.id === shop.id ? { ...s, disabled: !s.disabled } : s))}>
-                                                  {shop.disabled ? 'Enable' : 'Disable'}
-                                                </Button>
-                                                <Button
-                                                  variant="ghost"
-                                                  size="icon"
-                                                  className="text-destructive"
-                                                  onClick={() => {
-                                                    setGenericDelete({ isOpen: true, id: shop.id, name: shop.name, type: 'shop' });
-                                                  }}
-                                                >
-                                                  <Trash2 className="h-4 w-4" />
-                                                </Button>
-                                              </>
-                                            )}
-                                          </>
-                                        )}
-                                      </div>
                                     </div>
-
-                                    {expandedShops.includes(shop.id) && (
-                                      <div className="mt-2 pl-10">
-                                        {localMaterials.filter((m: any) => String(m.shopId) === String(shop.id)).length === 0 ? (
-                                          <div className="text-sm text-muted-foreground">No materials for this shop</div>
-                                        ) : (
-                                          localMaterials
-                                            .filter((m: any) => String(m.shopId) === String(shop.id))
-                                            .map((mat: any) => (
-                                              <div key={mat.id} className="py-1">
-                                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
-                                                  <div className="text-sm font-medium">{mat.name}</div>
-                                                  <div className="text-sm">₹{Number(mat.rate || 0).toLocaleString()}</div>
-                                                </div>
-                                                <div className="text-[10px] sm:text-xs flex flex-wrap items-center gap-x-1.5 gap-y-0.5 mt-1">
-                                                  <span className="font-bold text-slate-700 bg-slate-100 px-1 rounded uppercase tracking-tighter text-[9px]">{mat.code || 'No code'}</span>
-                                                  <span className="text-slate-800 font-medium">Brand:</span><span className="text-blue-600 font-semibold">{mat.brandName || mat.brand || mat.brandname || '-'}</span>
-                                                  <span className="text-slate-300">•</span>
-                                                  <span className="text-slate-800 font-medium">Unit:</span><span className="text-blue-600 font-semibold">{mat.unit || '-'}</span>
-                                                  <span className="text-slate-300">•</span>
-                                                  <span className="text-slate-800 font-medium">Model:</span><span className="text-blue-600 font-semibold">{mat.modelNumber || mat.model || '-'}</span>
-                                                </div>
-                                              </div>
-                                            ))
-                                        )}
-                                      </div>
-                                    )}
+                                    <div className="flex items-center gap-2">
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="text-green-700 hover:text-green-800 hover:bg-green-50"
+                                        title={`Download ${shop.name || "shop"}'s materials as Excel`}
+                                        onClick={(e) => { e.stopPropagation(); handleExportShopMaterials(shop); }}
+                                      >
+                                        <FileDown className="h-4 w-4" />
+                                      </Button>
+                                      {(canEditDelete || user?.role === "pre_sales") && (
+                                        <>
+                                          <Button size="sm" variant="outline" onClick={() => handleEditShop(shop)}>Edit</Button>
+                                          {canEditDelete && (
+                                            <>
+                                              <Button size="sm" variant="ghost" onClick={() => setLocalShops((prev: any[]) => prev.map((s: any) => s.id === shop.id ? { ...s, disabled: !s.disabled } : s))}>
+                                                {shop.disabled ? 'Enable' : 'Disable'}
+                                              </Button>
+                                              <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="text-destructive"
+                                                onClick={() => {
+                                                  setGenericDelete({ isOpen: true, id: shop.id, name: shop.name, type: 'shop' });
+                                                }}
+                                              >
+                                                <Trash2 className="h-4 w-4" />
+                                              </Button>
+                                            </>
+                                          )}
+                                        </>
+                                      )}
+                                    </div>
                                   </div>
-                                )}
-                              </div>
-                            ))
-                          )}
-                        </div>
+
+                                  {expandedShops.includes(shop.id) && (
+                                    <div className="mt-2 pl-10">
+                                      {localMaterials.filter((m: any) => String(m.shopId) === String(shop.id)).length === 0 ? (
+                                        <div className="text-sm text-muted-foreground">No materials for this shop</div>
+                                      ) : (
+                                        localMaterials
+                                          .filter((m: any) => String(m.shopId) === String(shop.id))
+                                          .map((mat: any) => (
+                                            <div key={mat.id} className="py-1">
+                                              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1">
+                                                <div className="text-sm font-medium">{mat.name}</div>
+                                                <div className="text-sm">₹{Number(mat.rate || 0).toLocaleString()}</div>
+                                              </div>
+                                              <div className="text-[10px] sm:text-xs flex flex-wrap items-center gap-x-1.5 gap-y-0.5 mt-1">
+                                                <span className="font-bold text-slate-700 bg-slate-100 px-1 rounded uppercase tracking-tighter text-[9px]">{mat.code || 'No code'}</span>
+                                                <span className="text-slate-800 font-medium">Brand:</span><span className="text-blue-600 font-semibold">{mat.brandName || mat.brand || mat.brandname || '-'}</span>
+                                                <span className="text-slate-300">•</span>
+                                                <span className="text-slate-800 font-medium">Unit:</span><span className="text-blue-600 font-semibold">{mat.unit || '-'}</span>
+                                                <span className="text-slate-300">•</span>
+                                                <span className="text-slate-800 font-medium">Model:</span><span className="text-blue-600 font-semibold">{mat.modelNumber || mat.model || '-'}</span>
+                                              </div>
+                                            </div>
+                                          ))
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        )}
                       </div>
-                    )}
+                    </div>
                   </Card>
+                )}
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div onClick={handleExportShops}
-                      className="flex items-center gap-2 px-4 py-3 rounded-xl border border-green-200 bg-green-50 cursor-pointer hover:bg-green-100 transition-colors">
-                      <FileDown className="h-4 w-4 text-green-700" />
-                      <div>
-                        <p className="text-xs font-semibold text-green-700">
-                          Download Shops Excel
-                        </p>
-                        <p className="text-[11px] text-green-600">
-                          Export all shops data
-                        </p>
-                      </div>
+                {showMaterialsList && (
+                  <Card className="p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="font-semibold text-base flex items-center gap-2">
+                        <Layers className="h-4 w-4 text-purple-600" /> All Materials
+                      </p>
+                      <button type="button" onClick={() => setShowMaterialsList(false)} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+                        <X className="h-4 w-4" />
+                      </button>
                     </div>
-                    <div onClick={handleCheckDuplicates}
-                      className="flex items-center gap-2 px-4 py-3 rounded-xl border border-amber-200 bg-amber-50 cursor-pointer hover:bg-amber-100 transition-colors">
-                      <AlertTriangle className="h-4 w-4 text-amber-700" />
-                      <div>
-                        <p className="text-xs font-semibold text-amber-700">
-                          Check Duplicates
-                        </p>
-                        <p className="text-[11px] text-amber-600">
-                          Find duplicate shops
-                        </p>
-                      </div>
+                    <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+                      <AllMaterialsSplitView
+                        materials={filteredMaterials.filter((m: any) => !m.is_project_pricing)}
+                        localShops={localShops}
+                        categories={categories}
+                        getSubCategoriesForCategory={getSubCategoriesForCategory}
+                        products={products}
+                        UNIT_OPTIONS={UNIT_OPTIONS}
+                        materialSearch={materialSearch}
+                        setMaterialSearch={setMaterialSearch}
+                        materialCategoryFilter={materialCategoryFilter}
+                        setMaterialCategoryFilter={setMaterialCategoryFilter}
+                        materialSubcategoryFilter={materialSubcategoryFilter}
+                        setMaterialSubcategoryFilter={setMaterialSubcategoryFilter}
+                        editingMaterialId={editingMaterialId}
+                        setEditingMaterialId={setEditingMaterialId}
+                        newMaterial={newMaterial}
+                        setNewMaterial={setNewMaterial}
+                        handleUpdateMaterial={handleUpdateMaterial}
+                        onToggleDisable={(mat) => setLocalMaterials((prev: any[]) => prev.map((m: any) => m.id === mat.id ? { ...m, disabled: !m.disabled } : m))}
+                        onDelete={(mat) => setGenericDelete({ isOpen: true, id: mat.id, name: mat.name, type: 'material' })}
+                        canEditDelete={canEditDelete}
+                        userRole={user?.role || ""}
+                      />
                     </div>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <Card className="px-4 py-3 cursor-pointer select-none" onClick={() => setShowMaterialsList(!showMaterialsList)}>
-                    <div className="flex items-center gap-3">
-                      <div className="p-2.5 rounded-xl bg-purple-50">
-                        <Layers className="h-5 w-5 text-purple-600" />
-                      </div>
-                      <div className="flex-1">
-                        <p className="font-semibold text-base">All Materials</p>
-                        <p className="text-xs text-muted-foreground">
-                          Comprehensive material registry
-                        </p>
-                      </div>
-                      <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-purple-100 text-purple-700">
-                        {materials.length}
-                      </span>
-                      <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform", showMaterialsList && "rotate-90")} />
-                    </div>
-                    {showMaterialsList && (
-                      <div onClick={(e) => e.stopPropagation()} className="mt-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                        <AllMaterialsSplitView
-                          materials={filteredMaterials.filter((m: any) => !m.is_project_pricing)}
-                          localShops={localShops}
-                          categories={categories}
-                          getSubCategoriesForCategory={getSubCategoriesForCategory}
-                          products={products}
-                          UNIT_OPTIONS={UNIT_OPTIONS}
-                          materialSearch={materialSearch}
-                          setMaterialSearch={setMaterialSearch}
-                          materialCategoryFilter={materialCategoryFilter}
-                          setMaterialCategoryFilter={setMaterialCategoryFilter}
-                          materialSubcategoryFilter={materialSubcategoryFilter}
-                          setMaterialSubcategoryFilter={setMaterialSubcategoryFilter}
-                          editingMaterialId={editingMaterialId}
-                          setEditingMaterialId={setEditingMaterialId}
-                          newMaterial={newMaterial}
-                          setNewMaterial={setNewMaterial}
-                          handleUpdateMaterial={handleUpdateMaterial}
-                          onToggleDisable={(mat) => setLocalMaterials((prev: any[]) => prev.map((m: any) => m.id === mat.id ? { ...m, disabled: !m.disabled } : m))}
-                          onDelete={(mat) => setGenericDelete({ isOpen: true, id: mat.id, name: mat.name, type: 'material' })}
-                          canEditDelete={canEditDelete}
-                          userRole={user?.role || ""}
-                        />
-                      </div>
-                    )}
                   </Card>
+                )}
 
-                  <Card className="px-4 py-3 cursor-pointer select-none" onClick={() => setShowProductsList(!showProductsList)}>
-                    <div className="flex items-center gap-3">
-                      <div className="p-2.5 rounded-xl bg-blue-50">
-                        <Package className="h-5 w-5 text-blue-600" />
-                      </div>
-                      <div className="flex-1">
-                        <p className="font-semibold text-base">All Products</p>
-                        <p className="text-xs text-muted-foreground">
-                          Approved products and their materials
-                        </p>
-                      </div>
-                      <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-blue-100 text-blue-700">
-                        {products.filter((p: any) => p.is_approved).length}
-                      </span>
-                      <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform", showProductsList && "rotate-90")} />
+                {showProductsList && (
+                  <Card className="p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="font-semibold text-base flex items-center gap-2">
+                        <Package className="h-4 w-4 text-blue-600" /> All Products
+                      </p>
+                      <button type="button" onClick={() => setShowProductsList(false)} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+                        <X className="h-4 w-4" />
+                      </button>
                     </div>
-                    {showProductsList && (
-                      <div onClick={(e) => e.stopPropagation()} className="mt-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                        <AllProductsSplitView
-                          products={products.filter((p: any) => p.is_approved)}
-                          onClose={() => setShowProductsList(false)}
-                        />
-                      </div>
-                    )}
+                    <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+                      <AllProductsSplitView
+                        products={products.filter((p: any) => p.is_approved)}
+                        onClose={() => setShowProductsList(false)}
+                      />
+                    </div>
                   </Card>
+                )}
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div onClick={handleExportMaterials}
-                      className="flex items-center gap-2 px-4 py-3 rounded-xl border border-blue-200 bg-blue-50 cursor-pointer hover:bg-blue-100 transition-colors">
-                      <FileDown className="h-4 w-4 text-blue-700" />
-                      <div>
-                        <p className="text-xs font-semibold text-blue-700">
-                          Download Materials Excel
-                        </p>
-                        <p className="text-[11px] text-blue-600">
-                          Export all materials data
-                        </p>
-                      </div>
-                    </div>
-                    <div onClick={handleCheckDuplicates}
-                      className="flex items-center gap-2 px-4 py-3 rounded-xl border border-amber-200 bg-amber-50 cursor-pointer hover:bg-amber-100 transition-colors">
-                      <AlertTriangle className="h-4 w-4 text-amber-700" />
-                      <div>
-                        <p className="text-xs font-semibold text-amber-700">
-                          Check Duplicates
-                        </p>
-                        <p className="text-[11px] text-amber-600">
-                          Find duplicate materials
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
               </div>
             )}
 
@@ -4005,8 +4067,8 @@ export default function AdminDashboard() {
                           return matchesSearch;
                         })
                         .map((template: any) => (
-                          <div key={template.id} className={`p-4 border rounded flex items-center justify-between ${!usedTemplateIds.has(template.id) ? 'bg-amber-50/40' : 'bg-white'}`}>
-                            <div className="flex-1">
+                          <div key={template.id} className={`px-3 py-2.5 border rounded flex items-center gap-3 ${!usedTemplateIds.has(template.id) ? 'bg-amber-50/40' : 'bg-white'}`}>
+                            <div className="flex-1 min-w-0">
                               {editingMaterialId === template.id ? (
                                 <div className="space-y-3 w-full">
                                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -4248,7 +4310,7 @@ export default function AdminDashboard() {
                               )}
                             </div>
                             {editingMaterialId !== template.id && (
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-1.5 shrink-0">
 
                                 {canEditDelete ? (
                                   <>
@@ -4276,7 +4338,11 @@ export default function AdminDashboard() {
                                         metalType: template.metaltype || template.metalType || '',
                                         image: template.image || null
                                       });
-                                    }}>Edit</Button>
+                                    }}
+                                      title="Edit"
+                                    >
+                                      <Edit className="h-4 w-4" />
+                                    </Button>
                                     <Button size="sm" variant="destructive" onClick={async () => {
                                       if (!window.confirm(`Delete "${template.name}"? This cannot be undone.`)) return;
                                       try {
@@ -4293,7 +4359,11 @@ export default function AdminDashboard() {
                                         console.error('delete error', err);
                                         toast({ title: 'Error', description: err instanceof Error ? err.message : 'Failed to delete material', variant: 'destructive' });
                                       }
-                                    }}>Delete</Button>
+                                    }}
+                                      title="Delete"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </Button>
                                   </>
                                 ) : (
                                   <Link href={`/admin/dashboard?tab=materials`}>

@@ -478,6 +478,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
         original_engine_rate: originalEngineRate,
         original_rate: getEditedValue(itemKey, "original_rate", line.original_rate),
         rate_amendment_status: getEditedValue(itemKey, "rate_amendment_status", line.rate_amendment_status),
+        po_use_amended_rate: getEditedValue(itemKey, "po_use_amended_rate", line.po_use_amended_rate === true),
         id: line.id || line.materialId,
         materialId: line.materialId || line.id,
         // Carry through the pending-approval flag (if any) set on the raw
@@ -519,6 +520,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
         original_engine_rate: originalEngineRate,
         original_rate: getEditedValue(itemKey, "original_rate", it.original_rate),
         rate_amendment_status: getEditedValue(itemKey, "rate_amendment_status", it.rate_amendment_status),
+        po_use_amended_rate: getEditedValue(itemKey, "po_use_amended_rate", it.po_use_amended_rate === true),
         id: it.id || it.materialId,
         materialId: it.materialId || it.id
       };
@@ -555,6 +557,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
         original_engine_rate: originalEngineRate,
         original_rate: getEditedValue(itemKey, "original_rate", it.original_rate),
         rate_amendment_status: getEditedValue(itemKey, "rate_amendment_status", it.rate_amendment_status),
+        po_use_amended_rate: getEditedValue(itemKey, "po_use_amended_rate", it.po_use_amended_rate === true),
         id: it.id || it.materialId,
         materialId: it.materialId || it.id
       };
@@ -851,7 +854,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
               updateEditedField(boqItem.id, "remarks", localRemarks);
               try {
                 const updatedTd = { ...tableData, remarks: localRemarks };
-                const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
+                const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd, changed_fields: { remarks: localRemarks } }) });
                 if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
               } catch (err) { console.error("Failed to save sketch notes", err); }
             }}
@@ -1131,7 +1134,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                         if (isNaN(newVal) || newVal === currentVal || newVal < 0) { setLocalTarget(currentVal); return; }
                         try {
                           const updatedTd = { ...tableData, targetRequiredQty: newVal };
-                          const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
+                          const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd, changed_fields: { targetRequiredQty: newVal } }) });
                           if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
                         } catch (err) { console.error("Failed to update target qty", err); }
                       }}
@@ -1183,14 +1186,13 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                   className="min-h-[32px] py-1.5 px-3 rounded-md border text-xs w-full font-bold text-slate-700 bg-slate-50 border-slate-200 hover:bg-white focus:bg-white focus:ring-1 ring-blue-100 resize-y"
                   defaultValue={tableData.finalize_description || ""}
                   disabled={isVersionSubmitted}
-                  autoFocus
                   onFocus={checkBudgetEarly}
                   onBlur={async e => {
                     const newDesc = e.target.value;
                     if (newDesc === (tableData.finalize_description || "")) return;
                     try {
                       const updatedTd = { ...tableData, finalize_description: newDesc };
-                      const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
+                      const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd, changed_fields: { finalize_description: newDesc } }) });
                       if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
                     } catch (err) { console.error("Failed to save description", err); }
                   }}

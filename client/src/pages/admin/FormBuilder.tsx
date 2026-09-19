@@ -18,6 +18,7 @@ import { QuotesTab } from "@/components/admin/QuotesTab";
 import { FormSchema, emptySchema } from "@/lib/formSchema";
 import { ReportSchema, emptyReportSchema } from "@/lib/reportSchema";
 import "../tenders-glass.css";
+import ProcurementTabBar from "@/components/ProcurementTabBar";
 
 function FormTemplateManager() {
     const { toast } = useToast();
@@ -356,6 +357,7 @@ export default function AdminFormBuilder() {
     return (
         <Layout>
             <div className="p-6 space-y-6 tg-page">
+                <ProcurementTabBar active="form-builder" />
                 <div>
                     <h1 className="text-2xl font-bold flex items-center gap-2"><LayoutTemplate className="h-6 w-6" /> Form Builder</h1>
                     <p className="text-muted-foreground text-sm">Build custom forms, summary sheets, and quotes once, then reuse them across your tenders.</p>

@@ -148,8 +148,7 @@ export function Sidebar({ isOpen, setIsOpen }: SidebarProps) {
   const getSectionForRoute = (loc: string): string | null => {
     const query = typeof window !== 'undefined' ? window.location.search : '';
     const pathWithSearch = loc + query;
-    if (pathWithSearch.includes('tab=materials') || pathWithSearch.includes('tab=create-product')) return 'creations';
-    if (pathWithSearch.includes('tab=shops')) return 'management';
+    if (pathWithSearch.includes('tab=materials') || pathWithSearch.includes('tab=create-product') || pathWithSearch.includes('tab=shops')) return 'creations';
     if (pathWithSearch.includes('tab=approvals') || pathWithSearch.includes('tab=material-approvals')) return 'approvals';
     if (pathWithSearch.includes('tab=messages')) return 'communication';
 
@@ -157,19 +156,19 @@ export function Sidebar({ isOpen, setIsOpen }: SidebarProps) {
       loc.includes('/admin/spy') || loc.includes('/admin/access-control'))
       return 'overview';
     if (loc.includes('create-item') || loc.includes('create-product') ||
-      loc.includes('create-project') || loc.includes('vendor-categories') ||
-      loc.includes('sketch-plans'))
+      loc.includes('create-project') || loc.includes('vendor-categories'))
       return 'creations';
     if (loc.includes('manage-product') || loc.includes('manage-materials') ||
       loc.includes('manage-shops') || loc.includes('manage-categories') ||
       loc.includes('bulk-material-upload'))
       return 'management';
     if (loc.includes('create-bom') || loc.includes('generate-po') ||
-      loc.includes('finalize-bom'))
+      loc.includes('finalize-bom') || loc.includes('sketch-plans'))
       return 'boq';
     if (loc.includes('site-reports'))
       return 'site';
     if (loc.includes('purchase-orders') || loc.includes('delivery-tracker') ||
+      loc.includes('form-builder') || loc.includes('tenders') ||
       loc.includes('po-approvals'))
       return 'procurement';
     if (loc.includes('raise-po-request') || loc.includes('my-po-requests'))
@@ -263,24 +262,37 @@ export function Sidebar({ isOpen, setIsOpen }: SidebarProps) {
     }
   };
 
-  const SidebarNavItem = ({ href, icon: Icon, label, badge, count, adminTab, id, condition = true, isSubItem = true }: {
+  const SidebarNavItem = ({ href, icon: Icon, label, badge, count, adminTab, activePaths, id, condition = true, isSubItem = true, visible }: {
     href: string | null;
     icon: any;
     label: string;
     badge?: React.ReactNode;
     count?: number;
-    adminTab?: string;
+    adminTab?: string | string[];
+    // Extra pathnames (matched by prefix) that should also count as "active"
+    // for this item — for items like "Create" that fan out to a page which
+    // isn't a ?tab= of /admin/dashboard (e.g. /admin/vendor-categories).
+    activePaths?: string[];
     id: string;
     condition?: boolean;
     isSubItem?: boolean;
+    // When provided, overrides the normal isVisible(id, condition) check.
+    // Used for merged items (like "Create") that stand in for more than one
+    // custom-permission module key, so admin-managed per-user permissions
+    // still work correctly for each of the underlying modules.
+    visible?: boolean;
   }) => {
-    if (!isVisible(id, condition)) return null;
+    if (!(visible !== undefined ? visible : isVisible(id, condition))) return null;
     if (!href) return null;
     const isHidden = hiddenItems.has(id);
     if (isHidden && !isEditMode) return null;
 
     const currentTab = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "").get("tab");
-    const isActive = adminTab ? currentTab === adminTab : location === href;
+    const matchesAdminTab = adminTab
+      ? (Array.isArray(adminTab) ? adminTab.includes(currentTab || "") : currentTab === adminTab)
+      : false;
+    const matchesActivePath = activePaths ? activePaths.some((p) => location.startsWith(p)) : false;
+    const isActive = adminTab || activePaths ? (matchesAdminTab || matchesActivePath) : location === href;
     const [isHovered, setIsHovered] = useState(false);
 
     if (isSubItem) {
@@ -498,57 +510,112 @@ export function Sidebar({ isOpen, setIsOpen }: SidebarProps) {
     }
   };
 
-  // Custom permission state (dynamic access control)
-  const [customModules, setCustomModules] = useState<Set<string>>(new Set());
-  const [isCustomManaged, setIsCustomManaged] = useState(false);
+  /**
+   * A top-level sidebar row that looks exactly like an AccordionHeader but is a plain
+   * link — no chevron, no expand/collapse, no sub-item underneath. Used for sections
+   * that are really one page with tabs inside it (BOQ / Projects and Procurement).
+   */
+  const DirectSectionLink = ({
+    href,
+    icon: Icon,
+    label,
+    activePaths,
+    count,
+    active,
+  }: {
+    href: string;
+    icon: any;
+    label: string;
+    activePaths?: string[];
+    count?: number;
+    // When provided, overrides the normal activePaths/href match — used when
+    // "active" depends on more than the pathname (e.g. a ?tab= query param).
+    active?: boolean;
+  }) => {
+    const [isHovered, setIsHovered] = useState(false);
+    const isActive = active !== undefined
+      ? active
+      : activePaths
+        ? activePaths.some((p) => location.startsWith(p))
+        : location === href;
+
+    return (
+      <Link
+        href={href}
+        onClick={(e) => {
+          if ((window as any).isSketchPlanDirty) {
+            if (!window.confirm("⚠️ WARNING: You have UNSAVED changes! ⚠️\n\nClick 'Cancel' to STAY on this page so you can save your work.\nClick 'OK' to DISCARD your changes and exit.")) {
+              e.preventDefault();
+              return;
+            }
+          }
+          closeSidebarOnMobile();
+        }}
+      >
+        <span
+          title={isCollapsed ? label : undefined}
+          onMouseEnter={() => setIsHovered(true)}
+          onMouseLeave={() => setIsHovered(false)}
+          className={cn(
+            isCollapsed
+              ? "w-10 h-10 flex items-center justify-center mx-auto rounded-lg border transition-all duration-200 hover:bg-white hover:shadow-md cursor-pointer"
+              : "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left group h-10 border transition-all duration-200 hover:bg-white hover:shadow-md cursor-pointer",
+            isActive && "bg-white shadow-md"
+          )}
+          style={{
+            backgroundColor: isDark
+              ? (isActive ? theme.headerActiveBg : (isHovered ? theme.headerHoverBg : 'transparent'))
+              : undefined,
+            borderColor: isActive
+              ? (isDark ? theme.border : '#6366f133')
+              : (isHovered ? theme.border : 'transparent'),
+            color: theme.headerText,
+          }}
+        >
+          <Icon
+            className="h-4 w-4 flex-shrink-0 transition-colors"
+            style={{ color: isActive ? theme.iconActive : theme.iconDefault }}
+          />
+          {!isCollapsed && (
+            <>
+              <span className="flex-1 text-[13px] font-medium truncate">{label}</span>
+              {count !== undefined && count > 0 && (
+                <span className="bg-[#EF4444] text-white text-[10px] font-semibold rounded-full px-1.5 py-0.5 min-w-[18px] text-center shrink-0">
+                  {count}
+                </span>
+              )}
+            </>
+          )}
+        </span>
+      </Link>
+    );
+  };
+
+  // Custom permission state (dynamic access control) is now centralized in DataContext
+  const { customModules, isCustomManaged, permsLoaded, refreshPermissions } = useData();
 
   // Helper: returns true if the module is allowed.
   // Full access for admin and software_team; others filter if managed by admin.
   const isVisible = (moduleKey: string, defaultCondition: boolean): boolean => {
     if (user?.role === 'client') return false; // Clients don't use standard internal modules
     if (user?.role === 'admin' || user?.role === 'software_team') return true;
+    // Wait for permissions to load before showing items for non-admin users.
+    // This prevents the flicker where items appear (default) then disappear (custom).
+    if (!permsLoaded) return false;
     if (user?.role === 'pre_sales' && moduleKey === 'dashboard') return true;
     if (isCustomManaged) return customModules.has(moduleKey);
     return defaultCondition;
   };
 
-
-
-  // Fetch custom permissions for the current user
   useEffect(() => {
-    if (!user) return;
-    let cancelled = false;
-
-    const fetchPerms = () => {
-      apiFetch('/api/my-permissions')
-        .then((r) => r.json())
-        .then((data) => {
-          if (cancelled) return;
-          setIsCustomManaged(!!data.isCustomManaged);
-          setCustomModules(new Set(data.modules || []));
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setIsCustomManaged(false);
-            setCustomModules(new Set());
-          }
-        });
-    };
-
-    fetchPerms();
-
     const handlePermissionsUpdated = (e: any) => {
-      if (e.detail?.userId === user.id) {
-        fetchPerms();
+      if (e.detail?.userId === user?.id) {
+        refreshPermissions();
       }
     };
     window.addEventListener('permissions_updated', handlePermissionsUpdated);
-
-    return () => {
-      cancelled = true;
-      window.removeEventListener('permissions_updated', handlePermissionsUpdated);
-    };
-  }, [user]);
+    return () => window.removeEventListener('permissions_updated', handlePermissionsUpdated);
+  }, [user?.id, refreshPermissions]);
 
 
 
@@ -928,122 +995,263 @@ export function Sidebar({ isOpen, setIsOpen }: SidebarProps) {
           )}
 
           {/* Overview Section */}
-          {!isVoltAmpele && (isPreSales || isVisible('dashboard', !isContractor && user?.role !== "supplier" && !isProductManager) || isVisible('project_dashboard', isAdminOrSoftware) || isVisible('alerts', isAdminOnly) || isAdminOnly) && (
-            <div className="space-y-0.5">
-              <AccordionHeader
-                sectionKey="overview"
-                icon={LayoutDashboard}
-                label="Overview"
-                count={alertsCount > 0 ? alertsCount : undefined}
-              />
-              <AccordionContent sectionKey="overview">
-                <SidebarNavItem id="dashboard" href="/dashboard" icon={LayoutDashboard} label="Dashboard" condition={!isContractor && !isProductManager} />
-                <SidebarNavItem id="project_dashboard" href="/project-dashboard" icon={FolderKanban} label="Project Dashboard" condition={isAdminOrSoftware} />
-                <SidebarNavItem id="alerts" href="/admin/dashboard?tab=alerts" icon={AlertCircle} label="Alerts" count={alertsCount} adminTab="alerts" condition={isAdminOnly} />
-                <SidebarNavItem id="access_control" href="/admin/access-control" icon={ShieldCheck} label="Access Control" condition={isAdminOnly} />
-                <SidebarNavItem id="spy" href="/admin/spy" icon={Eye} label="Spy (Activity Log)" condition={isAdminOrSoftware} />
-              </AccordionContent>
-            </div>
-          )}
+          {/* "Dashboard" / "Project Dashboard" / "Alerts" / "Access Control" / "Spy" used to
+              be five separate links here. They're now one "Overview" link that opens on the
+              first page the user can access; all five are tabs inside that same flow (see
+              OverviewTabBar, rendered on the destination pages), in this order:
+              Dashboard → Project Dashboard → Alerts → Access Control → Spy (Activity Log).
+              Visibility below mirrors the original per-item conditions (isVisible where the
+              original item called it, plain role checks where it didn't) so admin-managed
+              per-user permissions keep working exactly as before for whichever a user has. */}
+          {!isVoltAmpele && (() => {
+            const canSeeDashboard = isVisible('dashboard', !isContractor && user?.role !== "supplier" && !isProductManager);
+            const canSeeProjectDashboard = isVisible('project_dashboard', isAdminOrSoftware);
+            const canSeeAlerts = isVisible('alerts', isAdminOnly);
+            // Access Control and Spy were plain role checks in the old sidebar item
+            // (no isVisible/custom-permission gating), so they stay that way here.
+            const canSeeAccessControl = isAdminOnly;
+            const canSeeSpy = isAdminOrSoftware;
+            const canSeeOverview = isPreSales || canSeeDashboard || canSeeProjectDashboard || canSeeAlerts || canSeeAccessControl || canSeeSpy;
+
+            if (!canSeeOverview) return null;
+
+            const overviewHref = canSeeDashboard || isPreSales
+              ? "/dashboard"
+              : canSeeProjectDashboard
+                ? "/project-dashboard"
+                : canSeeAlerts
+                  ? "/admin/dashboard?tab=alerts"
+                  : canSeeAccessControl
+                    ? "/admin/access-control"
+                    : "/admin/spy";
+
+            // /admin/dashboard is shared with other sidebar sections (materials, shops,
+            // approvals, messages, etc. via ?tab=), so only count it as "Overview" when
+            // the tab is actually alerts (or unset, i.e. the plain dashboard tab).
+            const currentTab = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "").get("tab");
+            const isOnAdminDashboardOverviewTab = location === "/admin/dashboard" && (currentTab === "alerts" || !currentTab);
+            const isOverviewActive =
+              location.startsWith("/dashboard") ||
+              location.startsWith("/project-dashboard") ||
+              location.startsWith("/admin/spy") ||
+              location.startsWith("/admin/access-control") ||
+              isOnAdminDashboardOverviewTab;
+
+            return (
+              <div className="space-y-0.5">
+                <DirectSectionLink
+                  href={overviewHref}
+                  icon={LayoutDashboard}
+                  label="Overview"
+                  count={alertsCount > 0 ? alertsCount : undefined}
+                  active={isOverviewActive}
+                />
+              </div>
+            );
+          })()}
 
           {/* Creations Section */}
-          {(isVisible('create_item', isAdminOrSoftwareOrPurchaseTeam && !isPreSales && !isContractor && !isProductManager && !isVoltAmpele) ||
-            isVisible('create_product', isAdminOrSoftwareOrPurchaseTeam || isPreSales || isProductManager || isVoltAmpele) ||
-            isVisible('create_project', canCreateBOQAndProject && !isProductManager && !isVoltAmpele) ||
-            isVisible('create_vendor_category', isAdminOrSoftwareOrPurchaseTeam && !isPreSales && !isContractor && !isProductManager) ||
-            isVisible('sketch_plan', canCreateBOQAndProject)) && (
+          {/* "Create Item" / "Create Product" / "Create Vendor Category" / "Create Project"
+              used to be four separate links here. They're now one "Creations" link that
+              opens on the Item tab; Product, Vendor Category and Create Project are tabs
+              inside that same flow (see CreationsTabBar, rendered on the destination pages).
+              "Create Shops" (formerly "Manage Shops" in the Management section below) has
+              also moved in here as a tab, next to Vendor Category — same href/permission key
+              ("manage_shops"), just renamed and relocated.
+              "Sketch a Plan" has moved out — it's now the first tab of BOQ / Projects
+              (see BoqTabBar) instead of living under Creations.
+              Since only one clickable link remains here, this is now a plain direct link
+              (like Management / Communication below) instead of an accordion: clicking
+              "Creations" itself opens the flow, no separate "Create" sub-item needed.
+              Visibility below is the OR of the five original per-module checks (still calling
+              isVisible with each original module key) so admin-managed per-user permissions
+              keep working exactly as before for whichever of the five a user has. */}
+          {(() => {
+            const canSeeCreateItem = isVisible('create_item', isAdminOrSoftwareOrPurchaseTeam && !isPreSales && !isContractor && !isProductManager && !isVoltAmpele);
+            const canSeeCreateProduct = isVisible('create_product', isAdminOrSoftwareOrPurchaseTeam || isPreSales || isProductManager || isVoltAmpele);
+            const canSeeCreateVendorCategory = isVisible('create_vendor_category', isAdminOrSoftwareOrPurchaseTeam && !isPreSales && !isContractor && !isProductManager);
+            const canSeeCreateShops = isVisible('manage_shops', isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager);
+            const canSeeCreateProject = isVisible('create_project', canCreateBOQAndProject && !isProductManager && !isVoltAmpele);
+            const canSeeCreate = canSeeCreateItem || canSeeCreateProduct || canSeeCreateVendorCategory || canSeeCreateShops || canSeeCreateProject;
+
+            if (!canSeeCreate) return null;
+
+            const creationsHref = canSeeCreateProject
+              ? "/create-project"
+              : canSeeCreateItem
+                ? "/admin/dashboard?tab=materials"
+                : canSeeCreateProduct
+                  ? "/admin/dashboard?tab=create-product"
+                  : canSeeCreateVendorCategory
+                    ? "/admin/vendor-categories"
+                    : "/admin/dashboard?tab=shops";
+
+            return (
               <div className="space-y-0.5">
-                <AccordionHeader sectionKey="creations" icon={PlusCircle} label="Creations" />
-                <AccordionContent sectionKey="creations">
-                  <SidebarNavItem id="create_item" href="/admin/dashboard?tab=materials" icon={Package} label="Create Item" adminTab="materials" condition={isAdminOrSoftwareOrPurchaseTeam && !isPreSales && !isContractor && !isProductManager && !isVoltAmpele} />
-                  <SidebarNavItem id="create_product" href="/admin/dashboard?tab=create-product" icon={Package} label="Create Product" adminTab="create-product" condition={isAdminOrSoftwareOrPurchaseTeam || isPreSales || isProductManager || isContractor || isVoltAmpele} />
-                  <SidebarNavItem id="create_project" href="/create-project" icon={Building2} label="Create Project" condition={canCreateBOQAndProject && !isProductManager && !isVoltAmpele} />
-                  <SidebarNavItem id="create_vendor_category" href="/admin/vendor-categories" icon={Tags} label="Create Vendor Category" condition={isAdminOrSoftwareOrPurchaseTeam && !isPreSales && !isContractor && !isProductManager} />
-                  <SidebarNavItem id="sketch_plan" href="/sketch-plans" icon={Hammer} label="Sketch a Plan" condition={canCreateBOQAndProject} />
-                </AccordionContent>
+                <DirectSectionLink
+                  href={creationsHref}
+                  icon={PlusCircle}
+                  label="Creations"
+                  active={
+                    (location.startsWith("/admin/dashboard") && ["materials", "create-product", "shops"].includes(currentAdminTab || "")) ||
+                    location.startsWith("/admin/vendor-categories") ||
+                    location.startsWith("/create-project")
+                  }
+                />
               </div>
-            )}
+            );
+          })()}
 
           {/* Management Section */}
-          {(isVisible('manage_product', isAdminOrSoftware) ||
-            isVisible('manage_materials', isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager) ||
-            isVisible('manage_shops', isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager) ||
-            isVisible('manage_categories', isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager) ||
-            isVisible('bulk_upload', isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager)) && (
+          {/* "Manage Product" / "Manage Materials" / "Manage Categories" / "Bulk Upload"
+              used to be four separate links here (plus "Manage Shops", now moved to the
+              Creations section as "Create Shops" — see above). They're now one
+              "Management" link that opens on the first page the user can access; the
+              remaining three are tabs inside that same flow (see ManagementTabBar,
+              rendered on the destination pages).
+              "Bulk Upload" is hidden for now — its visibility check and activePaths
+              entry are commented out below rather than removed, so it can be brought
+              back by uncommenting (and re-adding its entry in ManagementTabBar.tsx).
+              Visibility below is the OR of the remaining per-module checks (still
+              calling isVisible with each original module key) so admin-managed per-user
+              permissions keep working exactly as before for whichever a user has. */}
+          {(() => {
+            const canSeeManageProduct = isVisible('manage_product', isAdminOrSoftware);
+            const canSeeManageMaterials = isVisible('manage_materials', isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager);
+            const canSeeManageCategories = isVisible('manage_categories', isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager);
+            // const canSeeBulkUpload = isVisible('bulk_upload', isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager);
+            const canSeeManagement = canSeeManageProduct || canSeeManageMaterials || canSeeManageCategories;
+
+            if (!canSeeManagement) return null;
+
+            const managementHref = canSeeManageProduct
+              ? "/admin/manage-product"
+              : canSeeManageMaterials
+                ? "/admin/manage-materials"
+                : "/admin/manage-categories";
+
+            // No chevron / no sub-item: the section header itself opens the page, and
+            // Manage Product / Manage Materials / Manage Categories are tabs inside it
+            // (see ManagementTabBar).
+            return (
               <div className="space-y-0.5">
-                <AccordionHeader sectionKey="management" icon={Settings} label="Management" />
-                <AccordionContent sectionKey="management">
-                  <SidebarNavItem id="manage_product" href="/admin/manage-product" icon={Package} label="Manage Product" condition={isAdminOrSoftware} />
-                  <SidebarNavItem id="manage_materials" href="/admin/manage-materials" icon={Package} label="Manage Materials" condition={!isVoltAmpele && isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager} />
-                  <SidebarNavItem id="manage_shops" href="/admin/dashboard?tab=shops" icon={Building2} label="Manage Shops" adminTab="shops" condition={!isVoltAmpele && isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager} />
-                  <SidebarNavItem id="manage_categories" href="/admin/manage-categories" icon={Tags} label="Manage Categories" condition={!isVoltAmpele && isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager} />
-                  <SidebarNavItem id="bulk_upload" href="/admin/bulk-material-upload" icon={Package} label="Bulk Upload" condition={!isVoltAmpele && isAdminOrSoftware && !isPreSales && !isContractor && !isProductManager} />
-                </AccordionContent>
+                <DirectSectionLink
+                  href={managementHref}
+                  icon={Settings}
+                  label="Management"
+                  activePaths={["/admin/manage-product", "/admin/manage-materials", "/admin/manage-categories"]}
+                />
               </div>
-            )}
+            );
+          })()}
 
           {/* BOQ / Projects Section */}
-          {(isVisible('generate_bom', isAdminOrSoftware || isPreSales || isProductManager || isPurchaseTeam || isFinance) ||
-            isVisible('generate_po', (isAdminOrSoftware || isPreSales || isProductManager || isPurchaseTeam) && !isProductManager) ||
-            isVisible('finalize_boq', isAdminOrSoftware || isFinance)) && (
+          {/* "Generate BOM" / "Generate PO" / "Finalize BOQ" used to be three separate links
+              here. They're now one "BOQ / Projects" link that opens on the Sketch a Plan tab
+              (the first tab in BoqTabBar); BOM, BOQ and PO are the other tabs inside that same
+              flow (see BoqTabBar, rendered on the destination pages).
+              Visibility below is the OR of the three original per-module checks (still calling
+              isVisible with each original module key) so admin-managed per-user permissions
+              keep working exactly as before for whichever of the three a user has. */}
+          {(() => {
+            const canSeeGenerateBom = isVisible('generate_bom', isAdminOrSoftware || isPreSales || isProductManager || isPurchaseTeam || isFinance);
+            const canSeeGeneratePo = isVisible('generate_po', (isAdminOrSoftware || isPreSales || isProductManager || isPurchaseTeam) && !isProductManager);
+            const canSeeFinalizeBoq = isVisible('finalize_boq', isAdminOrSoftware || isFinance);
+            const canSeeBoq = canSeeGenerateBom || canSeeGeneratePo || canSeeFinalizeBoq;
+
+            if (!canSeeBoq) return null;
+
+            // No chevron / no sub-item: the section header itself opens the page,
+            // and Sketch a Plan / BOM / BOQ / PO are tabs inside it (see BoqTabBar).
+            return (
               <div className="space-y-0.5">
-                <AccordionHeader sectionKey="boq" icon={FileStack} label="BOQ / Projects" />
-                <AccordionContent sectionKey="boq">
-                  <SidebarNavItem id="generate_bom" href="/create-bom" icon={ShoppingCart} label="Generate BOM" condition={isAdminOrSoftware || isPreSales || isProductManager || isPurchaseTeam || isFinance} />
-                  <SidebarNavItem id="generate_po" href="/generate-po" icon={FileText} label="Generate PO" condition={(isAdminOrSoftware || isPreSales || isProductManager || isPurchaseTeam) && !isProductManager} />
-                  <SidebarNavItem id="finalize_boq" href="/finalize-bom" icon={CheckCircle2} label="Finalize BOQ" condition={isAdminOrSoftware || isFinance} />
-                </AccordionContent>
+                <DirectSectionLink
+                  href="/sketch-plans"
+                  icon={FileStack}
+                  label="BOQ / Projects"
+                  activePaths={["/sketch-plans", "/create-bom", "/finalize-bom", "/generate-po"]}
+                />
               </div>
-            )}
+            );
+          })()}
 
           {/* Site Management Section */}
+          {/* Only ever had one item (Site Reports), so this is a plain direct link now
+              instead of an accordion — no chevron, no sub-item, clicking it opens
+              Site Reports straight away. */}
           {(user?.role === "admin" || user?.role === "software_team" || user?.role === "site_engineer") && (
             <div className="space-y-0.5">
-              <AccordionHeader sectionKey="site" icon={Building2} label="Site Management" />
-              <AccordionContent sectionKey="site">
-                <SidebarNavItem id="site_reports" href="/site-reports" icon={FileText} label="Site Reports" />
-              </AccordionContent>
+              <DirectSectionLink
+                href="/site-reports"
+                icon={Building2}
+                label="Site Management"
+                activePaths={["/site-reports"]}
+              />
             </div>
           )}
 
           {/* Procurement Section */}
-          {(isVisible('purchase_orders', isAdminOrSoftware || isPurchaseTeam) ||
-            isVisible('delivery_tracker', isAdminOrSoftware || isPurchaseTeam || user?.role === 'site_engineer') ||
-            isVisible('po_approvals', isAdminOrSoftware) ||
-            isVisible('form_builder', isAdminOrSoftware || isPurchaseTeam || isPreSales)) && (
-              <div className="space-y-0.5">
-                <AccordionHeader sectionKey="procurement" icon={Truck} label="Procurement" />
-                <AccordionContent sectionKey="procurement">
-                  <SidebarNavItem id="purchase_orders" href="/purchase-orders" icon={FileText} label="Purchase Orders" condition={isAdminOrSoftware || isPurchaseTeam} />
-                  <SidebarNavItem id="tenders" href="/admin/tenders" icon={ShoppingCart} label="Tenders" condition={isAdminOrSoftware || isPurchaseTeam} />
-                  <SidebarNavItem id="form_builder" href="/admin/form-builder" icon={FileText} label="Form Builder" condition={isAdminOrSoftware || isPurchaseTeam || isPreSales} />
-                  <SidebarNavItem id="delivery_tracker" href="/delivery-tracker" icon={Truck} label="Delivery Tracker" condition={isAdminOrSoftware || isPurchaseTeam || user?.role === 'site_engineer'} />
-                  <SidebarNavItem id="po_approvals" href="/po-approvals" icon={ClipboardCheck} label="PO Approvals" condition={isAdminOrSoftware} />
-                </AccordionContent>
-              </div>
-            )}
+          {/* "Purchase Orders" / "Delivery Tracker" / "Form Builder" / "Tenders" /
+              "Raise PO Request" / "My Requests" (formerly its own "PO Requests" section)
+              used to be six separate links here. They're now one "Procurement" link that
+              opens on the first page the user can access; all six are tabs inside that
+              same flow (see ProcurementTabBar, rendered on the destination pages), in
+              this order:
+              Purchase Orders → Delivery Tracker → Form Builder → Tenders →
+              Raise PO Request → My Requests.
+              Visibility below is the OR of the six original per-module checks (still
+              calling isVisible with each original module key) so admin-managed per-user
+              permissions keep working exactly as before for whichever of the six a user
+              has. */}
+          {(() => {
+            const canSeePurchaseOrders = isVisible('purchase_orders', isAdminOrSoftware || isPurchaseTeam);
+            const canSeeDeliveryTracker = isVisible('delivery_tracker', isAdminOrSoftware || isPurchaseTeam || user?.role === 'site_engineer');
+            const canSeeFormBuilder = isVisible('form_builder', isAdminOrSoftware || isPurchaseTeam || isPreSales);
+            const canSeeTenders = isVisible('tenders', isAdminOrSoftware || isPurchaseTeam);
+            const canSeeRaisePoRequest = isVisible('raise_po_request', !isVoltAmpele && !isContractor && user?.role !== "supplier");
+            const canSeeMyPoRequests = isVisible('my_po_requests', !isVoltAmpele && !isContractor && user?.role !== "supplier");
+            const canSeeProcurement = canSeePurchaseOrders || canSeeDeliveryTracker || canSeeFormBuilder || canSeeTenders || canSeeRaisePoRequest || canSeeMyPoRequests;
 
-          {/* PO Requests Section */}
-          {(isVisible('raise_po_request', !isVoltAmpele && !isContractor && user?.role !== "supplier") ||
-            isVisible('my_po_requests', !isVoltAmpele && !isContractor && user?.role !== "supplier") ||
-            isVisible('pending_approvals', isAdminOrSoftware) ||
-            isVisible('approved_requests', isAdminOrSoftware)) && (
-              <div className="space-y-0.5">
-                <AccordionHeader sectionKey="porequests" icon={FileText} label="PO Requests" />
-                <AccordionContent sectionKey="porequests">
-                  <SidebarNavItem id="raise_po_request" href="/raise-po-request" icon={FileText} label="Raise PO Request" badge={<Badge variant="outline" className="ml-auto text-[9px] px-1 py-0 h-3.5 border-amber-200 bg-amber-50 text-amber-700 font-medium tracking-wide">Under Const.</Badge>} condition={!isVoltAmpele && !isContractor && user?.role !== "supplier"} />
-                  <SidebarNavItem id="my_po_requests" href="/my-po-requests" icon={ClipboardCheck} label="My Requests" badge={<Badge variant="outline" className="ml-auto text-[9px] px-1 py-0 h-3.5 border-amber-200 bg-amber-50 text-amber-700 font-medium tracking-wide">Under Const.</Badge>} condition={!isVoltAmpele && !isContractor && user?.role !== "supplier"} />
-                </AccordionContent>
-              </div>
-            )}
+            if (!canSeeProcurement) return null;
 
-          {/* Approvals Section */}
-          {(isVisible('shop_approvals', (isAdminOrSoftwareOrPurchaseTeam || isProductManager) && !isPreSales && !isContractor && !isProductManager) ||
+            // Land on the first tab the user is actually allowed to open.
+            const procurementHref = canSeePurchaseOrders
+              ? "/purchase-orders"
+              : canSeeDeliveryTracker
+                ? "/delivery-tracker"
+                : canSeeFormBuilder
+                  ? "/admin/form-builder"
+                  : canSeeTenders
+                    ? "/admin/tenders"
+                    : canSeeRaisePoRequest
+                      ? "/raise-po-request"
+                      : "/my-po-requests";
+
+            // No chevron / no sub-item: the section header itself opens the page, and
+            // Purchase Orders / Delivery Tracker / Form Builder / Tenders / Raise PO
+            // Request / My Requests are tabs inside it (see ProcurementTabBar).
+            return (
+              <div className="space-y-0.5">
+                <DirectSectionLink
+                  href={procurementHref}
+                  icon={Truck}
+                  label="Procurement"
+                  activePaths={["/purchase-orders", "/delivery-tracker", "/admin/form-builder", "/admin/tenders", "/raise-po-request", "/my-po-requests"]}
+                />
+              </div>
+            );
+          })()}
+
+          {/* Approvals Section — hidden from sidebar per request; the header's
+              "Approvals" dropdown now covers all of these (including PO Approvals,
+              added there for parity). Block kept intact, just not rendered. */}
+          {false && (isVisible('shop_approvals', (isAdminOrSoftwareOrPurchaseTeam || isProductManager) && !isPreSales && !isContractor && !isProductManager) ||
             isVisible('material_approvals', (isAdminOrSoftwareOrPurchaseTeam || isProductManager) && !isPreSales && !isContractor && !isProductManager) ||
             isVisible('supplier_approvals', (isAdminOrSoftwareOrPurchaseTeam || isProductManager) && !isPreSales && !isContractor && isAdminOnly) ||
             isVisible('product_approvals', (isAdminOrSoftwareOrPurchaseTeam || isProductManager) && !isPreSales && !isContractor && (isAdminOrSoftware || isProductManager)) ||
             isVisible('bom_approvals', (isAdminOrSoftwareOrPurchaseTeam || isProductManager) && !isPreSales && !isContractor && isAdminOrSoftware) ||
-            isVisible('boq_approvals', isAdminOrSoftware)) && (
+            isVisible('boq_approvals', isAdminOrSoftware) ||
+            isVisible('po_approvals', isAdminOrSoftware)) && (
               <div className="space-y-0.5">
                 <AccordionHeader sectionKey="approvals" icon={ClipboardCheck} label="Approvals" count={pendingShopCount + pendingMaterialCount + pendingProductCount + pendingBomCount + pendingBoqCount} />
                 <AccordionContent sectionKey="approvals">
@@ -1053,30 +1261,45 @@ export function Sidebar({ isOpen, setIsOpen }: SidebarProps) {
                   <SidebarNavItem id="product_approvals" href="/admin/product-approvals" icon={FolderKanban} label="Product Approvals" count={pendingProductCount} condition={isAdminOrSoftware || isProductManager} />
                   <SidebarNavItem id="bom_approvals" href="/admin/bom-approvals" icon={CheckCircle2} label="BOM Approvals" count={pendingBomCount} condition={isAdminOrSoftware} />
                   <SidebarNavItem id="boq_approvals" href="/admin/boq-approvals" icon={CheckCircle2} label="BOQ Approvals" count={pendingBoqCount} condition={isAdminOrSoftware} />
+                  <SidebarNavItem id="po_approvals" href="/po-approvals" icon={ClipboardCheck} label="PO Approvals" condition={isAdminOrSoftware} />
+                  {/* Hidden from sidebar per request; routes still exist, just not linked here.
                   <SidebarNavItem id="purchase_team_bom_approvals" href="/admin/purchase-team-bom-approvals" icon={CheckCircle2} label="Purchase Team BOM Approvals" condition={isAdminOrSoftware || isPurchaseTeam} />
                   <SidebarNavItem id="proposal_approvals" href="/admin/proposal-approvals" icon={ClipboardCheck} label="Proposal Approvals" condition={isAdminOrSoftware} />
+                  */}
                 </AccordionContent>
               </div>
             )}
 
           {/* Storage Section */}
+          {/* "Archive" / "Trash" used to be two separate links here. They're now one
+              "Storage" link that opens on Archive; both are tabs inside that same flow
+              (see StorageTabBar, rendered on the destination pages). Both were
+              admin/software_team only in the old sidebar item, so that stays a plain
+              role check (no isVisible/custom-permission gating) here too. */}
           {(user?.role === "admin" || user?.role === "software_team") && (
             <div className="space-y-0.5">
-              <AccordionHeader sectionKey="storage" icon={Archive} label="Storage" />
-              <AccordionContent sectionKey="storage">
-                <SidebarNavItem id="archive" href="/admin/archive" icon={Archive} label="Archive" />
-                <SidebarNavItem id="trash" href="/admin/trash" icon={Trash2} label="Trash" />
-              </AccordionContent>
+              <DirectSectionLink
+                href="/admin/archive"
+                icon={Archive}
+                label="Storage"
+                activePaths={["/admin/archive", "/admin/trash"]}
+              />
             </div>
           )}
 
           {/* Communication Section */}
+          {/* Only ever had one item (Messages), so this is a plain direct link now
+              instead of an accordion — no chevron, no sub-item, clicking it opens
+              Messages straight away. */}
           {isVisible('support_chat', !isVoltAmpele && isAdminOrSoftwareOrPurchaseTeam && !isPreSales && !isContractor && !isProductManager) && (
             <div className="space-y-0.5">
-              <AccordionHeader sectionKey="communication" icon={MessageSquare} label="Communication" count={messageCount} />
-              <AccordionContent sectionKey="communication">
-                <SidebarNavItem id="support_chat" href="/admin/dashboard?tab=messages" icon={MessageSquare} label="Messages" count={messageCount} adminTab="messages" condition={!isVoltAmpele && isAdminOrSoftwareOrPurchaseTeam && !isPreSales && !isContractor && !isProductManager} />
-              </AccordionContent>
+              <DirectSectionLink
+                href="/admin/dashboard?tab=messages"
+                icon={MessageSquare}
+                label="Communication"
+                count={messageCount}
+                active={location.startsWith("/admin/dashboard") && currentAdminTab === "messages"}
+              />
             </div>
           )}
 
@@ -1170,28 +1393,29 @@ export function Sidebar({ isOpen, setIsOpen }: SidebarProps) {
           )}
 
           {/* Other Resources Section */}
-          {(isVisible('subscription', !isVoltAmpele && !isPreSales && !isContractor) ||
-            isVisible('user_manual', !isVoltAmpele && !isPreSales && !isContractor)) && (
+          {/* "Subscription" / "User Manual" used to be two separate links here.
+              They're now one "Resources" link that opens on Subscription (falling
+              back to User Manual if that's the only one visible); both are tabs
+              inside that same flow (see ResourcesTabBar, rendered on the
+              destination pages). Visibility below is the OR of the two original
+              per-module checks so admin-managed per-user permissions keep working
+              exactly as before for whichever of the two a user has. */}
+          {(() => {
+            const canSeeSubscription = isVisible('subscription', !isVoltAmpele && !isPreSales && !isContractor);
+            const canSeeUserManual = isVisible('user_manual', !isVoltAmpele && !isPreSales && !isContractor);
+            if (!(canSeeSubscription || canSeeUserManual)) return null;
+
+            return (
               <div className="space-y-0.5 mt-2">
-                <AccordionHeader sectionKey="resources" icon={BookOpen} label="Resources" />
-                <AccordionContent sectionKey="resources">
-                  <SidebarNavItem
-                    id="subscription"
-                    href="/subscription"
-                    icon={Package}
-                    label="Subscription"
-                    condition={!isVoltAmpele && !isPreSales && !isContractor}
-                  />
-                  <SidebarNavItem
-                    id="user_manual"
-                    href="/user-manual"
-                    icon={BookOpen}
-                    label="User Manual"
-                    condition={!isVoltAmpele && !isPreSales && !isContractor}
-                  />
-                </AccordionContent>
+                <DirectSectionLink
+                  href={canSeeSubscription ? "/subscription" : "/user-manual"}
+                  icon={BookOpen}
+                  label="Resources"
+                  activePaths={["/subscription", "/user-manual"]}
+                />
               </div>
-            )}
+            );
+          })()}
 
         </nav>
 

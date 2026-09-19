@@ -87,6 +87,12 @@ export default function PORequestDetail() {
 
     const searchParams = new URLSearchParams(window.location.search);
     const mode = searchParams.get("mode");
+    // Optional: where "Back to List" should go when mode=approval, e.g. when
+    // this detail page was opened from the Generate PO page's Approvals
+    // dialog instead of the standalone /po-approvals page. Falls back to the
+    // existing /po-approvals destination when not provided, so nothing else
+    // changes.
+    const returnTo = searchParams.get("returnTo");
 
     useEffect(() => {
         if (id) fetchRequestDetail();
@@ -149,7 +155,7 @@ export default function PORequestDetail() {
 
         const opt = {
             margin: 10,
-            filename: `Anx_${request?.id.slice(0,4)}_${request?.id.slice(4,8)}.pdf`,
+            filename: `Anx_${request?.id.slice(0, 4)}_${request?.id.slice(4, 8)}.pdf`,
             image: { type: 'jpeg' as const, quality: 0.98 },
             html2canvas: { scale: 2, useCORS: true },
             jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const }
@@ -177,7 +183,7 @@ export default function PORequestDetail() {
         try {
             const res = await apiFetch(`/api/po-requests/${id}/items`, {
                 method: 'PUT',
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                     items: editedItems,
                     deliver_to: editableDeliverTo,
                     payment_terms: editablePaymentTerms,
@@ -293,7 +299,7 @@ export default function PORequestDetail() {
                 {/* Actions Header */}
                 <div className="flex justify-between items-start no-print">
                     <div className="space-y-1">
-                        <Button variant="ghost" size="sm" onClick={() => setLocation(mode === 'approval' ? '/po-approvals' : '/my-po-requests')} className="mb-4 text-slate-500 hover:text-slate-900 -ml-2">
+                        <Button variant="ghost" size="sm" onClick={() => setLocation(mode === 'approval' ? (returnTo || '/po-approvals') : '/my-po-requests')} className="mb-4 text-slate-500 hover:text-slate-900 -ml-2">
                             <ArrowLeft className="h-4 w-4 mr-1" /> Back to List
                         </Button>
                         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-3">
@@ -349,7 +355,7 @@ export default function PORequestDetail() {
                 <div id="po-detail-content">
                     <Card className="border-slate-300 shadow-xl overflow-hidden bg-white po-container relative">
                         {request.status === 'approved' && <div className="watermark no-print">Approved</div>}
-                        
+
                         <CardContent className="p-8 space-y-8 relative z-10">
                             {/* Header Section */}
                             <div className="flex justify-between items-start pb-6 border-b border-slate-200">
@@ -396,9 +402,9 @@ export default function PORequestDetail() {
                                     <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Deliver To</p>
                                     <div className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed italic border-l-2 border-slate-100 pl-4 bg-slate-50/30 p-3 rounded-r">
                                         {isEditing ? (
-                                            <Textarea 
-                                                className="text-xs italic bg-white min-h-[60px]" 
-                                                value={editableDeliverTo} 
+                                            <Textarea
+                                                className="text-xs italic bg-white min-h-[60px]"
+                                                value={editableDeliverTo}
                                                 onChange={(e) => setEditableDeliverTo(e.target.value)}
                                             />
                                         ) : (
@@ -433,9 +439,9 @@ export default function PORequestDetail() {
                                                 <TableCell className="py-2">
                                                     <div className="font-bold text-slate-800 text-[11px] leading-tight uppercase">{item.item}</div>
                                                     {isEditing ? (
-                                                        <Input 
-                                                            className="h-6 text-[10px] mt-1 py-0 px-2 border-slate-200 focus:border-blue-300" 
-                                                            value={item.remarks || ""} 
+                                                        <Input
+                                                            className="h-6 text-[10px] mt-1 py-0 px-2 border-slate-200 focus:border-blue-300"
+                                                            value={item.remarks || ""}
                                                             onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleItemChange(item.id, 'remarks', e.target.value)}
                                                             placeholder="Add internal remarks..."
                                                         />
@@ -451,10 +457,10 @@ export default function PORequestDetail() {
                                                 </TableCell>
                                                 <TableCell className="text-center text-[11px] py-1">
                                                     {isEditing ? (
-                                                        <Input 
+                                                        <Input
                                                             type="number"
-                                                            className="h-7 w-20 text-center text-[11px] mx-auto border-blue-200 focus:ring-1 focus:ring-blue-100" 
-                                                            value={item.qty} 
+                                                            className="h-7 w-20 text-center text-[11px] mx-auto border-blue-200 focus:ring-1 focus:ring-blue-100"
+                                                            value={item.qty}
                                                             onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleItemChange(item.id, 'qty', e.target.value)}
                                                         />
                                                     ) : (
@@ -462,11 +468,10 @@ export default function PORequestDetail() {
                                                     )}
                                                 </TableCell>
                                                 <TableCell className="text-center text-[11px] py-1">
-                                                    <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-                                                        parseFloat(item.qty) < parseFloat(item.original_qty || item.qty) 
-                                                        ? "bg-amber-100 text-amber-700" 
+                                                    <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${parseFloat(item.qty) < parseFloat(item.original_qty || item.qty)
+                                                        ? "bg-amber-100 text-amber-700"
                                                         : "bg-green-100 text-green-700"
-                                                    }`}>
+                                                        }`}>
                                                         {(parseFloat(item.original_qty || item.qty) - parseFloat(item.qty)).toFixed(2)}
                                                     </span>
                                                 </TableCell>
@@ -549,9 +554,9 @@ export default function PORequestDetail() {
                                             <div className="mt-4 pt-4 border-t border-slate-100">
                                                 <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-1">Payment Terms</p>
                                                 {isEditing ? (
-                                                    <Input 
-                                                        className="h-8 text-xs" 
-                                                        value={editablePaymentTerms} 
+                                                    <Input
+                                                        className="h-8 text-xs"
+                                                        value={editablePaymentTerms}
                                                         onChange={(e) => setEditablePaymentTerms(e.target.value)}
                                                         placeholder="e.g. 50% Advance, 50% on Delivery"
                                                     />
@@ -565,9 +570,9 @@ export default function PORequestDetail() {
                                             <div className="mt-4">
                                                 <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-1">Terms & Conditions</p>
                                                 {isEditing ? (
-                                                    <Textarea 
-                                                        className="text-xs min-h-[80px]" 
-                                                        value={editableTermsConditions} 
+                                                    <Textarea
+                                                        className="text-xs min-h-[80px]"
+                                                        value={editableTermsConditions}
                                                         onChange={(e) => setEditableTermsConditions(e.target.value)}
                                                         placeholder="Add any specific terms or conditions..."
                                                     />

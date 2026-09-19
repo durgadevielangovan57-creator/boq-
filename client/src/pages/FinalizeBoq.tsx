@@ -27,6 +27,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
 import { fuzzySearch, cn } from "@/lib/utils";
 import XLSX from 'xlsx-js-style';
@@ -99,6 +100,8 @@ import { BoqAnalysisDialog } from "@/components/BoqAnalysisDialog";
 import { RateSuggestionPopover } from "@/components/RateSuggestionPopover";
 import { VersionCompareModal } from "@/components/VersionCompareModal";
 import { VersionHistoryModal } from "@/components/ui/VersionHistoryModal";
+import BoqTabBar from "@/components/BoqTabBar";
+import BoqApprovalsPanel from "@/components/BoqApprovalsPanel";
 
 /** Helper to generate Excel-style column names (A, B, C... Z, AA, AB...) */
 const getExcelColumnName = (n: number) => {
@@ -818,6 +821,12 @@ const CategoryReorderItem = ({
   );
 };
 
+// A BOQ version that is locked, submitted, awaiting approval, approved or
+// waiting on an edit request must never be changed by a BOM sync. Keep this in
+// step with isVersionFrozen() in server/routes.ts (the server enforces it too).
+const isBoqVersionFrozen = (v?: { status?: string; is_locked?: boolean } | null): boolean =>
+  !!v && (v.is_locked === true || ["submitted", "pending_approval", "approved", "edit_requested"].includes(String(v.status || "")));
+
 export default function FinalizeBoq() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [boqItems, setBoqItems] = useState<BOMItem[]>([]);
@@ -840,6 +849,41 @@ export default function FinalizeBoq() {
   const search = useSearch();
   const { toast } = useToast();
   const { user } = useAuth();
+
+  // ── Finalize BOQ: standalone "Approvals" icon + dialog (NEW, isolated) ──
+  // Mirrors the icon + dialog pattern already on Generate BOM. The dialog
+  // renders the exact BOQ Approvals page (search, sort, status/date filter,
+  // tabs, bulk actions, full "View" preview with computed totals) via the
+  // shared <BoqApprovalsPanel />, reused as-is from /admin/boq-approvals —
+  // this block only owns the icon's badge count and the dialog open state,
+  // and doesn't read or write any of the existing Finalize BOQ state.
+  const [boqApprovalsQuickCount, setBoqApprovalsQuickCount] = useState(0);
+  const [boqApprovalsQuickOpen, setBoqApprovalsQuickOpen] = useState(false);
+  const canSeeBoqApprovalsQuickList = user?.role === 'admin' || user?.role === 'software_team';
+
+  const fetchBoqApprovalsQuickCount = useCallback(async () => {
+    if (!canSeeBoqApprovalsQuickList) return;
+    try {
+      const res = await apiFetch("/api/bom-approvals");
+      if (res.ok) {
+        const data = await res.json();
+        const count = (data.approvals || []).filter((a: any) =>
+          (a.type === 'boq' || a.is_boq_submission === true) &&
+          ["submitted", "pending_approval", "edit_requested"].includes(a.status)
+        ).length;
+        setBoqApprovalsQuickCount(count);
+      }
+    } catch (err) {
+      console.error("Failed to load Finalize BOQ approvals count:", err);
+    }
+  }, [canSeeBoqApprovalsQuickList]);
+
+  useEffect(() => {
+    if (!canSeeBoqApprovalsQuickList) return;
+    fetchBoqApprovalsQuickCount();
+    const interval = setInterval(fetchBoqApprovalsQuickCount, 30000);
+    return () => clearInterval(interval);
+  }, [canSeeBoqApprovalsQuickList, fetchBoqApprovalsQuickCount]);
   // --- Refresh persistence: keep the current project/BOM-version/BOQ-version
   // selection reflected in the URL so a hard refresh reopens the same view
   // instead of dropping back to the "select a project" state. See the two
@@ -2638,6 +2682,17 @@ export default function FinalizeBoq() {
       return;
     }
     const currentBoqVersion = boqVersions.find(v => v.id === selectedBoqVersionId);
+
+    // Locked / submitted / approved BOQs are never synced. (The server refuses
+    // too, this just avoids the round trip and gives a clear message.)
+    if (isBoqVersionFrozen(currentBoqVersion)) {
+      toast({
+        title: "This BOQ version is locked",
+        description: "Sync from BOM is disabled for locked, submitted or approved versions.",
+      });
+      return;
+    }
+
     const sourceBomVersionId = selectedBomVersionId || currentBoqVersion?.source_version_id || null;
 
     if (!sourceBomVersionId) {
@@ -2702,7 +2757,16 @@ export default function FinalizeBoq() {
     if (!selectedBoqVersionId) return;
     if (autoSyncedVersionsRef.current.has(selectedBoqVersionId)) return;
     const currentBoqVersion = boqVersions.find(v => v.id === selectedBoqVersionId);
-    const sourceBomVersionId = selectedBomVersionId || currentBoqVersion?.source_version_id || null;
+    // Wait until the version record (and therefore its lock state) has loaded.
+    // Previously this could fire before boqVersions was populated, i.e. before
+    // we knew whether the version was locked.
+    if (!currentBoqVersion) return;
+    // Locked / submitted / approved: opening a BOQ must NEVER rewrite it.
+    if (isBoqVersionFrozen(currentBoqVersion)) {
+      autoSyncedVersionsRef.current.add(selectedBoqVersionId);
+      return;
+    }
+    const sourceBomVersionId = selectedBomVersionId || currentBoqVersion.source_version_id || null;
     if (!sourceBomVersionId) return;
     autoSyncedVersionsRef.current.add(selectedBoqVersionId);
     handleSyncMissingFromBom();
@@ -5257,7 +5321,10 @@ export default function FinalizeBoq() {
   if (loading) {
     return (
       <Layout>
-        <div className="text-center py-8">Loading projects...</div>
+        <div className="space-y-3">
+          <BoqTabBar active="boq" />
+          <div className="text-center py-8">Loading projects...</div>
+        </div>
       </Layout>
     );
   }
@@ -5265,7 +5332,30 @@ export default function FinalizeBoq() {
   return (
     <Layout>
       <div className="space-y-3">
-        <h1 className="text-2xl font-semibold">Finalize BOQ</h1>
+        <BoqTabBar active="boq" />
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-semibold">Finalize BOQ</h1>
+          {canSeeBoqApprovalsQuickList && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => { setBoqApprovalsQuickOpen(true); fetchBoqApprovalsQuickCount(); }}
+                  aria-label="Approvals"
+                  className="relative flex items-center justify-center h-8 w-8 rounded-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md shadow-indigo-500/25 hover:opacity-95 transition-all"
+                >
+                  <Users className="h-3.5 w-3.5" />
+                  {boqApprovalsQuickCount > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] text-white font-bold border border-white">
+                      {boqApprovalsQuickCount}
+                    </span>
+                  )}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Approvals</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
 
         {/* Project creation moved to dedicated Create Project page */}
 
@@ -5526,8 +5616,8 @@ export default function FinalizeBoq() {
                         variant="ghost"
                         size="icon"
                         className="h-9 w-9 text-slate-400 hover:text-indigo-600 border border-slate-200 hover:bg-indigo-50 bg-white shadow-sm shrink-0"
-                        title="Sync Missing Items — adds items present in the BOM but missing from this BOQ Version, without changing or removing any existing item. No duplicates are added."
-                        disabled={!selectedBoqVersionId || isSyncingFromBom}
+                        title={isBoqVersionFrozen(boqVersions.find(v => v.id === selectedBoqVersionId)) ? "Sync is disabled — this BOQ version is locked, submitted or approved." : "Sync Missing Items — adds items present in the BOM but missing from this BOQ Version, without changing or removing any existing item. No duplicates are added."}
+                        disabled={!selectedBoqVersionId || isSyncingFromBom || isBoqVersionFrozen(boqVersions.find(v => v.id === selectedBoqVersionId))}
                         onClick={handleSyncMissingFromBom}
                       >
                         <GitMerge className={cn("h-3.5 w-3.5", isSyncingFromBom && "animate-spin")} />
@@ -8704,6 +8794,18 @@ export default function FinalizeBoq() {
               Load Overrides
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Finalize BOQ: standalone "Approvals" dialog (NEW) ────────────────
+          Purely additive — renders the exact BOQ Approvals page (search,
+          sort, status/date filter, tabs, bulk actions, full "View" preview
+          with computed totals) via the shared <BoqApprovalsPanel />, the same
+          component /admin/boq-approvals uses. Doesn't touch any existing
+          Finalize BOQ dialog, table, or logic. */}
+      <Dialog open={boqApprovalsQuickOpen} onOpenChange={setBoqApprovalsQuickOpen}>
+        <DialogContent className="max-w-[95vw] w-[1400px] max-h-[90vh] overflow-y-auto">
+          <BoqApprovalsPanel />
         </DialogContent>
       </Dialog>
     </Layout>

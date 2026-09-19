@@ -52,6 +52,7 @@ import {
 } from "lucide-react";
 import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import ProcurementTabBar from "@/components/ProcurementTabBar";
 
 interface DeliveryProject {
     id: string;
@@ -367,7 +368,7 @@ export default function DeliveryTracker() {
             if (res.ok) {
                 toast({ title: "Success", description: "Order marked as delivered with DC." });
                 setIsConfirmingDelivery(false);
-                
+
                 // Update local cache so materials instantly show as delivered if expanded
                 setItemsByPo(prev => {
                     const currentItems = prev[selectedOrderId!];
@@ -379,7 +380,7 @@ export default function DeliveryTracker() {
                     }
                     return prev;
                 });
-                
+
                 fetchOrders(selectedProjectId);
             }
         } catch (error) {
@@ -568,6 +569,7 @@ export default function DeliveryTracker() {
         return (
             <Layout>
                 <div className="space-y-6">
+                    <ProcurementTabBar active="delivery-tracker" />
                     <div>
                         <h1 className="text-3xl font-bold tracking-tight flex items-center gap-3">
                             <Truck className="h-8 w-8 text-indigo-600" />
@@ -645,6 +647,7 @@ export default function DeliveryTracker() {
     return (
         <Layout>
             <div className="space-y-6">
+                <ProcurementTabBar active="delivery-tracker" />
                 <div className="flex flex-wrap justify-between items-center gap-3">
                     <div>
                         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">

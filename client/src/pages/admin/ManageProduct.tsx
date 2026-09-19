@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { format, differenceInDays } from "date-fns";
 import { useQuery } from "@tanstack/react-query";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -8,13 +8,14 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Search, Loader2, Plus, ArrowRight, ArrowLeft, Trash2, Edit, Check, XCircle, Layers, Copy, GripVertical, TrendingUp, TrendingDown, AlertTriangle, Package, Lock, Clock } from "lucide-react";
+import { Search, Loader2, Plus, ArrowRight, ArrowLeft, Trash2, Edit, Check, XCircle, Layers, Copy, GripVertical, TrendingUp, TrendingDown, AlertTriangle, Package, Lock, Clock, Users } from "lucide-react";
 import { Reorder } from "framer-motion";
 import { Textarea } from "@/components/ui/textarea";
 import * as XLSX from "xlsx";
 import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Layout } from "@/components/layout/Layout";
+import ManagementTabBar from "@/components/ManagementTabBar";
 import { SupplierLayout } from "@/components/layout/SupplierLayout";
 import { useAuth } from "@/lib/auth-context";
 import { useLocation } from "wouter";
@@ -25,6 +26,7 @@ import { fuzzySearch } from "@/lib/utils";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { DeleteConfirmationDialog } from "@/components/ui/DeleteConfirmationDialog";
+import ProductApprovalsPanel from "@/components/ProductApprovalsPanel";
 
 type Product = { id: string; name: string; subcategory: string; created_at: string; created_by?: string; image?: string; has_price_updates?: boolean; is_approved?: boolean };
 type Material = { id: string; name: string; unit: string; rate: number; category: string; subcategory: string; description?: string; shop_name?: string; shop_id?: string; shopId?: string; code?: string; hsn_code?: string; sac_code?: string; technicalspecification?: string; technicalSpecification?: string; created_at?: string; brandName?: string; brand_name?: string; modelNumber?: string; model_number?: string; is_project_pricing?: boolean };
@@ -62,6 +64,40 @@ export default function ManageProduct() {
     const isSupplier = user?.role === "supplier";
     const [location] = useLocation();
     const [step, setStep] = useState(1);
+
+    // ── Manage Product: standalone "Approvals" icon + dialog (NEW, isolated) ──
+    // Mirrors the icon + dialog pattern already on Finalize BOQ, Generate BOM,
+    // and Generate PO. The dialog renders the exact Product Approvals page
+    // (all 3 tabs, search/sort/status/date filters, bulk actions) via the
+    // shared <ProductApprovalsPanel />, reused as-is from
+    // /admin/product-approvals; this block only owns the icon's badge count
+    // and the dialog open state, and doesn't read or write any of the
+    // existing Manage Product state.
+    const [productApprovalsQuickCount, setProductApprovalsQuickCount] = useState(0);
+    const [productApprovalsQuickOpen, setProductApprovalsQuickOpen] = useState(false);
+    const canSeeProductApprovalsQuickList = user?.role === 'admin' || user?.role === 'software_team' || user?.role === 'product_manager';
+
+    const fetchProductApprovalsQuickCount = useCallback(async () => {
+        if (!canSeeProductApprovalsQuickList) return;
+        try {
+            const res = await apiFetch("/api/product-approvals");
+            if (res.ok) {
+                const data = await res.json();
+                const count = (data.approvals || []).filter((a: any) => a.status === "pending" || a.status === "edit_requested").length;
+                setProductApprovalsQuickCount(count);
+            }
+        } catch (err) {
+            console.error("Failed to load Manage Product approvals count:", err);
+        }
+    }, [canSeeProductApprovalsQuickList]);
+
+    useEffect(() => {
+        if (!canSeeProductApprovalsQuickList) return;
+        fetchProductApprovalsQuickCount();
+        const interval = setInterval(fetchProductApprovalsQuickCount, 30000);
+        return () => clearInterval(interval);
+    }, [canSeeProductApprovalsQuickList, fetchProductApprovalsQuickCount]);
+
     const [shopName, setShopName] = useState("");
     const [shopLocation, setShopLocation] = useState("");
 
@@ -1068,6 +1104,11 @@ export default function ManageProduct() {
                 </div>
             )}
             <div className="container mx-auto py-8 px-4">
+                {!isSupplier && (
+                    <div className="max-w-6xl mx-auto">
+                        <ManagementTabBar active="manage-product" />
+                    </div>
+                )}
                 <Card className="max-w-6xl mx-auto shadow-xl border-none">
                     <CardHeader className="bg-primary/5 border-b pb-6">
                         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
@@ -1106,25 +1147,47 @@ export default function ManageProduct() {
                                     </div>
                                 )}
                             </CardTitle>
-                            {step === 2 && (
-                                <div className="flex flex-wrap items-center gap-4 animate-in fade-in duration-300">
-                                    {[
-                                        { label: "Category", value: selectedCategory, onChange: (val: string) => { setSelectedCategory(val); setSelectedSubcategory(ALL); }, data: categoriesData, placeholder: "All Categories" },
-                                        { label: "Subcategory", value: selectedSubcategory, onChange: setSelectedSubcategory, data: subcategoriesData, placeholder: "All Subcategories", disabled: selectedCategory === ALL },
-                                    ].map(({ label, value, onChange, data, placeholder, disabled }: any) => (
-                                        <div key={label} className="flex items-center gap-2">
-                                            <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground whitespace-nowrap">{label}</label>
-                                            <Select value={value} onValueChange={onChange} disabled={disabled}>
-                                                <SelectTrigger className="h-9 w-[180px] bg-white border-primary/20 shadow-sm text-xs font-bold"><SelectValue placeholder={placeholder} /></SelectTrigger>
-                                                <SelectContent className="max-h-[300px] overflow-y-auto">
-                                                    <SelectItem value={ALL}>{placeholder}</SelectItem>
-                                                    {data?.map((item: string) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
+                            <div className="flex items-center gap-4 md:ml-auto">
+                                {step === 2 && (
+                                    <div className="flex flex-wrap items-center gap-4 animate-in fade-in duration-300">
+                                        {[
+                                            { label: "Category", value: selectedCategory, onChange: (val: string) => { setSelectedCategory(val); setSelectedSubcategory(ALL); }, data: categoriesData, placeholder: "All Categories" },
+                                            { label: "Subcategory", value: selectedSubcategory, onChange: setSelectedSubcategory, data: subcategoriesData, placeholder: "All Subcategories", disabled: selectedCategory === ALL },
+                                        ].map(({ label, value, onChange, data, placeholder, disabled }: any) => (
+                                            <div key={label} className="flex items-center gap-2">
+                                                <label className="text-[10px] font-black uppercase tracking-widest text-muted-foreground whitespace-nowrap">{label}</label>
+                                                <Select value={value} onValueChange={onChange} disabled={disabled}>
+                                                    <SelectTrigger className="h-9 w-[180px] bg-white border-primary/20 shadow-sm text-xs font-bold"><SelectValue placeholder={placeholder} /></SelectTrigger>
+                                                    <SelectContent className="max-h-[300px] overflow-y-auto">
+                                                        <SelectItem value={ALL}>{placeholder}</SelectItem>
+                                                        {data?.map((item: string) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                                {canSeeProductApprovalsQuickList && (
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setProductApprovalsQuickOpen(true); fetchProductApprovalsQuickCount(); }}
+                                                aria-label="Approvals"
+                                                className="relative flex items-center justify-center h-8 w-8 rounded-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md shadow-indigo-500/25 hover:opacity-95 transition-all"
+                                            >
+                                                <Users className="h-3.5 w-3.5" />
+                                                {productApprovalsQuickCount > 0 && (
+                                                    <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] text-white font-bold border border-white">
+                                                        {productApprovalsQuickCount}
+                                                    </span>
+                                                )}
+                                            </button>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="bottom">Approvals</TooltipContent>
+                                    </Tooltip>
+                                )}
+                            </div>
                         </div>
                     </CardHeader>
                     <CardContent className="p-8">
@@ -2560,6 +2623,18 @@ export default function ManageProduct() {
                     <div className="pt-4 border-t flex justify-end">
                         <Button variant="outline" onClick={() => setShowTemplateSelector(false)} className="px-8 font-bold">Close</Button>
                     </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* ── Manage Product: standalone "Approvals" dialog (NEW) ────────────
+                Purely additive — renders the exact Product Approvals page (all
+                3 tabs, search/sort/status/date filters, bulk actions) via the
+                shared <ProductApprovalsPanel />, reused as-is from
+                /admin/product-approvals — without touching any existing
+                Manage Product state or markup. */}
+            <Dialog open={productApprovalsQuickOpen} onOpenChange={setProductApprovalsQuickOpen}>
+                <DialogContent className="max-w-[95vw] w-[1400px] max-h-[90vh] overflow-y-auto p-0 sm:rounded-xl">
+                    <ProductApprovalsPanel />
                 </DialogContent>
             </Dialog>
         </LayoutComponent>

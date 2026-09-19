@@ -6507,8 +6507,8 @@ export async function registerRoutes(
 
         // Validate both versions exist and belong to the same project
         const [targetVerRes, bomVerRes] = await Promise.all([
-          query(`SELECT id, project_id, type FROM boq_versions WHERE id = $1`, [targetVersionId]),
-          query(`SELECT id, project_id, type FROM boq_versions WHERE id = $1`, [bom_version_id]),
+          query(`SELECT id, project_id, type, status, is_locked FROM boq_versions WHERE id = $1`, [targetVersionId]),
+          query(`SELECT id, project_id, type, status, is_locked FROM boq_versions WHERE id = $1`, [bom_version_id]),
         ]);
         const targetVer = targetVerRes.rows[0];
         const bomVer = bomVerRes.rows[0];
@@ -6523,6 +6523,26 @@ export async function registerRoutes(
         }
         if (targetVer.project_id !== bomVer.project_id) {
           res.status(400).json({ message: "Versions belong to different projects" });
+          return;
+        }
+
+        // Isolation guards. Syncing only makes sense BOM -> BOQ; without these a
+        // BOQ could be "synced" from another BOQ (v2 from v1) or a BOM could be
+        // overwritten, and a BOQ that was already locked / sent to the client
+        // could be silently rewritten just by opening it.
+        if (targetVer.type !== "boq") {
+          res.status(400).json({ message: "Sync from BOM is only allowed into a BOQ version" });
+          return;
+        }
+        if (bomVer.type !== "bom") {
+          res.status(400).json({ message: "Sync source must be a BOM version" });
+          return;
+        }
+        if (isVersionFrozen(targetVer)) {
+          res.status(409).json({
+            message: "This BOQ version is locked. Sync from BOM is disabled for locked, submitted or approved versions.",
+            code: "VERSION_LOCKED",
+          });
           return;
         }
 
@@ -7192,6 +7212,9 @@ export async function registerRoutes(
               // just like the manual/step11_items branch below already does via spread.
               if (f.rate_amendment_status !== undefined) tableData.materialLines[itemIdx].rate_amendment_status = f.rate_amendment_status;
               if (f.original_rate !== undefined) tableData.materialLines[itemIdx].original_rate = f.original_rate;
+              // Lets the user choose, per amended rate, whether the PO should use the
+              // original rate (default, unchanged behavior) or the amended rate.
+              if (f.po_use_amended_rate !== undefined) tableData.materialLines[itemIdx].po_use_amended_rate = f.po_use_amended_rate;
               // "indicate" (the red-flag checkbox on a row) was missing from this allow-list.
               // The manual/step11_items branch below saves it fine (it spreads all fields),
               // but engine-based material lines only copy specific whitelisted fields, so
@@ -7466,7 +7489,7 @@ export async function registerRoutes(
         const userName = (req.user as any)?.fullName || req.user?.username || null;
 
         const boqVerRes = await query(
-          `SELECT id, project_id, project_name, version_number, source_version_id FROM boq_versions WHERE id = $1`,
+          `SELECT id, project_id, project_name, version_number, source_version_id, type FROM boq_versions WHERE id = $1`,
           [versionId]
         );
         const boqVersion = boqVerRes.rows[0];
@@ -7548,13 +7571,25 @@ export async function registerRoutes(
               // match. This is idempotent (only lines that actually contain
               // the material get touched) and covers a material appearing on
               // more than one BOM line.
+              //
+              // Isolation guard: the write-through is only valid from a BOQ into
+              // the BOM it was created from (its own source_version_id). Without
+              // this, a cloned version (BOM v2 from v1, or BOQ v2 from BOQ v1)
+              // follows copied_from_item_id straight into the OTHER version's
+              // items and rewrites them — including an approved/locked v1.
               const bomItemIdsToUpdate = new Set<string>();
-              let bomVersionIdForScan: string | null = boqVersion?.source_version_id || null;
+              let ownSourceBomId: string | null = null;
+              if (boqVersion?.type === "boq" && boqVersion?.source_version_id) {
+                const srcVer = await getVersionState(boqVersion.source_version_id);
+                if (srcVer?.type === "bom") ownSourceBomId = srcVer.id;
+              }
+              let bomVersionIdForScan: string | null = ownSourceBomId;
 
-              if (boqItem.copied_from_item_id) {
-                bomItemIdsToUpdate.add(boqItem.copied_from_item_id);
+              if (ownSourceBomId && boqItem.copied_from_item_id) {
                 const linkedRes = await query(`SELECT version_id FROM boq_items WHERE id = $1`, [boqItem.copied_from_item_id]);
-                if (linkedRes.rows[0]?.version_id) bomVersionIdForScan = linkedRes.rows[0].version_id;
+                if (linkedRes.rows[0]?.version_id === ownSourceBomId) {
+                  bomItemIdsToUpdate.add(boqItem.copied_from_item_id);
+                }
               }
 
               if (bomVersionIdForScan) {
@@ -8047,6 +8082,30 @@ export async function registerRoutes(
     }
   );
 
+  // ---------------------------------------------------------------------------
+  // Frozen-version rule (single source of truth for the server).
+  // A version is FROZEN when it has been locked, submitted, sent for approval,
+  // approved, or is waiting on an edit request. A frozen version must never be
+  // modified as a side effect of ANY other version's activity (sync, clone
+  // write-through) and must not accept item add/edit/delete requests. The only
+  // way to change it is the existing workflow: request-edit -> approve-edit -> draft.
+  // Mirrors the read-only rules the UI already applies.
+  // ---------------------------------------------------------------------------
+  function isVersionFrozen(v: { status?: string | null; is_locked?: boolean | null } | null | undefined): boolean {
+    if (!v) return false;
+    if (v.is_locked === true) return true;
+    return ["submitted", "pending_approval", "approved", "edit_requested"].includes(String(v.status || ""));
+  }
+
+  async function getVersionState(versionId: string | null | undefined) {
+    if (!versionId) return null;
+    const r = await query(
+      `SELECT id, project_id, type, status, is_locked, source_version_id FROM boq_versions WHERE id = $1`,
+      [versionId],
+    );
+    return r.rows[0] || null;
+  }
+
   // Push qty/name/unit/category/remarks changes made on a BOM version's items into
   // every already-created BOQ item that was copied from them (matched via
   // copied_from_item_id), no matter which BOQ version they were copied into.
@@ -8089,10 +8148,15 @@ export async function registerRoutes(
 
       // Find every BOQ-side item that was ever copied from one of these BOM items,
       // in any target version (not just the version this BOM was originally copied into).
+      // Joined to boq_versions so we refuse to touch (a) BOM-type versions — a v2
+      // cloned from v1 also has copied_from_item_id pointing at v1's items but is
+      // a separate working copy, not a "linked BOQ" — and (b) any frozen version.
       const targetItemsRes = await query(
-        `SELECT id, version_id, table_data, copied_from_item_id
-         FROM boq_items
-         WHERE copied_from_item_id = ANY($1::text[])`,
+        `SELECT i.id, i.version_id, i.table_data, i.copied_from_item_id,
+                v.type AS version_type, v.status AS version_status, v.is_locked AS version_is_locked
+         FROM boq_items i
+         JOIN boq_versions v ON v.id = i.version_id
+         WHERE i.copied_from_item_id = ANY($1::text[])`,
         [allBomItemIds]
       );
       if (targetItemsRes.rows.length === 0) return;
@@ -8103,9 +8167,19 @@ export async function registerRoutes(
       const SYNCED_FIELDS = ['targetRequiredQty', 'requiredUnitType', 'product_name', 'category', 'remarks'];
       const affectedVersionIds = new Set<string>();
       let updatedCount = 0;
+      let skippedNonBoq = 0;
+      let skippedFrozen = 0;
 
       for (const target of targetItemsRes.rows) {
         if (archivedIds.includes(target.id) || trashedIds.includes(target.id)) continue;
+
+        // Isolation guard: never sync into another BOM version (e.g. v2 cloned
+        // from v1) and never into a frozen version (e.g. the BOQ already sent
+        // to the client). Checked BEFORE the orphan-archive and field-update
+        // logic below so neither can run against a protected version.
+        if (target.version_type !== "boq") { skippedNonBoq++; continue; }
+        if (isVersionFrozen({ status: target.version_status, is_locked: target.version_is_locked })) { skippedFrozen++; continue; }
+
         const sourceTd = bomItemMap.get(target.copied_from_item_id);
         if (!sourceTd) {
           // Source BOM item is gone (removed from the BOM and re-approved).
@@ -8181,7 +8255,7 @@ export async function registerRoutes(
         }
       }
 
-      console.log(`[bom_boq_sync] Auto-synced ${updatedCount} item(s) from BOM ${bomVersionId} into ${affectedVersionIds.size} linked BOQ version(s)`);
+      console.log(`[bom_boq_sync] Auto-synced ${updatedCount} item(s) from BOM ${bomVersionId} into ${affectedVersionIds.size} linked BOQ version(s) (skipped: ${skippedFrozen} in frozen versions, ${skippedNonBoq} in non-BOQ versions)`);
     } catch (err) {
       console.error("[bom_boq_sync] syncBomVersionChangesToLinkedBoqs error:", err);
     }
@@ -8686,8 +8760,8 @@ export async function registerRoutes(
 
       const { rows } = await query(
         `INSERT INTO bom_rate_change_requests (
-          project_id, project_name, bom_name, version_id, boq_item_id, product_id, product_name, material_id, material_name, original_rate, requested_rate, remarks, requested_by, requested_by_name
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+          project_id, project_name, bom_name, version_id, boq_item_id, product_id, product_name, material_id, material_name, original_rate, requested_rate, remarks, requested_by, requested_by_name, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'pending') RETURNING *`,
         [project_id, project_name, bom_name, version_id, boq_item_id, product_id, product_name, material_id, material_name, original_rate, requested_rate, remarks, requested_by, requested_by_name]
       );
       res.json(rows[0]);
@@ -9140,6 +9214,19 @@ export async function registerRoutes(
           return;
         }
 
+        // Server-side enforcement of the read-only state the UI already shows:
+        // nothing may be ADDED to a locked / submitted / approved version.
+        if (version_id) {
+          const targetVerState = await getVersionState(version_id);
+          if (isVersionFrozen(targetVerState)) {
+            res.status(409).json({
+              message: "This version is locked or approved. Request an edit before adding items.",
+              code: "VERSION_LOCKED",
+            });
+            return;
+          }
+        }
+
         const itemId = `item-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         console.log("Creating BOQ item with ID:", itemId);
 
@@ -9236,6 +9323,17 @@ export async function registerRoutes(
         if (!project_id || !Array.isArray(items)) {
           res.status(400).json({ message: "project_id and items array are required" });
           return;
+        }
+
+        if (version_id) {
+          const batchVerState = await getVersionState(version_id);
+          if (isVersionFrozen(batchVerState)) {
+            res.status(409).json({
+              message: "This version is locked or approved. Request an edit before importing items.",
+              code: "VERSION_LOCKED",
+            });
+            return;
+          }
         }
 
         console.log(`Processing batch import of ${items.length} items for project ${project_id}`);
@@ -9814,11 +9912,28 @@ export async function registerRoutes(
     async (req: Request, res: Response) => {
       try {
         const { id } = req.params;
-        const { table_data, change_log } = req.body;
+        const { table_data: incomingTableData, change_log, changed_fields } = req.body;
 
-        if (!table_data) {
+        if (!incomingTableData) {
           res.status(400).json({ message: "table_data is required" });
           return;
+        }
+
+        // Optional `changed_fields`: when the client says exactly which fields it
+        // edited, apply ONLY those onto the row as it is in the database right now,
+        // instead of replacing the whole record with the client's copy. The client's
+        // copy can be hours old (a tab left open, another user editing the same
+        // item), and writing it back whole silently reverts everyone else's newer
+        // changes to their old values. Callers that don't send changed_fields keep
+        // the previous full-replace behaviour unchanged.
+        let table_data = incomingTableData;
+        if (changed_fields && typeof changed_fields === "object" && !Array.isArray(changed_fields) && Object.keys(changed_fields).length > 0) {
+          const curRes = await query(`SELECT table_data FROM boq_items WHERE id = $1`, [id]);
+          if (curRes.rows.length > 0) {
+            let cur = curRes.rows[0].table_data;
+            if (typeof cur === "string") { try { cur = JSON.parse(cur); } catch { cur = {}; } }
+            table_data = { ...(cur || {}), ...changed_fields };
+          }
         }
 
         const updateResult = await query(
@@ -9877,7 +9992,7 @@ export async function registerRoutes(
           console.warn("PUT /api/boq-items/:id — writing change_log to boq_history failed (non-fatal):", changeLogErr);
         }
 
-        res.json({ message: "BOM item updated successfully" });
+        res.json({ message: "BOM item updated successfully", table_data });
 
         // Sync to Sketch if linked (non-blocking)
         bomSketchSync.syncBoqItemToSketch(id, table_data).catch(err => console.error("Sync to sketch failed:", err));
@@ -11419,16 +11534,39 @@ export async function registerRoutes(
         const itemData = itemRes.rows[0];
         const projectId = itemData.project_id;
 
+        // Isolation guard, checked BEFORE the sketch cascade / archive below so a
+        // refused delete has no side effects. This is what stops a stale page
+        // (e.g. still holding v1's item ids while v2 is on screen) from deleting
+        // an item out of a locked/approved version.
+        if (itemData.version_id) {
+          const itemVerState = await getVersionState(itemData.version_id);
+          if (isVersionFrozen(itemVerState)) {
+            return res.status(409).json({
+              message: "This item belongs to a locked or approved version and cannot be deleted. Request an edit first.",
+              code: "VERSION_LOCKED",
+            });
+          }
+        }
+
         // Split View live sync: if this BOQ item was generated from a sketch plan item,
         // remove that source sketch item too so the Sketch pane stays in sync.
+        // A cloned version (v2) inherits sketch_item_id from v1 in table_data, so
+        // only cascade when THIS item's version is the one actively linked to a
+        // sketch plan — otherwise deleting in v2 would delete v1's sketch item.
         try {
           let td = itemData.table_data;
           if (typeof td === "string") {
             try { td = JSON.parse(td); } catch { td = {}; }
           }
           const sketchItemId = td?.sketch_item_id;
-          if (sketchItemId) {
-            await query("DELETE FROM sketch_plan_items WHERE id = $1", [sketchItemId]);
+          if (sketchItemId && itemData.version_id) {
+            const linkRes = await query(
+              `SELECT 1 FROM bom_sketch_links WHERE bom_version_id = $1 AND is_active = TRUE LIMIT 1`,
+              [itemData.version_id]
+            );
+            if (linkRes.rows.length > 0) {
+              await query("DELETE FROM sketch_plan_items WHERE id = $1", [sketchItemId]);
+            }
           }
         } catch (cascadeErr) {
           console.error("[DELETE /api/boq-items/:itemId] Failed to cascade-delete linked sketch item", cascadeErr);
@@ -13694,6 +13832,18 @@ export async function registerRoutes(
             } else if (Array.isArray(tableData.items)) {
               lines = flattenItems(tableData.items);
             }
+
+            // For a simple, single-line manual product (e.g. a "Civil Labour charge"
+            // typed directly into the BOM), the description the user edits in the BOM
+            // UI is the product-level "finalize_description" field — not the line's own
+            // description, which is a separate copy set at creation time and can go
+            // stale. When there's exactly one line, use finalize_description as the
+            // source of truth so the PO shows what's actually on screen. Multi-line
+            // products are left untouched since one description can't represent many
+            // lines, and this never runs for engine-based products (handled above).
+            if (lines.length === 1 && typeof tableData.finalize_description === "string" && tableData.finalize_description.trim() !== "") {
+              lines[0] = { ...lines[0], description: tableData.finalize_description };
+            }
           }
 
           for (const line of lines) {
@@ -13758,13 +13908,22 @@ export async function registerRoutes(
           for (const item of items) {
             const itemName = (item.item || item.material_name || item.title || item.name || "Unknown Item").trim();
             const materialId = item.material_id || item.materialId || item.id || null;
-            // Group by material ID if available, otherwise fallback to exact item name
-            const key = materialId ? String(materialId) : itemName.toLowerCase();
+            // Group by material ID if available. Manual items (no material ID) have no
+            // stable identity of their own, so also fold the description into the key —
+            // otherwise two manual items with the same name but different descriptions
+            // (e.g. different specs) would silently merge into a single PO line and lose
+            // one of the descriptions. Items with a real materialId are unaffected.
+            const itemDescription = (item.description || item.location || "").trim().toLowerCase();
+            const key = materialId ? String(materialId) : `${itemName.toLowerCase()}::${itemDescription}`;
 
             if (!aggregatedItems.has(key)) {
               // Store first instance
               const qty = parseFloat(item.qty || item.quantity || 0) || 0;
-              const origRate = item.original_rate !== undefined && item.original_rate !== null ? parseFloat(item.original_rate) : null;
+              // Pending/amended rates default to the original rate on the PO (existing
+              // behavior, unchanged). If the user has explicitly checked "use amended
+              // rate for PO" on this line, honor that and let the amended rate through.
+              const useAmendedRateForPo = item.po_use_amended_rate === true;
+              const origRate = (!useAmendedRateForPo && item.original_rate !== undefined && item.original_rate !== null) ? parseFloat(item.original_rate) : null;
               const supplyRate = origRate !== null ? origRate : (parseFloat(item.supply_rate || item.supplyRate || item.rate || 0) || 0);
               const installRate = origRate !== null ? 0 : (parseFloat(item.install_rate || item.installRate || 0) || 0);
               const rate = supplyRate + installRate;

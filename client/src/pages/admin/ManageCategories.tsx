@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Layout } from "@/components/layout/Layout";
+import ManagementTabBar from "@/components/ManagementTabBar";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -255,6 +256,7 @@ export default function ManageCategories() {
   return (
     <Layout>
       <div className="max-w-6xl mx-auto space-y-6 pb-20">
+        <ManagementTabBar active="manage-categories" />
         <div className="flex items-center justify-between">
           <h2 className="text-3xl font-bold tracking-tight">Manage Material Categories</h2>
         </div>

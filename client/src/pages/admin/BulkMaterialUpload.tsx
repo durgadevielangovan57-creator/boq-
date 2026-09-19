@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { postJSON } from "@/lib/api";
 import { useData } from "@/lib/store";
 import { Layout } from "@/components/layout/Layout";
+import ManagementTabBar from "@/components/ManagementTabBar";
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -160,6 +161,7 @@ export default function BulkMaterialUpload() {
   return (
     <Layout>
       <div className="space-y-6">
+        <ManagementTabBar active="bulk-upload" />
         <div className="flex justify-between items-start">
           <div>
             <h2 className="text-3xl font-bold tracking-tight">Bulk Upload</h2>

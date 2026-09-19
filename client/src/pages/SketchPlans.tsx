@@ -12,6 +12,7 @@ import { useAuth } from "@/lib/auth-context";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { DeleteConfirmationDialog } from "@/components/ui/DeleteConfirmationDialog";
+import BoqTabBar from "@/components/BoqTabBar";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -375,7 +376,8 @@ export default function SketchPlans() {
     <LayoutComponent
       {...(isSupplier ? { shopName: shopInfo.name, shopLocation: shopInfo.location, shopApproved: true } : {})}
     >
-      <div className={`space-y-6 ${isSupplier ? "p-4 md:p-8 max-w-7xl mx-auto" : ""}`}>
+      <div className={`space-y-6 ${isSupplier ? "p-4 md:p-8 max-w-7xl mx-auto" : "container mx-auto p-4 md:p-6 max-w-[1200px]"}`}>
+        {!isSupplier && <BoqTabBar active="sketch" />}
         <div className="flex flex-col gap-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -396,21 +398,33 @@ export default function SketchPlans() {
                 <>
                   <Button
                     variant={showTasksMode ? "default" : "outline"}
+                    size="icon"
                     onClick={() => setShowTasksMode(!showTasksMode)}
-                    className={`flex items-center gap-2 ${showTasksMode ? 'bg-indigo-600 text-white' : ''}`}
+                    className={`relative ${showTasksMode ? 'bg-indigo-600 text-white' : ''}`}
+                    title="Assigned Tasks"
                   >
-                    <Check className="w-4 h-4" /> Assigned Tasks
+                    <Check className="w-4 h-4" />
                     {assignedTasks.filter(t => t.user_task_status !== 'completed').length > 0 && (
-                      <Badge className="ml-1 bg-red-500">{assignedTasks.filter(t => t.user_task_status !== 'completed').length}</Badge>
+                      <Badge className="absolute -top-2 -right-2 px-1.5 min-w-[20px] h-5 flex items-center justify-center bg-red-500 text-[10px]">{assignedTasks.filter(t => t.user_task_status !== 'completed').length}</Badge>
                     )}
                   </Button>
-                  <Button variant="outline" onClick={() => setLocation("/sketch-templates")} className="flex items-center gap-2">
-                    <Layers className="w-4 h-4" /> Manage Templates
+                  <Button 
+                    variant="outline" 
+                    size="icon"
+                    onClick={() => setLocation("/sketch-templates")} 
+                    title="Manage Templates"
+                  >
+                    <Layers className="w-4 h-4" />
                   </Button>
                 </>
               )}
-              <Button onClick={() => setLocation("/create-sketch-plan")} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white">
-                <Plus className="w-4 h-4" /> Create New Plan
+              <Button 
+                size="icon"
+                onClick={() => setLocation("/create-sketch-plan")} 
+                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                title="Create New Plan"
+              >
+                <Plus className="w-4 h-4" />
               </Button>
             </div>
           </div>
@@ -444,7 +458,7 @@ export default function SketchPlans() {
                 </SelectContent>
               </Select>
             </div>
-            
+
             <div className="flex items-center gap-1.5">
               <Filter className="w-4 h-4 text-slate-400" />
               <span className="text-xs text-slate-500 font-medium hidden sm:inline">Status:</span>
@@ -567,9 +581,8 @@ export default function SketchPlans() {
                     <div className="flex items-center gap-2 min-w-0">
                       <button
                         onClick={(e) => { e.stopPropagation(); togglePin(group.rootId); }}
-                        className={`flex-shrink-0 p-1 rounded-full transition-all hover:scale-110 ${
-                          isPinned ? 'text-amber-500 hover:text-amber-600' : 'text-slate-300 hover:text-amber-400'
-                        }`}
+                        className={`flex-shrink-0 p-1 rounded-full transition-all hover:scale-110 ${isPinned ? 'text-amber-500 hover:text-amber-600' : 'text-slate-300 hover:text-amber-400'
+                          }`}
                         title={isPinned ? 'Unpin plan' : 'Pin to top'}
                       >
                         <Star className={`w-4 h-4 ${isPinned ? 'fill-amber-400' : ''}`} />
