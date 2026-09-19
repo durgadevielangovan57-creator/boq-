@@ -2532,7 +2532,7 @@ export default function AdminDashboard() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-3 max-w-3xl">
+                  <div className="grid grid-cols-1 gap-3 max-w-xl">
                     {/* Shops tile */}
                     <div className="rounded-lg border bg-slate-50/60 p-3 flex items-center gap-3 hover:bg-slate-50 hover:shadow-sm transition-all duration-200">
                       <div className="p-2 rounded-lg bg-green-100 shrink-0">
@@ -2546,7 +2546,7 @@ export default function AdminDashboard() {
                         <p className="text-lg font-bold leading-none text-foreground">{shops.length}</p>
                         <p className="text-[10px] text-muted-foreground mt-0.5">records</p>
                       </div>
-                      <div className="w-40 flex items-center justify-end gap-1.5 shrink-0">
+                      <div className="w-40 flex items-center justify-start gap-1.5 shrink-0">
                         <Button
                           size="sm"
                           onClick={() => setShowShopsList(!showShopsList)}
@@ -2579,7 +2579,7 @@ export default function AdminDashboard() {
                         <p className="text-lg font-bold leading-none text-foreground">{materials.length}</p>
                         <p className="text-[10px] text-muted-foreground mt-0.5">records</p>
                       </div>
-                      <div className="w-40 flex items-center justify-end gap-1.5 shrink-0">
+                      <div className="w-40 flex items-center justify-start gap-1.5 shrink-0">
                         <Button
                           size="sm"
                           onClick={() => setShowMaterialsList(!showMaterialsList)}
@@ -2621,7 +2621,7 @@ export default function AdminDashboard() {
                         <p className="text-lg font-bold leading-none text-foreground">{products.filter((p: any) => p.is_approved).length}</p>
                         <p className="text-[10px] text-muted-foreground mt-0.5">records</p>
                       </div>
-                      <div className="w-40 flex items-center justify-end gap-1.5 shrink-0">
+                      <div className="w-40 flex items-center justify-start gap-1.5 shrink-0">
                         <Button
                           size="sm"
                           onClick={() => setShowProductsList(!showProductsList)}

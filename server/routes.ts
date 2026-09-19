@@ -7210,7 +7210,20 @@ export async function registerRoutes(
               if (f.qty !== undefined) tableData.materialLines[itemIdx].perUnitQty = Number(f.qty);
               // Rate-amendment tracking fields were being dropped here — carry them through
               // just like the manual/step11_items branch below already does via spread.
-              if (f.rate_amendment_status !== undefined) tableData.materialLines[itemIdx].rate_amendment_status = f.rate_amendment_status;
+              if (f.rate_amendment_status !== undefined) {
+                // Guard: never let a stale client-side edit downgrade an already-resolved
+                // amendment (approved/rejected) back to pending/draft. Without this, a
+                // leftover 'pending' value cached in the browser's local edit state — from
+                // before the admin's approval — could get resent on a later, unrelated
+                // autosave and silently flip the item back to 'pending' after it had
+                // already been approved, making it look like the approval never happened.
+                const currentAmendStatus = tableData.materialLines[itemIdx].rate_amendment_status;
+                const isAlreadyResolved = currentAmendStatus === 'approved' || currentAmendStatus === 'rejected';
+                const clientWantsUnresolved = f.rate_amendment_status === 'pending' || f.rate_amendment_status === 'draft';
+                if (!(isAlreadyResolved && clientWantsUnresolved)) {
+                  tableData.materialLines[itemIdx].rate_amendment_status = f.rate_amendment_status;
+                }
+              }
               if (f.original_rate !== undefined) tableData.materialLines[itemIdx].original_rate = f.original_rate;
               // Lets the user choose, per amended rate, whether the PO should use the
               // original rate (default, unchanged behavior) or the amended rate.

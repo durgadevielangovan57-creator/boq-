@@ -18,6 +18,7 @@ import { Layout } from "@/components/layout/Layout";
 import ManagementTabBar from "@/components/ManagementTabBar";
 import { SupplierLayout } from "@/components/layout/SupplierLayout";
 import { useAuth } from "@/lib/auth-context";
+import { useData } from "@/lib/store";
 import { useLocation } from "wouter";
 import { computeBoq, UnitType } from "@/lib/boqCalc";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogFooter } from "@/components/ui/dialog";
@@ -61,6 +62,7 @@ const parseImages = (imageField: string | null | undefined): string[] => {
 
 export default function ManageProduct() {
     const { user } = useAuth();
+    const { materials: storeMaterials } = useData();
     const isSupplier = user?.role === "supplier";
     const [location] = useLocation();
     const [step, setStep] = useState(1);
@@ -434,17 +436,21 @@ export default function ManageProduct() {
         enabled: step === 2 && !!selectedCategory && selectedCategory !== ALL,
     });
 
-    const { data: materialsData, isLoading: loadingMaterials } = useQuery({
-        queryKey: ["/api/materials"],
-        queryFn: async () => {
-            const res = await apiFetch("/api/materials");
-            if (!res.ok) throw new Error();
-            const d = await res.json();
-            return ((d.materials || []) as Material[]).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-        },
-        staleTime: 0,
-        refetchOnMount: "always",
-    });
+    // Materials come from the global store (useData()) instead of an
+    // independent react-query fetch here. The previous query used
+    // `staleTime: 0, refetchOnMount: "always"`, which forced a completely
+    // fresh, uncached re-fetch of the entire /api/materials catalog every
+    // single time this page mounted — the exact same heavy endpoint the
+    // rest of the app already loads once at startup. That's what made
+    // "Select Materials/Items" sit on "Loading Items..." for longer than
+    // it needed to. loadingMaterials now just means "the store hasn't
+    // finished its one-time app load yet", which in practice is only true
+    // for a brief moment right after the app first opens.
+    const loadingMaterials = !storeMaterials || storeMaterials.length === 0;
+    const materialsData = useMemo(
+        () => [...(storeMaterials || [])].sort((a: any, b: any) => (a.name || "").localeCompare(b.name || "")) as Material[],
+        [storeMaterials]
+    );
 
     // Memoized so this O(n) pass over the full materials list only re-runs when the
     // underlying data actually changes, not on every render (e.g. typing in a search

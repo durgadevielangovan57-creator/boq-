@@ -25,7 +25,7 @@ export interface User {
   email?: string;
 }
 export interface Shop { id: string; name: string; location?: string; phoneCountryCode?: string; contactNumber?: string; city?: string; state?: string; country?: string; pincode?: string; image?: string; rating?: number; categories?: string[]; gstNo?: string; vendorCategory?: string; ownerId?: string; disabled?: boolean; new_location?: string; terms_and_conditions?: string; }
-export interface Material { id: string; name: string; code: string; rate: number; shopId?: string; unit?: string; category?: string; brandName?: string; modelNumber?: string; subCategory?: string; product?: string; technicalSpecification?: string; dimensions?: string; finish?: string; metalType?: string; image?: string; attributes?: any; masterMaterialId?: string; disabled?: boolean; vendorCategory?: string; taxCodeType?: 'hsn' | 'sac'; taxCodeValue?: string; hsnCode?: string; sacCode?: string; created_at?: string; subcategory?: string; category_name?: string; subcategory_name?: string; vendor_category?: string; tax_code_type?: string; tax_code_value?: string; hsn_code?: string; sac_code?: string; shop_name?: string; updated_at?: string; is_project_pricing?: boolean; min_quantity?: number | null; max_quantity?: number | null; template_id?: string | null; }
+export interface Material { id: string; name: string; code: string; rate: number; shopId?: string; unit?: string; category?: string; brandName?: string; modelNumber?: string; subCategory?: string; product?: string; technicalSpecification?: string; dimensions?: string; finish?: string; metalType?: string; image?: string; attributes?: any; masterMaterialId?: string; disabled?: boolean; vendorCategory?: string; taxCodeType?: 'hsn' | 'sac'; taxCodeValue?: string; hsnCode?: string; sacCode?: string; created_at?: string; subcategory?: string; category_name?: string; subcategory_name?: string; vendor_category?: string; tax_code_type?: string; tax_code_value?: string; hsn_code?: string; sac_code?: string; shop_name?: string; shop_id?: string; updated_at?: string; is_project_pricing?: boolean; min_quantity?: number | null; max_quantity?: number | null; template_id?: string | null; technicalspecification?: string; }
 export interface Product { id: string; name: string; subcategory?: string; category?: string; subcategory_name?: string; category_name?: string; hsnCode?: string; sacCode?: string; image?: string; created_at?: string; created_by?: string }
 
 interface DataContextType {
@@ -193,7 +193,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
     hsn_code: mat.hsn_code || mat.hsnCode || mat.template_hsn_code || "",
     sac_code: mat.sac_code || mat.sacCode || mat.template_sac_code || "",
     shop_name: mat.shop_name || "",
+    shop_id: mat.shop_id || mat.shopId || null,
     updated_at: mat.updated_at || mat.created_at || null,
+    technicalspecification: mat.technicalspecification || mat.technicalSpecification || "",
   } as Material);
 
   const refreshMaterials = async () => {
