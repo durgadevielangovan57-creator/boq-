@@ -6508,7 +6508,7 @@ export async function registerRoutes(
 
         // Validate both versions exist and belong to the same project
         const [targetVerRes, bomVerRes] = await Promise.all([
-          query(`SELECT id, project_id, type, status, is_locked FROM boq_versions WHERE id = $1`, [targetVersionId]),
+          query(`SELECT id, project_id, type, status, is_locked, source_version_id FROM boq_versions WHERE id = $1`, [targetVersionId]),
           query(`SELECT id, project_id, type, status, is_locked FROM boq_versions WHERE id = $1`, [bom_version_id]),
         ]);
         const targetVer = targetVerRes.rows[0];
@@ -6545,6 +6545,22 @@ export async function registerRoutes(
             code: "VERSION_LOCKED",
           });
           return;
+        }
+
+        // Single-source rule: a BOQ created from BOM Vx may only sync from BOM Vx.
+        // (If its source is not a BOM — e.g. a BOQ cloned from another BOQ — or is
+        // unknown, behaviour is unchanged.)
+        if (targetVer.source_version_id && targetVer.source_version_id !== bom_version_id) {
+          const srcVerRes = await query(`SELECT id, type, version_number FROM boq_versions WHERE id = $1`, [targetVer.source_version_id]);
+          const srcVer = srcVerRes.rows[0];
+          if (srcVer && srcVer.type === "bom") {
+            res.status(409).json({
+              message: `This BOQ was created from BOM V${srcVer.version_number} and can only sync from that version.`,
+              code: "SOURCE_MISMATCH",
+              source_version_id: srcVer.id,
+            });
+            return;
+          }
         }
 
         const archivedIds = await archiveService.getArchivedItemIds('boq_items');
@@ -6648,9 +6664,9 @@ export async function registerRoutes(
           if (archivedIds.includes(item.id) || trashedIds.includes(item.id)) continue;
 
           // Already synced into this BOQ version before -> check for field
-          // changes (qty, unit, name, category, remarks) and update in place
-          // instead of re-adding. Never touches rate/override — same rule as
-          // syncBomVersionChangesToLinkedBoqs.
+          // changes (qty, unit, name, category, remarks, and line-level rates/lines)
+          // and update in place instead of re-adding. Never touches override/margin/
+          // finalize_* — same rule as syncBomVersionChangesToLinkedBoqs.
           if (alreadyCopiedFromIds.has(item.id)) {
             skippedCount++;
             const targetRow = existingByCopiedFrom.get(item.id);
@@ -6670,9 +6686,23 @@ export async function registerRoutes(
                 }
               }
 
+              // Line-level data (rates, lines, recipe basis) — updates THIS already-linked
+              // row in place (no insert), so it cannot create a duplicate.
+              const lineKeysChanged = applyLineSyncFromBom(sourceTd, newTd);
+              if (lineKeysChanged.length > 0) {
+                const d = diffLinesForHistory(targetTd, newTd);
+                changedFields.push({ field: "lines", old_value: d.oldBrief, new_value: d.newBrief });
+                // Drop the cached total so it is recomputed from the new lines.
+                delete newTd.frontend_computed_value;
+              }
+
               if (changedFields.length > 0) {
                 newTd.bom_synced_at = new Date().toISOString();
-                await query(`UPDATE boq_items SET table_data = $1 WHERE id = $2`, [JSON.stringify(newTd), targetRow.id]);
+                if (lineKeysChanged.length > 0) {
+                  await query(`UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`, [JSON.stringify(newTd), computeItemValue(newTd), targetRow.id]);
+                } else {
+                  await query(`UPDATE boq_items SET table_data = $1 WHERE id = $2`, [JSON.stringify(newTd), targetRow.id]);
+                }
                 const updatedName = newTd.product_name || newTd.item || newTd.name || "Unknown Item";
                 updatedItems.push({ id: targetRow.id, name: updatedName });
 
@@ -7135,6 +7165,11 @@ export async function registerRoutes(
 
         console.log(`Saving edits for version ${versionId}:`, Object.keys(editedFields));
 
+        // Edits made directly in a BOQ are remembered per line (boq_edited) so a later
+        // BOM -> BOQ sync does not overwrite them. BOM-side edits are never marked.
+        const editedVerTypeRes = await query(`SELECT type FROM boq_versions WHERE id = $1`, [versionId]);
+        const isBoqVersion = editedVerTypeRes.rows[0]?.type === "boq";
+
         // Group edits by boqItemId and type
         const editsByItem: Record<string, { engine: Record<number, any>, manual: Record<number, any> }> = {};
         for (const [key, fields] of Object.entries(editedFields)) {
@@ -7209,6 +7244,13 @@ export async function registerRoutes(
               else if (f.rate !== undefined) tableData.materialLines[itemIdx].supplyRate = Number(f.rate);
               if (f.install_rate !== undefined) tableData.materialLines[itemIdx].installRate = Number(f.install_rate);
               if (f.qty !== undefined) tableData.materialLines[itemIdx].perUnitQty = Number(f.qty);
+              if (isBoqVersion) {
+                const editedKeys: string[] = [];
+                if (f.supply_rate !== undefined || f.rate !== undefined) editedKeys.push("supplyRate");
+                if (f.install_rate !== undefined) editedKeys.push("installRate");
+                if (f.qty !== undefined) editedKeys.push("perUnitQty");
+                markBoqEdited(tableData.materialLines[itemIdx], editedKeys);
+              }
               // Rate-amendment tracking fields were being dropped here — carry them through
               // just like the manual/step11_items branch below already does via spread.
               if (f.rate_amendment_status !== undefined) {
@@ -7248,6 +7290,10 @@ export async function registerRoutes(
                 ...tableData.step11_items[itemIdx],
                 ...fields as any
               };
+              if (isBoqVersion) {
+                const AMOUNT_KEYS = ["qty", "qtyPerSqf", "supply_rate", "install_rate", "rate", "unit", "amount"];
+                markBoqEdited(tableData.step11_items[itemIdx], Object.keys(fields as any).filter(k => AMOUNT_KEYS.indexOf(k) !== -1));
+              }
               editsAppliedToThisItem++;
             }
           }
@@ -8120,15 +8166,144 @@ export async function registerRoutes(
     return r.rows[0] || null;
   }
 
+  // ── BOM -> BOQ line-level sync helpers ─────────────────────────────────────
+  // Used by BOTH sync paths (/sync-from-bom and syncBomVersionChangesToLinkedBoqs).
+  //
+  // Values edited directly in the BOQ are protected (see markBoqEdited /
+  // keepBoqEditedFields): the BOM never overwrites them.
+  // Scope is deliberately narrow: only the BOM-owned data that determines the
+  // calculated AMOUNT is copied. BOQ-only data (finalize_* columns, override
+  // rates, margins, is_lump_sum, frontend_computed_value, ...) is never in this
+  // list, so a sync can never overwrite it. Nothing here inserts a row — callers
+  // update the already-linked BOQ item in place, so it cannot create duplicates.
+
+  // Stable (key-sorted) stringify so key-order differences never look like a change.
+  function stableStringify(v: any): string {
+    if (v === null || typeof v !== "object") return JSON.stringify(v);
+    if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+    return "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
+  }
+
+  // Mirrors how Generate BOM totals a line: while a rate amendment is NOT approved,
+  // the BOM total uses the line's original_rate. Copy that effective rate so the
+  // BOQ total equals the BOM total. Amendment metadata itself is left untouched.
+  function effectiveBomMaterialLines(lines: any[]): any[] {
+    return lines.map((l: any) => {
+      if (!l || typeof l !== "object") return l;
+      const orig = l.original_rate;
+      const hasOrig = orig !== undefined && orig !== null && orig !== "" && Number.isFinite(Number(orig));
+      if (hasOrig && l.rate_amendment_status !== "approved") {
+        return { ...l, supplyRate: Number(orig), installRate: 0 };
+      }
+      return l;
+    });
+  }
+
+  // Records, on a BOQ line, which fields were edited directly in the BOQ (Finalize).
+  // Set only by /save-edits when the edited version is a BOQ — never by a sync.
+  function markBoqEdited(line: any, fields: string[]) {
+    if (!line || typeof line !== "object" || fields.length === 0) return;
+    const marks: Record<string, boolean> = (line.boq_edited && typeof line.boq_edited === "object") ? { ...line.boq_edited } : {};
+    fields.forEach(f => { marks[f] = true; });
+    line.boq_edited = marks;
+  }
+
+  // Line identity used to pair a BOM line with its BOQ counterpart: id / materialId /
+  // itemKey, with an occurrence counter so the SAME material listed twice is paired
+  // 1st-with-1st, 2nd-with-2nd (never cross-matched).
+  function lineKeys(lines: any[]): string[] {
+    const seen: Record<string, number> = {};
+    return lines.map((l: any, i: number) => {
+      const raw = l && typeof l === "object" ? (l.id ?? l.materialId ?? l.itemKey) : undefined;
+      const base = raw !== undefined && raw !== null ? String(raw) : `#${i}`;
+      seen[base] = (seen[base] || 0) + 1;
+      return `${base}|${seen[base]}`;
+    });
+  }
+
+  // Takes the BOM lines, but for every field the BOQ line was edited on directly
+  // (boq_edited marks) keeps the BOQ's own value instead. All other fields, and any
+  // line without marks, follow the BOM. A line the BOM removed stays removed.
+  function keepBoqEditedFields(srcLines: any, boqLines: any): any {
+    if (!Array.isArray(srcLines) || !Array.isArray(boqLines)) return srcLines;
+    const boqKeys = lineKeys(boqLines);
+    const boqByKey: Record<string, any> = {};
+    boqLines.forEach((l: any, i: number) => { boqByKey[boqKeys[i]] = l; });
+    const srcKeys = lineKeys(srcLines);
+    return srcLines.map((sl: any, i: number) => {
+      const bl = boqByKey[srcKeys[i]];
+      const marks = bl && typeof bl === "object" && bl.boq_edited && typeof bl.boq_edited === "object" ? bl.boq_edited : null;
+      if (!marks || !sl || typeof sl !== "object") return sl;
+      const merged: any = { ...sl };
+      Object.keys(marks).forEach(f => { if (marks[f] && bl[f] !== undefined) merged[f] = bl[f]; });
+      merged.boq_edited = marks;
+      return merged;
+    });
+  }
+
+  // Copies the BOM-owned amount data from sourceTd onto newTd (mutates newTd only).
+  // Never deletes anything on the target: a key missing on the source is skipped.
+  // Returns the list of keys that actually changed ([] = already identical).
+  function applyLineSyncFromBom(sourceTd: any, newTd: any): string[] {
+    const LINE_SYNC_KEYS = ["materialLines", "step11_items", "configBasis", "use_standard_rate", "total_cost"];
+    const changedKeys: string[] = [];
+    if (!sourceTd || typeof sourceTd !== "object") return changedKeys;
+    for (const key of LINE_SYNC_KEYS) {
+      if (sourceTd[key] === undefined || sourceTd[key] === null) continue;
+      let srcVal = key === "materialLines" && Array.isArray(sourceTd[key])
+        ? effectiveBomMaterialLines(sourceTd[key])
+        : sourceTd[key];
+      // A value edited DIRECTLY in the BOQ wins: keep those fields from the BOQ line.
+      if (key === "materialLines" || key === "step11_items") {
+        srcVal = keepBoqEditedFields(srcVal, newTd[key]);
+      }
+      if (stableStringify(newTd[key]) === stableStringify(srcVal)) continue;
+      newTd[key] = srcVal;
+      changedKeys.push(key);
+    }
+    return changedKeys;
+  }
+
+  // Compact before/after view of only the lines that differ, for boq_history
+  // (avoids storing the full line arrays as old/new values).
+  function diffLinesForHistory(oldTd: any, newTd: any): { oldBrief: any[]; newBrief: any[] } {
+    const brief = (l: any) => ({
+      name: l?.name || l?.title || l?.id || "line",
+      rate: (Number(l?.supplyRate ?? l?.supply_rate ?? 0) || 0) + (Number(l?.installRate ?? l?.install_rate ?? 0) || 0),
+      qty: Number(l?.baseQty ?? l?.qty ?? 0) || 0,
+    });
+    const collect = (td: any) => {
+      const m = new Map<string, any>();
+      (Array.isArray(td?.materialLines) ? td.materialLines : []).forEach((l: any, i: number) => m.set(`m:${l?.id ?? l?.materialId ?? "#" + i}`, brief(l)));
+      (Array.isArray(td?.step11_items) ? td.step11_items : []).forEach((l: any, i: number) => m.set(`s:${l?.id ?? l?.materialId ?? "#" + i}`, brief(l)));
+      return m;
+    };
+    const oldM = collect(oldTd);
+    const newM = collect(newTd);
+    const oldBrief: any[] = [];
+    const newBrief: any[] = [];
+    newM.forEach((nv, k) => {
+      const ov = oldM.get(k);
+      if (!ov) { newBrief.push({ ...nv, note: "added" }); return; }
+      if (ov.rate !== nv.rate || ov.qty !== nv.qty) { oldBrief.push(ov); newBrief.push(nv); }
+    });
+    oldM.forEach((ov, k) => {
+      if (!newM.has(k)) oldBrief.push({ ...ov, note: "removed" });
+    });
+    return { oldBrief: oldBrief.slice(0, 25), newBrief: newBrief.slice(0, 25) };
+  }
+
   // Push qty/name/unit/category/remarks changes made on a BOM version's items into
   // every already-created BOQ item that was copied from them (matched via
   // copied_from_item_id), no matter which BOQ version they were copied into.
   // Unlike /sync-from-bom (which only appends items missing from the target),
   // this UPDATES items that already exist on the BOQ side, so an edit made to an
-  // approved BOM (change qty -> approve again) is reflected on the Finalize BOQ
+  // approved BOM (change qty/rate -> approve again) is reflected on the Finalize BOQ
   // without anyone having to manually re-type the value there.
-  // Deliberately does NOT touch rate/override/other BOQ-only fields that may have
-  // already been priced on the Finalize BOQ side.
+  // Also carries the BOM's line-level amount data (rates, lines, recipe basis) via
+  // applyLineSyncFromBom(). Does NOT touch override/margin/finalize_* or any other
+  // BOQ-only field, never touches frozen (submitted/approved/locked) BOQs, and only
+  // syncs into BOQs whose own source BOM is this one.
   async function syncBomVersionChangesToLinkedBoqs(bomVersionId: string, userId?: string, userFullName?: string) {
     try {
       // NOTE: archiveService.archiveItem() is a SOFT archive — it inserts a row into
@@ -8167,9 +8342,11 @@ export async function registerRoutes(
       // a separate working copy, not a "linked BOQ" — and (b) any frozen version.
       const targetItemsRes = await query(
         `SELECT i.id, i.version_id, i.table_data, i.copied_from_item_id,
-                v.type AS version_type, v.status AS version_status, v.is_locked AS version_is_locked
+                v.type AS version_type, v.status AS version_status, v.is_locked AS version_is_locked,
+                v.source_version_id AS version_source_id, sv.type AS version_source_type
          FROM boq_items i
          JOIN boq_versions v ON v.id = i.version_id
+         LEFT JOIN boq_versions sv ON sv.id = v.source_version_id
          WHERE i.copied_from_item_id = ANY($1::text[])`,
         [allBomItemIds]
       );
@@ -8183,6 +8360,7 @@ export async function registerRoutes(
       let updatedCount = 0;
       let skippedNonBoq = 0;
       let skippedFrozen = 0;
+      let skippedOtherSource = 0;
 
       for (const target of targetItemsRes.rows) {
         if (archivedIds.includes(target.id) || trashedIds.includes(target.id)) continue;
@@ -8193,6 +8371,9 @@ export async function registerRoutes(
         // logic below so neither can run against a protected version.
         if (target.version_type !== "boq") { skippedNonBoq++; continue; }
         if (isVersionFrozen({ status: target.version_status, is_locked: target.version_is_locked })) { skippedFrozen++; continue; }
+        // Single-source rule: a BOQ created from BOM Vx only ever receives changes
+        // from BOM Vx. If this BOQ's own source is a different BOM, leave it alone.
+        if (target.version_source_type === "bom" && target.version_source_id && target.version_source_id !== bomVersionId) { skippedOtherSource++; continue; }
 
         const sourceTd = bomItemMap.get(target.copied_from_item_id);
         if (!sourceTd) {
@@ -8236,10 +8417,25 @@ export async function registerRoutes(
             newTd[field] = sourceTd[field];
           }
         }
+
+        // Line-level data (rates, lines, recipe basis) — updated in place on this
+        // already-linked row, so it can never create a duplicate.
+        const lineKeysChanged = applyLineSyncFromBom(sourceTd, newTd);
+        if (lineKeysChanged.length > 0) {
+          const d = diffLinesForHistory(targetTd, newTd);
+          changedFields.push({ field: "lines", old_value: d.oldBrief, new_value: d.newBrief });
+          // Drop the cached total so it is recomputed from the new lines instead of
+          // silently re-saving the OLD amount (same handling as the price-update route).
+          delete newTd.frontend_computed_value;
+        }
         if (changedFields.length === 0) continue; // nothing actually changed, skip write + history noise
 
         newTd.bom_synced_at = new Date().toISOString();
-        await query(`UPDATE boq_items SET table_data = $1 WHERE id = $2`, [JSON.stringify(newTd), target.id]);
+        if (lineKeysChanged.length > 0) {
+          await query(`UPDATE boq_items SET table_data = $1, computed_value = $2 WHERE id = $3`, [JSON.stringify(newTd), computeItemValue(newTd), target.id]);
+        } else {
+          await query(`UPDATE boq_items SET table_data = $1 WHERE id = $2`, [JSON.stringify(newTd), target.id]);
+        }
         updatedCount++;
         affectedVersionIds.add(target.version_id);
 
@@ -8269,7 +8465,7 @@ export async function registerRoutes(
         }
       }
 
-      console.log(`[bom_boq_sync] Auto-synced ${updatedCount} item(s) from BOM ${bomVersionId} into ${affectedVersionIds.size} linked BOQ version(s) (skipped: ${skippedFrozen} in frozen versions, ${skippedNonBoq} in non-BOQ versions)`);
+      console.log(`[bom_boq_sync] Auto-synced ${updatedCount} item(s) from BOM ${bomVersionId} into ${affectedVersionIds.size} linked BOQ version(s) (skipped: ${skippedFrozen} in frozen versions, ${skippedNonBoq} in non-BOQ versions, ${skippedOtherSource} linked to a different BOM)`);
     } catch (err) {
       console.error("[bom_boq_sync] syncBomVersionChangesToLinkedBoqs error:", err);
     }
