@@ -9468,8 +9468,8 @@ export async function registerRoutes(
           const userObj = (req.user as any) || {};
           const itemName = table_data.product_name || table_data.item || table_data.name || table_data.category_name || "Unknown Item";
           await query(
-            `INSERT INTO boq_history (version_id, user_id, user_full_name, action, item_id, item_name) VALUES ($1, $2, $3, $4, $5, $6)`,
-            [version_id, userObj.id || 'system', userObj.fullName || userObj.username || 'System', 'ADDED', itemId, itemName]
+            `INSERT INTO boq_history (version_id, user_id, user_full_name, action, reason, item_id, item_name) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [version_id, userObj.id || 'system', userObj.fullName || userObj.username || 'System', 'ADDED', req.body.reason || null, itemId, itemName]
           );
         }
 

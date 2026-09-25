@@ -25,6 +25,7 @@ import * as XLSX from 'xlsx';
 import { DeleteConfirmationDialog } from "../../components/ui/DeleteConfirmationDialog";
 import { ProductAnalysisDialog } from "@/components/ProductAnalysisDialog";
 import { GenerateQuoteDialog } from "./components/GenerateQuoteDialog";
+import { AddReasonDialog } from "./components/AddReasonDialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import {
   Table,
@@ -43,6 +44,7 @@ import { useData } from "../../lib/store";
 
 import { Project, BOMVersion, BOMItem, Product, Step11Item, BOMHistory, BOMComment, User, PROJECT_STATUSES, getProjectStatusMeta } from './types';
 import { parseTableData, parseImages, safeJson, VERSION_LABEL } from './utils';
+import { buildProductTemplateSnapshot, summarizeTemplateConfig, TemplateSaveMode, TemplateLiveState } from './components/templateSnapshot';
 import { CodeBadge } from './components/CodeBadge';
 import { PriceUpdateBanner } from './components/PriceUpdateBanner';
 import { ProjectPricingBanner } from './components/ProjectPricingBanner';
@@ -226,6 +228,8 @@ export default function CreateBom() {
   const [materialsById, setMaterialsById] = useState<Record<string, any>>({});
   const [isUpdatingRates, setIsUpdatingRates] = useState(false);
   const [showQtyIncreaseDialog, setShowQtyIncreaseDialog] = useState(false);
+  const [showAddReasonDialog, setShowAddReasonDialog] = useState(false);
+  const [pendingSaveData, setPendingSaveData] = useState<any>(null);
   const [qtyIncreases, setQtyIncreases] = useState<any[]>([]);
   const [pendingAddProductData, setPendingAddProductData] = useState<any>(null);
   const [ignoredMismatches, setIgnoredMismatches] = useState<Set<string>>(new Set());
@@ -429,6 +433,9 @@ export default function CreateBom() {
   const [previewApprovalItems, setPreviewApprovalItems] = useState<any[]>([]);
   const [loadingPreviewItems, setLoadingPreviewItems] = useState(false);
   const [templateToSave, setTemplateToSave] = useState<BOMItem | null>(null);
+  // What the product card was showing when "Save as template" was clicked (Project Target, hidden rows)
+  const [templateLive, setTemplateLive] = useState<TemplateLiveState>(null);
+  const [templateSaveMode, setTemplateSaveMode] = useState<TemplateSaveMode>("full");
   const [newTemplateName, setNewTemplateName] = useState("");
   const [templateSearch, setTemplateSearch] = useState("");
   const [deleteConfirm, setDeleteConfirm] = useState<{ isOpen: boolean; type: 'template' | 'sketch' | 'version'; id: string; name: string } | null>(null);
@@ -710,6 +717,7 @@ export default function CreateBom() {
         loadTemplates();
         setShowSaveTemplateDialog(false);
         setNewTemplateName("");
+        setTemplateLive(null);
       } else {
         const error = await resp.json();
         toast({ title: "Error", description: error.message || "Failed to save template", variant: "destructive" });
@@ -731,6 +739,8 @@ export default function CreateBom() {
     try {
       // Resolve latest category from master data if possible
       let finalConfig = { ...template.config };
+      // internal marker written by "Save as template" — not part of the product itself
+      delete (finalConfig as any).template_mode;
       if (finalConfig.product_id) {
         try {
           const prodRes = await apiFetch("/api/products");
@@ -2538,6 +2548,17 @@ export default function CreateBom() {
 
   const handleAddMaterialToBoq = async (template: any, qty: number = 1) => {
     if (isSaving) return;
+
+    let reason = undefined;
+    if (selectedVersion && selectedVersion.version_number > 1) {
+      const r = window.prompt(`Please enter a mandatory justification for adding "${template.name}":`);
+      if (!r || !r.trim()) {
+        toast({ title: "Reason Required", description: "You must provide a reason for adding items to an amended version.", variant: "destructive" });
+        return;
+      }
+      reason = r.trim();
+    }
+
     const rate = Number(template.rate ?? template.supply_rate ?? template.default_rate ?? 0) || 0;
     const futureVal = currentProjectValue + (rate * qty);
     await withBudgetCheck(() => futureVal, async () => {
@@ -2570,6 +2591,7 @@ export default function CreateBom() {
             project_id: selectedProjectId,
             version_id: selectedVersionId,
             estimator: `material_${template.id}`,
+            reason: reason,
             table_data: {
               product_name: template.name,
               category: category || "General",
@@ -2830,7 +2852,7 @@ export default function CreateBom() {
     } catch { toast({ title: "Error", description: "Failed to add product", variant: "destructive" }); }
   });
 
-  const saveBoqItem = async (tableData: any) => {
+  const executeSaveBoqItem = async (tableData: any, reason?: string) => {
     const product = selectedProduct;
     if (!product || !selectedProjectId || !selectedVersionId || isSaving) return;
     setIsSaving(true);
@@ -2842,19 +2864,29 @@ export default function CreateBom() {
           project_id: selectedProjectId,
           version_id: selectedVersionId,
           estimator: getEstimatorTypeFromProduct(product) || "General",
-          table_data: tableData
+          table_data: tableData,
+          reason
         })
       });
       if (!res.ok) throw new Error("Failed to save");
       const newItem = await res.json();
       setBoqItems(prev => [...prev, newItem]);
-      toast({ title: "Success", description: `Added ${selectedProduct.name}` });
+      toast({ title: "Success", description: `Added ${product.name}` });
       setShowStep11Preview(false); setSelectedProduct(null); setPendingItems([]);
       loadTemplates();
     } catch (err) {
       toast({ title: "Error", description: "Failed to save BOQ item", variant: "destructive" });
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const saveBoqItem = async (tableData: any) => {
+    if (selectedVersion && selectedVersion.version_number > 1) {
+      setPendingSaveData(tableData);
+      setShowAddReasonDialog(true);
+    } else {
+      await executeSaveBoqItem(tableData);
     }
   };
 
@@ -4580,8 +4612,10 @@ export default function CreateBom() {
                                           }}
                                           mismatches={activeMismatches.filter(m => m.boqItemId === boqItem.id)}
                                           isCompactView={isCompactView}
-                                          onSaveAsTemplate={(item) => {
+                                          onSaveAsTemplate={(item, live) => {
                                             setTemplateToSave(item);
+                                            setTemplateLive(live || null);
+                                            setTemplateSaveMode("full");
                                             setNewTemplateName(parseTableData(item.table_data).product_name || item.estimator);
                                             setShowSaveTemplateDialog(true);
                                           }}
@@ -5015,6 +5049,17 @@ export default function CreateBom() {
         </DialogContent>
       </Dialog>
 
+      <AddReasonDialog
+        open={showAddReasonDialog}
+        onOpenChange={setShowAddReasonDialog}
+        targetLabel={pendingSaveData?.product_name || "this item"}
+        onConfirm={async (reason) => {
+          if (pendingSaveData) {
+            await executeSaveBoqItem(pendingSaveData, reason);
+          }
+        }}
+      />
+
       {/* Budget warning dialogs removed for Generate BOM page */}
 
       {/* Load Template Dialog */}
@@ -5071,6 +5116,14 @@ export default function CreateBom() {
                               <span className="text-[10px] text-slate-500 uppercase font-medium">
                                 {template.config?.product_name || "Custom Product"} • Created {new Date(template.created_at).toLocaleDateString()}
                               </span>
+                              {(() => {
+                                const sum = summarizeTemplateConfig(template.config);
+                                const bits: string[] = [];
+                                if (sum.target !== null) bits.push(`Project Target ${sum.target} ${sum.unit}`);
+                                bits.push(`${sum.lineCount} line item${sum.lineCount === 1 ? "" : "s"}`);
+                                if (sum.mode === "full_product") bits.push("Full product");
+                                return <span className="text-[10px] text-slate-400 font-medium">{bits.join(" • ")}</span>;
+                              })()}
                             </div>
                             <div className="flex items-center gap-2">
                               <Button variant="outline" size="sm" onClick={() => handleApplyTemplate(template)} className="h-8 text-xs font-bold">
@@ -5141,7 +5194,7 @@ export default function CreateBom() {
               Save as BOM Template
             </DialogTitle>
             <DialogDescription>
-              Enter a name for this template to reuse it in other projects.
+              Enter a name for this template to reuse it in other projects. It is saved exactly as this product looks right now.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -5159,16 +5212,47 @@ export default function CreateBom() {
               <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
                 <div className="text-[10px] uppercase font-bold text-slate-400 mb-1">Product Details</div>
                 <div className="text-xs font-bold text-slate-700">{parseTableData(templateToSave.table_data).product_name || templateToSave.estimator}</div>
+                {(() => {
+                  const latest = boqItems.find(b => b.id === templateToSave.id) || templateToSave;
+                  const sum = summarizeTemplateConfig(
+                    buildProductTemplateSnapshot(latest.id, parseTableData(latest.table_data), editedFields, templateLive, templateSaveMode)
+                  );
+                  return (
+                    <div className="text-[11px] text-slate-500 mt-1">
+                      {sum.target !== null && <span className="font-semibold text-blue-600">Project Target: {sum.target} {sum.unit} • </span>}
+                      {sum.lineCount} line item{sum.lineCount === 1 ? "" : "s"}
+                    </div>
+                  );
+                })()}
               </div>
             )}
+            <div className="space-y-2">
+              <Label>What to save</Label>
+              <label className={cn("flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors", templateSaveMode === "full" ? "border-green-500 bg-green-50" : "border-slate-200 hover:bg-slate-50")}>
+                <input type="radio" name="templateSaveMode" className="mt-0.5" checked={templateSaveMode === "full"} onChange={() => setTemplateSaveMode("full")} />
+                <div>
+                  <div className="text-xs font-bold text-slate-800">Full product (exact copy)</div>
+                  <div className="text-[11px] text-slate-500">Project Target, every line item with its current qty, rates and description, plus every change made on this card.</div>
+                </div>
+              </label>
+              <label className={cn("flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors", templateSaveMode === "items" ? "border-green-500 bg-green-50" : "border-slate-200 hover:bg-slate-50")}>
+                <input type="radio" name="templateSaveMode" className="mt-0.5" checked={templateSaveMode === "items"} onChange={() => setTemplateSaveMode("items")} />
+                <div>
+                  <div className="text-xs font-bold text-slate-800">Line items only</div>
+                  <div className="text-[11px] text-slate-500">Same line items and rates, but the Project Target goes back to the product's default size.</div>
+                </div>
+              </label>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowSaveTemplateDialog(false)}>Cancel</Button>
             <Button
               onClick={() => {
                 if (!templateToSave) return;
-                const mergedData = getMergedTableData(templateToSave);
-                handleSaveAsTemplate(newTemplateName, mergedData);
+                // Always start from the LATEST copy of the product (templateToSave is only a click-time snapshot)
+                const latest = boqItems.find(b => b.id === templateToSave.id) || templateToSave;
+                const snapshot = buildProductTemplateSnapshot(latest.id, parseTableData(latest.table_data), editedFields, templateLive, templateSaveMode);
+                handleSaveAsTemplate(newTemplateName, snapshot);
               }}
               disabled={!newTemplateName.trim()}
               className="bg-green-600 hover:bg-green-700 text-white font-bold"
@@ -5619,8 +5703,10 @@ export default function CreateBom() {
               allProductNames: boqItems.map(bi => parseTableData(bi.table_data).product_name).filter(Boolean),
               mismatches: activeMismatches.filter(m => m.boqItemId === focusedItem.id),
               isCompactView,
-              onSaveAsTemplate: (item) => {
+              onSaveAsTemplate: (item, live) => {
                 setTemplateToSave(item);
+                setTemplateLive(live || null);
+                setTemplateSaveMode("full");
                 setNewTemplateName(parseTableData(item.table_data).product_name || item.estimator);
                 setShowSaveTemplateDialog(true);
               },

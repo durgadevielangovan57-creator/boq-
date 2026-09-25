@@ -44,6 +44,7 @@ import { EditableHsnSac } from './EditableHsnSac';
 import { BoqItemRow } from './BoqItemRow';
 import { IndicateReasonDialog } from './IndicateReasonDialog';
 import { SaveConfirmDialog, SaveAsWizardDialog, PendingManualItem } from './ManualItemSaveDialogs';
+import type { TemplateLiveState } from './templateSnapshot';
 
 /**
  * Icon-only action button (medium size) with a small hover tooltip showing
@@ -123,7 +124,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   isCardDragOver?: boolean;
   mismatches?: any[];
   isCompactView?: boolean;
-  onSaveAsTemplate?: (boqItem: BOMItem) => void;
+  onSaveAsTemplate?: (boqItem: BOMItem, live?: TemplateLiveState) => void;
   editedFields: Record<string, any>;
   comments: BOMComment[];
   users: User[];
@@ -1017,7 +1018,13 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                   label="Save as template"
                   tone="slate"
                   disabled={isVersionSubmitted}
-                  onClick={() => onSaveAsTemplate?.(boqItem)}
+                  onClick={() => onSaveAsTemplate?.(boqItem, {
+                    // What this card is showing right now — the Project Target box is only
+                    // written to the database on blur, and trash-hidden rows are card-local.
+                    targetRequiredQty: isEngineBased ? calculationTarget : undefined,
+                    hiddenMaterialLineIdx: Array.from(deletedMaterialLineIndexes) as number[],
+                    hiddenStep11Idx: Array.from(deletedS11Indexes) as number[],
+                  })}
                 />
                 {(!isVersionSubmitted && (bomButtonsEnabled || pendingManualItems.length > 0)) && (
                   <>
@@ -1367,6 +1374,9 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
         isSubmitting={isSubmittingSave}
         existingProductNames={existingProductNamesInVersion}
         onSubmit={handleSubmitSaveAs}
+        defaultUnitType={tableData.configBasis?.requiredUnitType}
+        defaultBaseQty={isEngineBased ? calculationTarget : undefined}
+        productId={tableData.product_id}
       />
 
       <DeleteConfirmationDialog

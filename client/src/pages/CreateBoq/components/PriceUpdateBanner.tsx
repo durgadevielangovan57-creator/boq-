@@ -106,23 +106,35 @@ export function PriceUpdateBanner({
               </tr>
             </thead>
             <tbody className="divide-y divide-amber-100">
-              {mismatches.map((m, idx) => (
-                <tr key={`${m.boqItemId}-${m.type}-${m.index}-${idx}`} className="hover:bg-amber-50/50">
-                  <td className="py-1.5 text-slate-500 font-semibold truncate max-w-[120px]" title={m.productName}>{m.productName}</td>
-                  <td className="py-1.5 font-bold truncate max-w-[200px]" title={m.name || "Item"}>{m.name || "Item"}</td>
-                  <td className="py-1.5 text-right">₹{m.old}</td>
-                  <td className="py-1.5 text-right font-bold text-red-600">₹{m.new}</td>
-                  <td className="py-1.5 flex justify-center gap-1">
-                    <Button variant="ghost" size="sm" className="h-6 text-[10px] px-1.5 text-blue-600 hover:bg-blue-50 font-bold" onClick={() => onViewSingle(m)}>View</Button>
-                    <Button variant="ghost" size="sm" className="h-6 text-[10px] px-1.5 text-slate-500 hover:bg-slate-100 font-bold" onClick={() => onIgnoreSingle(m)}>Ignore</Button>
-                    <Button variant="outline" size="sm" className="h-6 text-[10px] px-1.5 border-amber-300 text-amber-700 hover:bg-amber-100 font-bold bg-white" onClick={() => onApplySingle(m)}>Update</Button>
-                  </td>
-                </tr>
-              ))}
+              {mismatches.map((m, idx) => {
+                const oldVal = Number(m.old) || 0;
+                const newVal = Number(m.new) || 0;
+                const isIncrease = newVal > oldVal;
+                const isDecrease = newVal < oldVal;
+                return (
+                  <tr key={`${m.boqItemId}-${m.type}-${m.index}-${idx}`} className="hover:bg-amber-50/50">
+                    <td className="py-1.5 text-slate-500 font-semibold truncate max-w-[120px]" title={m.productName}>{m.productName}</td>
+                    <td className="py-1.5 font-bold truncate max-w-[200px]" title={m.name || "Item"}>{m.name || "Item"}</td>
+                    <td className="py-1.5 text-right">₹{m.old}</td>
+                    <td className={`py-1.5 text-right font-bold ${isIncrease ? "text-red-600" : isDecrease ? "text-green-600" : ""}`}>
+                      <span className="inline-flex items-center justify-end gap-0.5">
+                        {isIncrease && <ArrowUp className="h-3 w-3" />}
+                        {isDecrease && <ArrowDown className="h-3 w-3" />}
+                        ₹{m.new}
+                      </span>
+                    </td>
+                    <td className="py-1.5 flex justify-center gap-1">
+                      <Button variant="ghost" size="sm" className="h-6 text-[10px] px-1.5 text-blue-600 hover:bg-blue-50 font-bold" onClick={() => onViewSingle(m)}>View</Button>
+                      <Button variant="ghost" size="sm" className="h-6 text-[10px] px-1.5 text-slate-500 hover:bg-slate-100 font-bold" onClick={() => onIgnoreSingle(m)}>Ignore</Button>
+                      <Button variant="outline" size="sm" className="h-6 text-[10px] px-1.5 border-amber-300 text-amber-700 hover:bg-amber-100 font-bold bg-white" onClick={() => onApplySingle(m)}>Update</Button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
     </div>
   );
-}
+}

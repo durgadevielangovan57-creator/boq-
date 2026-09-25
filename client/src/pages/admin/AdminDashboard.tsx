@@ -2549,10 +2549,18 @@ export default function AdminDashboard() {
                       <div className="w-40 flex items-center justify-start gap-1.5 shrink-0">
                         <Button
                           size="sm"
-                          onClick={() => setShowShopsList(!showShopsList)}
+                          onClick={() => {
+                            const next = !showShopsList;
+                            setShowShopsList(next);
+                            if (next) {
+                              setTimeout(() => {
+                                document.getElementById("shops-list-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                              }, 50);
+                            }
+                          }}
                           className="h-8 px-2.5 text-xs bg-violet-600 hover:bg-violet-700 text-white gap-1"
                         >
-                          View <ChevronRight className="h-3.5 w-3.5" />
+                          {showShopsList ? "Hide" : "View"} {showShopsList ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                         </Button>
                         <Button
                           variant="outline"
@@ -2582,10 +2590,18 @@ export default function AdminDashboard() {
                       <div className="w-40 flex items-center justify-start gap-1.5 shrink-0">
                         <Button
                           size="sm"
-                          onClick={() => setShowMaterialsList(!showMaterialsList)}
+                          onClick={() => {
+                            const next = !showMaterialsList;
+                            setShowMaterialsList(next);
+                            if (next) {
+                              setTimeout(() => {
+                                document.getElementById("materials-list-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                              }, 50);
+                            }
+                          }}
                           className="h-8 px-2.5 text-xs bg-violet-600 hover:bg-violet-700 text-white gap-1"
                         >
-                          View <ChevronRight className="h-3.5 w-3.5" />
+                          {showMaterialsList ? "Hide" : "View"} {showMaterialsList ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                         </Button>
                         <Button
                           variant="outline"
@@ -2624,10 +2640,18 @@ export default function AdminDashboard() {
                       <div className="w-40 flex items-center justify-start gap-1.5 shrink-0">
                         <Button
                           size="sm"
-                          onClick={() => setShowProductsList(!showProductsList)}
+                          onClick={() => {
+                            const next = !showProductsList;
+                            setShowProductsList(next);
+                            if (next) {
+                              setTimeout(() => {
+                                document.getElementById("products-list-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                              }, 50);
+                            }
+                          }}
                           className="h-8 px-2.5 text-xs bg-violet-600 hover:bg-violet-700 text-white gap-1"
                         >
-                          View <ChevronRight className="h-3.5 w-3.5" />
+                          {showProductsList ? "Hide" : "View"} {showProductsList ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                         </Button>
                       </div>
                     </div>
@@ -2635,7 +2659,7 @@ export default function AdminDashboard() {
                 </div>
 
                 {showShopsList && (
-                  <Card className="p-4">
+                  <Card id="shops-list-section" className="p-4 scroll-mt-24">
                     <div className="flex items-center justify-between mb-3">
                       <p className="font-semibold text-base flex items-center gap-2">
                         <Store className="h-4 w-4 text-green-600" /> All Shops
@@ -2821,7 +2845,7 @@ export default function AdminDashboard() {
                 )}
 
                 {showMaterialsList && (
-                  <Card className="p-4">
+                  <Card id="materials-list-section" className="p-4 scroll-mt-24">
                     <div className="flex items-center justify-between mb-3">
                       <p className="font-semibold text-base flex items-center gap-2">
                         <Layers className="h-4 w-4 text-purple-600" /> All Materials
@@ -2859,7 +2883,7 @@ export default function AdminDashboard() {
                 )}
 
                 {showProductsList && (
-                  <Card className="p-4">
+                  <Card id="products-list-section" className="p-4 scroll-mt-24">
                     <div className="flex items-center justify-between mb-3">
                       <p className="font-semibold text-base flex items-center gap-2">
                         <Package className="h-4 w-4 text-blue-600" /> All Products

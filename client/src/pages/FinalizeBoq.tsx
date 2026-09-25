@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { Reorder, useDragControls } from "framer-motion";
 import { Layout } from "@/components/layout/Layout";
@@ -184,6 +184,21 @@ const clampSupplyLabourPercent = (itemCols: any[], colName: string, proposedValu
   return proposedValue;
 };
 
+/**
+ * Detect whether every material / step11 line in the item has unit "LS".
+ * This mirrors the per-line LS check the BOM card already does
+ * (`isLumpSumLine` in BoqItemCard) so Finalize BOQ agrees with Generate BOM.
+ */
+const isAllLinesLS = (td: any): boolean => {
+  const lines: any[] =
+    (Array.isArray(td?.materialLines) && td.materialLines.length > 0)
+      ? td.materialLines
+      : (Array.isArray(td?.step11_items) ? td.step11_items : []);
+  return lines.length > 0 && lines.every((l: any) =>
+    String(l?.unit || "").trim().toLowerCase() === "ls"
+  );
+};
+
 const getItemMetrics = (td: any) => {
   const step11 = Array.isArray(td.step11_items) ? td.step11_items : [];
   let itemTotal = 0, itemQty = 0;
@@ -205,7 +220,7 @@ const getItemMetrics = (td: any) => {
   }
   let finalRate = itemQty > 0 ? itemTotal / itemQty : itemTotal;
 
-  if (td.is_lump_sum) {
+  if (td.is_lump_sum || isAllLinesLS(td)) {
     itemQty = 1;
     finalRate = itemTotal;
   }
@@ -241,6 +256,7 @@ const getItemMetrics = (td: any) => {
  *      moment before `productQuantities` has been seeded.
  *   4. Fallback to the first step11 item's qty, or 0.
  */
+
 const getEffectiveQty = (
   td: any,
   itemId: string,
@@ -248,7 +264,9 @@ const getEffectiveQty = (
   productUnits: { [id: string]: string },
   fallbackQty: number
 ): number => {
-  const isLumpSum = td?.is_lump_sum === true || productUnits[itemId]?.toLowerCase() === 'ls';
+  const isLumpSum = td?.is_lump_sum === true
+    || productUnits[itemId]?.toLowerCase() === 'ls'
+    || isAllLinesLS(td);
   if (isLumpSum) return 1;
   const manualQtyStr = productQuantities[itemId];
   if (manualQtyStr !== undefined) return parseFloat(manualQtyStr) || 0;
@@ -2426,6 +2444,11 @@ export default function FinalizeBoq() {
             }
             if (td.finalize_unit !== undefined && td.finalize_unit !== null) {
               restoredUnits[item.id] = String(td.finalize_unit);
+            } else if (!td.is_lump_sum && isAllLinesLS(td)) {
+              // Auto-detect LS from material lines / step11_items so that
+              // Finalize BOQ shows qty 1 for items where every line is LS,
+              // matching what Generate BOM already displays.
+              restoredUnits[item.id] = "LS";
             }
             if (td.finalize_override_rate !== undefined && td.finalize_override_rate !== null) {
               restoredOverrideRates[item.id] = String(td.finalize_override_rate);

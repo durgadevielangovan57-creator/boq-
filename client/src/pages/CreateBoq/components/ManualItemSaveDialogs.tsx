@@ -158,6 +158,8 @@ export function SaveAsWizardDialog({
   onSubmitSave,
   preDeletedIndexes,
   productId,
+  defaultUnitType,
+  defaultBaseQty,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -178,6 +180,12 @@ export function SaveAsWizardDialog({
    * saved Step 3 configuration (description, dims, wastage %, unit type)
    * can be fetched and prefilled instead of starting blank. */
   productId?: string;
+  /** Only used in "save_as" mode: the unit (e.g. "Meters") and Project Target (e.g. 50) of the
+   * product card the wizard was opened from. The wizard then starts as "Qty / 50 Meters"
+   * (each row's per-unit qty scaled to that target) instead of "Qty / 1 Sqft", so it matches
+   * what the card shows. Omit both to keep the old behaviour (1 Sqft). */
+  defaultUnitType?: string;
+  defaultBaseQty?: number;
 }) {
   const [step, setStep] = useState<1 | 2>(mode === "save" ? 2 : 1);
   // ── Save mode only: existing materials marked for removal. They stay
@@ -300,8 +308,11 @@ export function SaveAsWizardDialog({
       if (isSqftVariant && hasSqftVariant) return;
       if (!finalUnits.some(fu => fu.toLowerCase() === lowerU)) finalUnits.push(u);
     });
+    if (mode === "save_as" && defaultUnitType && !finalUnits.some(fu => fu.toLowerCase() === defaultUnitType.toLowerCase())) {
+      finalUnits.push(defaultUnitType);
+    }
     return finalUnits.sort();
-  }, [unitTypeMaterials]);
+  }, [unitTypeMaterials, mode, defaultUnitType]);
 
   const [addItemOpen, setAddItemOpen] = useState(false);
 
@@ -402,8 +413,10 @@ export function SaveAsWizardDialog({
     setDimA(undefined);
     setDimB(undefined);
     setDimC(undefined);
-    setRequiredUnitType("Sqft");
-    setBaseRequiredQty(1);
+    // save_as: start from the card's own unit + Project Target (per-unit qtys are scaled to match below)
+    const seedBase = mode === "save_as" && Number(defaultBaseQty) > 0 ? Number(defaultBaseQty) : 1;
+    setRequiredUnitType(mode === "save_as" && defaultUnitType ? defaultUnitType : "Sqft");
+    setBaseRequiredQty(seedBase);
     setWastagePctDefault(0);
     setIsMaximized(true);
     setIsCompactView(false);
@@ -416,7 +429,14 @@ export function SaveAsWizardDialog({
       initial[it.index] = {
         selected: true,
         // qtyPerSqf is the per-unit qty from renderLines (engine-computed or manual)
-        qty: Number(it.qtyPerSqf ?? it.qty ?? 0) || 0,
+        qty: (() => {
+          const perUnit = Number(it.qtyPerSqf ?? it.qty ?? 0) || 0;
+          if (seedBase === 1) return perUnit;
+          // LS rows are a single lump sum whatever the size; frozen rows carry a fixed total
+          if (String((it as any).unit || "").toLowerCase() === "ls") return perUnit;
+          if (it.freezeAndEdit || (it as any).freeze_and_edit) return Number((it as any).requiredQty ?? perUnit) || 0;
+          return Number((perUnit * seedBase).toFixed(4));
+        })(),
         wastagePct: Number(it.wastagePct) || 0,
         // renderLines stores rates as rateSqft (total rate), but individual supply/install
         // rates come from supply_rate / install_rate
@@ -431,17 +451,21 @@ export function SaveAsWizardDialog({
     setConfigByIndex(initial);
   }, [open, items]);
 
-  // ── Save mode only: the reset above always blanks the top-level
-  // Product Description / Dim A-C / Unit Type / Wastage % fields, since
-  // for "save_as" (a brand-new product) that's correct. But for "save"
-  // (editing an existing product in place) those fields belong to the
-  // product's already-saved Step 3 configuration and should be prefilled,
-  // not left blank. Fetch it once per genuine open, right after the reset
-  // above has run, and fill in the fields it finds. ──────────────────────
+  // ── The reset above always blanks the top-level Product Description /
+  // Dim A-C / Unit Type / Wastage % fields. For "save" (editing an existing
+  // product in place) those fields belong to the product's already-saved
+  // Step 3 configuration and should be prefilled, not left blank. For
+  // "save_as" (a brand-new product cloned from an existing one) the dims /
+  // wastage still start fresh (and unit type / base qty are already seeded
+  // above from defaultUnitType/defaultBaseQty when provided) — but the
+  // Description is still copied over as a starting point (the user typed it
+  // once already; they can edit or clear it here), since it's just
+  // descriptive text, not physical config. Fetch it once per genuine open,
+  // right after the reset above has run, and fill in the fields it finds. ─
   const prefillFetchedRef = useRef(false);
   useEffect(() => {
     if (!open) { prefillFetchedRef.current = false; return; }
-    if (mode !== "save" || !productId) return;
+    if (!productId || (mode !== "save" && mode !== "save_as")) return;
     if (prefillFetchedRef.current) return;
     prefillFetchedRef.current = true;
     (async () => {
@@ -451,12 +475,16 @@ export function SaveAsWizardDialog({
         const { config } = await res.json();
         if (!config) return;
         setProductDescription(config.description || "");
-        setDimA(config.dim_a !== null && config.dim_a !== undefined ? Number(config.dim_a) : undefined);
-        setDimB(config.dim_b !== null && config.dim_b !== undefined ? Number(config.dim_b) : undefined);
-        setDimC(config.dim_c !== null && config.dim_c !== undefined ? Number(config.dim_c) : undefined);
-        setRequiredUnitType(config.required_unit_type || "Sqft");
-        setBaseRequiredQty(Number(config.base_required_qty || 1));
-        setWastagePctDefault(Number(config.wastage_pct_default || 0));
+        if (mode === "save") {
+          // Dims / unit type / wastage only carry over for in-place edits —
+          // "save_as" keeps what the reset above already seeded for these.
+          setDimA(config.dim_a !== null && config.dim_a !== undefined ? Number(config.dim_a) : undefined);
+          setDimB(config.dim_b !== null && config.dim_b !== undefined ? Number(config.dim_b) : undefined);
+          setDimC(config.dim_c !== null && config.dim_c !== undefined ? Number(config.dim_c) : undefined);
+          setRequiredUnitType(config.required_unit_type || "Sqft");
+          setBaseRequiredQty(Number(config.base_required_qty || 1));
+          setWastagePctDefault(Number(config.wastage_pct_default || 0));
+        }
       } catch (err) {
         console.error("Failed to load existing product configuration for prefill:", err);
       }
