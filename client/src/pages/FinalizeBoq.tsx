@@ -4348,7 +4348,10 @@ export default function FinalizeBoq() {
         // Totals — same calc as row render
         let _exTotal = 0;
         let _exRate = 0;
-        if (tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
+        // Items converted to Lump Sum always use the step11 breakup total, never a
+        // leftover targetRequiredQty/materialLines from before the conversion — see
+        // isLumpSum guard note below.
+        if (!isLumpSum && tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
           if (tableData.materialLines) {
             const _res = computeBoq(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
             const _manTot = currentStep11Items.filter((it: any) => it.manual).reduce((s: number, it: any) =>
@@ -4364,7 +4367,23 @@ export default function FinalizeBoq() {
             s + (it.qty || 0) * ((it.supply_rate || 0) + (it.install_rate || 0)), 0);
           _exRate = (currentStep11Items[0]?.qty ?? 0) > 0 ? _exTotal / (currentStep11Items[0]?.qty || 1) : _exTotal;
         }
-        const rateSqft = (tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls') ? _exTotal : _exRate;
+        let rateSqft = (tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls') ? _exTotal : _exRate;
+
+        // ── Fixed-rate / standard-rate override (mirrors getItemMetrics) ──
+        if (tableData.use_standard_rate && tableData.materialLines) {
+          try {
+            const baseQty = Number(tableData.configBasis?.baseRequiredQty || 1);
+            const resBase = computeBoq(
+              { ...tableData.configBasis, wastagePctDefault: 0 },
+              tableData.materialLines.map((l: any) => ({ ...l, applyWastage: false })),
+              baseQty
+            );
+            rateSqft = resBase.grandTotal / baseQty;
+          } catch { }
+        } else if (tableData.use_fixed_rate) {
+          rateSqft = Number(tableData.fixed_rate || 0);
+        }
+
         const totalVal = rateSqft * displayQty;
 
         const manualDesc = productDescriptions[boqItem.id] ?? (
@@ -4664,7 +4683,9 @@ export default function FinalizeBoq() {
         // Totals — same calc as row render
         let _total = 0;
         let _rateSqft = 0;
-        if (tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
+        // Items converted to Lump Sum always use the step11 breakup total, never a
+        // leftover targetRequiredQty/materialLines from before the conversion.
+        if (!isLumpSum && tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
           if (tableData.materialLines) {
             const _result = computeBoq(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
             const _manualTotal = currentStep11Items.filter((it: any) => it.manual).reduce((s: number, it: any) =>
@@ -4680,7 +4701,23 @@ export default function FinalizeBoq() {
             s + (it.qty || 0) * ((it.supply_rate || 0) + (it.install_rate || 0)), 0);
           _rateSqft = (currentStep11Items[0]?.qty ?? 0) > 0 ? _total / (currentStep11Items[0]?.qty || 1) : _total;
         }
-        const rateSqft = (tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls') ? _total : _rateSqft;
+        let rateSqft = (tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls') ? _total : _rateSqft;
+
+        // ── Fixed-rate / standard-rate override (mirrors getItemMetrics) ──
+        if (tableData.use_standard_rate && tableData.materialLines) {
+          try {
+            const baseQty = Number(tableData.configBasis?.baseRequiredQty || 1);
+            const resBase = computeBoq(
+              { ...tableData.configBasis, wastagePctDefault: 0 },
+              tableData.materialLines.map((l: any) => ({ ...l, applyWastage: false })),
+              baseQty
+            );
+            rateSqft = resBase.grandTotal / baseQty;
+          } catch { }
+        } else if (tableData.use_fixed_rate) {
+          rateSqft = Number(tableData.fixed_rate || 0);
+        }
+
         const totalVal = rateSqft * displayQty;
 
         const manualDesc = productDescriptions[boqItem.id] ?? (
@@ -7350,9 +7387,14 @@ export default function FinalizeBoq() {
                         // delta items added after the version already existed.
                         const isNewlySynced = !!tableData.synced_from_bom_at;
 
+                        // When Convert to LS: use grand total as rate, qty becomes 1. Also,
+                        // items converted to Lump Sum always use the step11 breakup total,
+                        // never a leftover targetRequiredQty/materialLines from before the
+                        // conversion.
+                        const isLumpSum = tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls';
                         let total = 0;
                         let rateSqft = 0;
-                        if (tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
+                        if (!isLumpSum && tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
                           if (tableData.materialLines) {
                             const result = computeBoq(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
                             const manualTotal = currentStep11Items.filter((it: any) => it.manual).reduce((s: number, it: any) =>
@@ -7368,11 +7410,25 @@ export default function FinalizeBoq() {
                             s + (it.qty || 0) * ((it.supply_rate || 0) + (it.install_rate || 0)), 0);
                           rateSqft = (currentStep11Items[0]?.qty ?? 0) > 0 ? total / (currentStep11Items[0]?.qty || 1) : total;
                         }
-
-                        // When Convert to LS: use grand total as rate, qty becomes 1
-                        const isLumpSum = tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls';
                         if (isLumpSum) {
                           rateSqft = total;
+                        }
+
+                        // ── Fixed-rate / standard-rate override (mirrors getItemMetrics) ──
+                        if (tableData.use_standard_rate && tableData.materialLines) {
+                          try {
+                            const baseQty = Number(tableData.configBasis?.baseRequiredQty || 1);
+                            const resBase = computeBoq(
+                              { ...tableData.configBasis, wastagePctDefault: 0 },
+                              tableData.materialLines.map((l: any) => ({ ...l, applyWastage: false })),
+                              baseQty
+                            );
+                            rateSqft = resBase.grandTotal / baseQty;
+                            total = rateSqft * (isLumpSum ? 1 : (tableData.targetRequiredQty || 1));
+                          } catch { }
+                        } else if (tableData.use_fixed_rate) {
+                          rateSqft = Number(tableData.fixed_rate || 0);
+                          total = rateSqft * (isLumpSum ? 1 : (tableData.targetRequiredQty || 1));
                         }
 
                         const manualDesc = productDescriptions[boqItem.id] ?? (

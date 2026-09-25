@@ -774,6 +774,16 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                   updateEditedField(boqItem.id, "is_lump_sum", checked);
                   try {
                     let updatedTd = { ...tableData, is_lump_sum: checked };
+                    // Converting TO lump sum: drop the engine-driven fields so nothing
+                    // downstream (Finalize BOQ, exports) can recompute rate/qty from a
+                    // stale targetRequiredQty/materialLines/configBasis left over from
+                    // before the conversion. The step11_items breakup — which is what
+                    // Finalize BOQ actually totals for an LS item — is left untouched.
+                    if (checked) {
+                      delete updatedTd.targetRequiredQty;
+                      delete updatedTd.materialLines;
+                      delete updatedTd.configBasis;
+                    }
                     const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
                     if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
                   } catch (err) { console.error("Failed to save is_lump_sum", err); }

@@ -70,9 +70,14 @@ export async function linkVersionToSketchPlan(versionId: string, sketchPlanId: s
 // The sketch-owned values of a converted sketch item. Stored on the BOQ item as
 // `sketch_sync_snapshot` so the next sync can tell which fields the SKETCH actually
 // changed, as opposed to fields someone edited on the BOM/BOQ side.
+//
+// NOTE: `targetRequiredQty` (the BOM's "Project Target"/Qty) is deliberately NOT
+// included here. Quantity on the BOM side is owned by Generate BOM, and Finalize
+// BOQ always trusts it as-is. The sketch's own qty can differ (it's just a layout
+// takeoff) and must never silently overwrite a qty someone set on the BOM item —
+// that was causing Finalize BOQ to show the sketch's qty instead of the BOM's.
 const sketchSnapshotOf = (t: any) => ({
   product_name: t.product_name,
-  targetRequiredQty: t.targetRequiredQty,
   requiredUnitType: t.requiredUnitType,
   category: t.category || t.category_name || "",
   remarks: t.remarks,
@@ -127,7 +132,8 @@ export async function syncSketchPlanToBoq(sketchPlanId: string) {
       );
       if (mapRes.rows.length > 0) {
         const boqItemId = mapRes.rows[0].boq_item_id;
-        // Update only shared fields: product_name, targetRequiredQty, requiredUnitType, category, remarks
+        // Update only shared fields: product_name, requiredUnitType, category, remarks, finalize_description.
+        // Qty (targetRequiredQty) is intentionally excluded — see sketchSnapshotOf above.
         const existingRes = await query(`SELECT table_data, computed_value FROM boq_items WHERE id = $1 LIMIT 1`, [boqItemId]);
         if (existingRes.rows.length === 0) continue;
         let existing = existingRes.rows[0].table_data;
@@ -136,10 +142,10 @@ export async function syncSketchPlanToBoq(sketchPlanId: string) {
           try { existing = JSON.parse(existing); } catch { existing = {}; }
         }
         // Only take a field from the sketch when the SKETCH changed it since the
-        // last sync. Previously every sketch save overwrote target qty, unit,
-        // name, category, remarks and description on every mapped BOM item with the
-        // sketch's values, silently reverting anything edited on the BOM side
-        // (e.g. a description or project target changed the day before).
+        // last sync. Previously every sketch save overwrote unit, name, category,
+        // remarks and description on every mapped BOM item with the sketch's
+        // values, silently reverting anything edited on the BOM side (e.g. a
+        // description changed the day before).
         // Items with no snapshot yet (created before this change) are only
         // seeded here, not overwritten; from the next sync on, sketch edits apply.
         const sketchNow: Record<string, any> = sketchSnapshotOf(tData);
