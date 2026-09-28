@@ -44,7 +44,6 @@ import { EditableHsnSac } from './EditableHsnSac';
 import { BoqItemRow } from './BoqItemRow';
 import { IndicateReasonDialog } from './IndicateReasonDialog';
 import { SaveConfirmDialog, SaveAsWizardDialog, PendingManualItem } from './ManualItemSaveDialogs';
-import type { TemplateLiveState } from './templateSnapshot';
 
 /**
  * Icon-only action button (medium size) with a small hover tooltip showing
@@ -124,7 +123,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   isCardDragOver?: boolean;
   mismatches?: any[];
   isCompactView?: boolean;
-  onSaveAsTemplate?: (boqItem: BOMItem, live?: TemplateLiveState) => void;
+  onSaveAsTemplate?: (boqItem: BOMItem) => void;
   editedFields: Record<string, any>;
   comments: BOMComment[];
   users: User[];
@@ -721,7 +720,8 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   // Final grand total reflects the standard rate if used
   const grandTotalValue = useStandardRate ? (standardRate * calculationTarget) : totalAmount;
   const displayQty = isLumpSum ? 1 : calculationTarget;
-  const displayRate = isLumpSum ? grandTotalValue : ratePerUnit;
+  // Convert to LS must not change the rate — only Project Target (shown as 1) and unit (LS) change.
+  const displayRate = ratePerUnit;
 
   const roundOffAdjustment = grandTotalValue - totalAmount;
 
@@ -774,16 +774,6 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                   updateEditedField(boqItem.id, "is_lump_sum", checked);
                   try {
                     let updatedTd = { ...tableData, is_lump_sum: checked };
-                    // Converting TO lump sum: drop the engine-driven fields so nothing
-                    // downstream (Finalize BOQ, exports) can recompute rate/qty from a
-                    // stale targetRequiredQty/materialLines/configBasis left over from
-                    // before the conversion. The step11_items breakup — which is what
-                    // Finalize BOQ actually totals for an LS item — is left untouched.
-                    if (checked) {
-                      delete updatedTd.targetRequiredQty;
-                      delete updatedTd.materialLines;
-                      delete updatedTd.configBasis;
-                    }
                     const resp = await apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) });
                     if (resp.ok) { setBoqItems((prev: BOMItem[]) => prev.map((i: BOMItem) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i)); }
                   } catch (err) { console.error("Failed to save is_lump_sum", err); }
@@ -1028,13 +1018,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                   label="Save as template"
                   tone="slate"
                   disabled={isVersionSubmitted}
-                  onClick={() => onSaveAsTemplate?.(boqItem, {
-                    // What this card is showing right now — the Project Target box is only
-                    // written to the database on blur, and trash-hidden rows are card-local.
-                    targetRequiredQty: isEngineBased ? calculationTarget : undefined,
-                    hiddenMaterialLineIdx: Array.from(deletedMaterialLineIndexes) as number[],
-                    hiddenStep11Idx: Array.from(deletedS11Indexes) as number[],
-                  })}
+                  onClick={() => onSaveAsTemplate?.(boqItem)}
                 />
                 {(!isVersionSubmitted && (bomButtonsEnabled || pendingManualItems.length > 0)) && (
                   <>
@@ -1384,9 +1368,6 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
         isSubmitting={isSubmittingSave}
         existingProductNames={existingProductNamesInVersion}
         onSubmit={handleSubmitSaveAs}
-        defaultUnitType={tableData.configBasis?.requiredUnitType}
-        defaultBaseQty={isEngineBased ? calculationTarget : undefined}
-        productId={tableData.product_id}
       />
 
       <DeleteConfirmationDialog

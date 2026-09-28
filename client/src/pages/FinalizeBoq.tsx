@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from "react";
+﻿import React, { useEffect, useState, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { Reorder, useDragControls } from "framer-motion";
 import { Layout } from "@/components/layout/Layout";
@@ -4351,7 +4351,7 @@ export default function FinalizeBoq() {
         // Items converted to Lump Sum always use the step11 breakup total, never a
         // leftover targetRequiredQty/materialLines from before the conversion — see
         // isLumpSum guard note below.
-        if (!isLumpSum && tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
+        if (tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
           if (tableData.materialLines) {
             const _res = computeBoq(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
             const _manTot = currentStep11Items.filter((it: any) => it.manual).reduce((s: number, it: any) =>
@@ -4685,7 +4685,7 @@ export default function FinalizeBoq() {
         let _rateSqft = 0;
         // Items converted to Lump Sum always use the step11 breakup total, never a
         // leftover targetRequiredQty/materialLines from before the conversion.
-        if (!isLumpSum && tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
+        if (tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
           if (tableData.materialLines) {
             const _result = computeBoq(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
             const _manualTotal = currentStep11Items.filter((it: any) => it.manual).reduce((s: number, it: any) =>
@@ -7394,7 +7394,7 @@ export default function FinalizeBoq() {
                         const isLumpSum = tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls';
                         let total = 0;
                         let rateSqft = 0;
-                        if (!isLumpSum && tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
+                        if (tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
                           if (tableData.materialLines) {
                             const result = computeBoq(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
                             const manualTotal = currentStep11Items.filter((it: any) => it.manual).reduce((s: number, it: any) =>
