@@ -720,8 +720,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   // Final grand total reflects the standard rate if used
   const grandTotalValue = useStandardRate ? (standardRate * calculationTarget) : totalAmount;
   const displayQty = isLumpSum ? 1 : calculationTarget;
-  // Convert to LS must not change the rate — only Project Target (shown as 1) and unit (LS) change.
-  const displayRate = ratePerUnit;
+  const displayRate = isLumpSum ? grandTotalValue : ratePerUnit;
 
   const roundOffAdjustment = grandTotalValue - totalAmount;
 
