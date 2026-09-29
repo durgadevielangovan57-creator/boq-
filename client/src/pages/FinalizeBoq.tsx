@@ -199,6 +199,24 @@ const isAllLinesLS = (td: any): boolean => {
   );
 };
 
+// Computes an item's total the normal way (materialLines + target, or
+// step11 items), ignoring is_lump_sum entirely. Used only to take a
+// one-time snapshot the moment an item becomes LS — see the freeze
+// effect near the boqItems/productUnits state below.
+const computeNaturalItemTotal = (td: any): number => {
+  const step11 = Array.isArray(td?.step11_items) ? td.step11_items : [];
+  if (td?.targetRequiredQty !== undefined && td?.targetRequiredQty !== null) {
+    if (td.materialLines) {
+      const res = computeBoq(td.configBasis, td.materialLines, td.targetRequiredQty);
+      const manualTotal = step11.filter((it: any) => it.manual).reduce((s: number, it: any) =>
+        s + (Number(it.qty) || 0) * (Number(it.supply_rate || 0) + Number(it.install_rate || 0)), 0);
+      return res.grandTotal + manualTotal;
+    }
+    return step11.reduce((s: number, it: any) => s + (it.qty || 0) * ((it.supply_rate || 0) + (it.install_rate || 0)), 0);
+  }
+  return step11.reduce((s: number, it: any) => s + (it.qty || 0) * ((it.supply_rate || 0) + (it.install_rate || 0)), 0);
+};
+
 const getItemMetrics = (td: any) => {
   const step11 = Array.isArray(td.step11_items) ? td.step11_items : [];
   let itemTotal = 0, itemQty = 0;
@@ -221,7 +239,11 @@ const getItemMetrics = (td: any) => {
   let finalRate = itemQty > 0 ? itemTotal / itemQty : itemTotal;
 
   if (td.is_lump_sum || isAllLinesLS(td)) {
+    // qty becomes 1, but the amount must stay exactly what it was when
+    // Convert to LS was ticked, not whatever itemTotal just came out to
+    // for this row's current targetRequiredQty.
     itemQty = 1;
+    itemTotal = td.ls_frozen_total !== undefined ? Number(td.ls_frozen_total) : itemTotal;
     finalRate = itemTotal;
   }
 
@@ -1346,6 +1368,33 @@ export default function FinalizeBoq() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [productQuantities, setProductQuantities] = useState<{ [id: string]: string }>({});
   const [productUnits, setProductUnits] = useState<{ [id: string]: string }>({});
+
+  // Convert to LS, in Finalize BOQ, must not keep recalculating the Rate
+  // and Grand Total off whatever targetRequiredQty this row happens to
+  // carry. So the very first time an item is seen as LS (however that
+  // happened — typed "ls" into Unit here, arrived already LS from a BOM
+  // sync, or every line's unit is "LS") we snapshot whatever Rate/Grand
+  // Total it is showing right then into ls_frozen_total, and every LS
+  // calculation below reads that frozen value from then on instead of
+  // recomputing it. This only ever writes the snapshot once per item
+  // (guarded by ls_frozen_total being undefined), so it never overwrites
+  // a value that was already frozen.
+  useEffect(() => {
+    boqItems.forEach((boqItem) => {
+      let tableData: any = boqItem.table_data || {};
+      if (typeof tableData === "string") { try { tableData = JSON.parse(tableData); } catch { tableData = {}; } }
+      const isLS = tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls' || isAllLinesLS(tableData);
+      if (!isLS || tableData.ls_frozen_total !== undefined) return;
+      const naturalTotal = computeNaturalItemTotal(tableData);
+      const updatedTd = { ...tableData, ls_frozen_total: naturalTotal, ls_frozen_rate: naturalTotal };
+      apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) })
+        .then((resp) => {
+          if (resp.ok) setBoqItems((prev) => prev.map((i) => i.id === boqItem.id ? { ...i, table_data: updatedTd } : i));
+        })
+        .catch((err) => console.error("Failed to freeze LS total", err));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boqItems, productUnits]);
   const [overrideRates, setOverrideRates] = useState<{ [id: string]: string }>({});
   const [overrideTypes, setOverrideTypes] = useState<{ [id: string]: "value" | "percentage" }>({});
   const [globalOverrideType, setGlobalOverrideType] = useState<"value" | "percentage">("value");
@@ -4367,7 +4416,9 @@ export default function FinalizeBoq() {
             s + (it.qty || 0) * ((it.supply_rate || 0) + (it.install_rate || 0)), 0);
           _exRate = (currentStep11Items[0]?.qty ?? 0) > 0 ? _exTotal / (currentStep11Items[0]?.qty || 1) : _exTotal;
         }
-        let rateSqft = (tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls') ? _exTotal : _exRate;
+        const isLumpSumExRow = tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls';
+        if (isLumpSumExRow && tableData.ls_frozen_total !== undefined) { _exTotal = Number(tableData.ls_frozen_total); }
+        let rateSqft = isLumpSumExRow ? _exTotal : _exRate;
 
         // ── Fixed-rate / standard-rate override (mirrors getItemMetrics) ──
         if (tableData.use_standard_rate && tableData.materialLines) {
@@ -4701,7 +4752,9 @@ export default function FinalizeBoq() {
             s + (it.qty || 0) * ((it.supply_rate || 0) + (it.install_rate || 0)), 0);
           _rateSqft = (currentStep11Items[0]?.qty ?? 0) > 0 ? _total / (currentStep11Items[0]?.qty || 1) : _total;
         }
-        let rateSqft = (tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls') ? _total : _rateSqft;
+        const isLumpSumPdfRow = tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls';
+        if (isLumpSumPdfRow && tableData.ls_frozen_total !== undefined) { _total = Number(tableData.ls_frozen_total); }
+        let rateSqft = isLumpSumPdfRow ? _total : _rateSqft;
 
         // ── Fixed-rate / standard-rate override (mirrors getItemMetrics) ──
         if (tableData.use_standard_rate && tableData.materialLines) {
@@ -7411,6 +7464,7 @@ export default function FinalizeBoq() {
                           rateSqft = (currentStep11Items[0]?.qty ?? 0) > 0 ? total / (currentStep11Items[0]?.qty || 1) : total;
                         }
                         if (isLumpSum) {
+                          total = tableData.ls_frozen_total !== undefined ? Number(tableData.ls_frozen_total) : total;
                           rateSqft = total;
                         }
 
