@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import type { TemplateLiveState } from "./templateSnapshot";
 import { Reorder, useDragControls } from "framer-motion";
 import { ChevronUp, ChevronDown, Loader2, CheckCircle2, XCircle, Lock, History, Clock, Briefcase, MapPin, IndianRupee, GripVertical, Search, ArrowUp, ArrowLeft, ArrowRight, ArrowDown, Plus, Trash2, Save, MessageSquare, Users, ChevronsUpDown, Check, X, RefreshCw, Star, Edit, Reply, AlertTriangle, FileText, Maximize2, Ruler, Percent, Copy, AlignLeft } from "lucide-react";
 import { fuzzySearch, cn } from "@/lib/utils";
@@ -123,7 +124,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   isCardDragOver?: boolean;
   mismatches?: any[];
   isCompactView?: boolean;
-  onSaveAsTemplate?: (boqItem: BOMItem) => void;
+  onSaveAsTemplate?: (boqItem: BOMItem, live?: TemplateLiveState) => void;
   editedFields: Record<string, any>;
   comments: BOMComment[];
   users: User[];

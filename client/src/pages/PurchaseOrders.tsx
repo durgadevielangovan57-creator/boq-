@@ -38,6 +38,9 @@ import {
     XCircle,
     Truck,
     Trash2,
+    UploadCloud,
+    AlertCircle,
+    PlusCircle,
 } from "lucide-react";
 import {
     Table,
@@ -86,6 +89,10 @@ interface PurchaseOrder {
     version_id?: string;
     is_current_final_version?: boolean;
     materials_list?: string;
+    zoho_purchase_order_id?: string | null;
+    zoho_sync_status?: "not_synced" | "syncing" | "synced" | "failed" | null;
+    zoho_synced_at?: string | null;
+    zoho_sync_error?: string | null;
 }
 
 interface Project {
@@ -340,6 +347,388 @@ export default function PurchaseOrders() {
             });
         } finally {
             setMovingPoId(null);
+        }
+    };
+
+    // ===== Move to Zoho Books (additive; does not affect Annexure flow) =====
+    const [zohoSyncingId, setZohoSyncingId] = useState<string | null>(null);
+    const [zohoConfirmPo, setZohoConfirmPo] = useState<PurchaseOrder | null>(null);
+    const [zohoResultPo, setZohoResultPo] = useState<{
+        po: PurchaseOrder;
+        success: boolean;
+        message: string;
+        zohoPurchaseOrderId?: string;
+        syncedAt?: string;
+    } | null>(null);
+
+    // Manual vendor mapping fallback (used when automatic matching can't
+    // safely resolve a vendor - ambiguous or not found in Zoho Books).
+    const [zohoMappingPo, setZohoMappingPo] = useState<PurchaseOrder | null>(null);
+    const [zohoMappingCandidates, setZohoMappingCandidates] = useState<{ id: string; name: string }[]>([]);
+    const [zohoMappingSearch, setZohoMappingSearch] = useState("");
+    const [zohoMappingSearchResults, setZohoMappingSearchResults] = useState<{ id: string; name: string }[]>([]);
+    const [zohoMappingSearching, setZohoMappingSearching] = useState(false);
+    const [zohoMappingSavingId, setZohoMappingSavingId] = useState<string | null>(null);
+
+    // Manual material mapping fallback (used when automatic matching can't
+    // safely resolve a material - ambiguous or not found in Zoho Books).
+    // Also offers creating a brand-new Zoho Books item when it genuinely
+    // doesn't exist yet.
+    const [zohoMaterialMappingPo, setZohoMaterialMappingPo] = useState<PurchaseOrder | null>(null);
+    const [zohoMaterialMappingMaterialId, setZohoMaterialMappingMaterialId] = useState<string | null>(null);
+    const [zohoMaterialMappingMaterialName, setZohoMaterialMappingMaterialName] = useState<string>("");
+    const [zohoMaterialMappingMaterialRate, setZohoMaterialMappingMaterialRate] = useState<number>(0);
+    const [zohoMaterialMappingCandidates, setZohoMaterialMappingCandidates] = useState<{ id: string; name: string }[]>([]);
+    const [zohoMaterialMappingSearch, setZohoMaterialMappingSearch] = useState("");
+    const [zohoMaterialMappingSearchResults, setZohoMaterialMappingSearchResults] = useState<{ id: string; name: string }[]>([]);
+    const [zohoMaterialMappingSearching, setZohoMaterialMappingSearching] = useState(false);
+    const [zohoMaterialMappingSavingId, setZohoMaterialMappingSavingId] = useState<string | null>(null);
+    const [zohoMaterialCreating, setZohoMaterialCreating] = useState(false);
+    const [zohoMaterialCreateName, setZohoMaterialCreateName] = useState("");
+    const [zohoMaterialCreateRate, setZohoMaterialCreateRate] = useState("");
+
+    // One-time "set a default tax" flow - fires when a material's Zoho Books
+    // item has no tax of its own and no org-level default is configured yet.
+    // Zoho Books GST (India) organizations reject any PO line item without
+    // a Tax/Tax Exemption/Reverse Charge declared. Setting this once here
+    // fixes every future material that's missing its own tax, instead of
+    // hitting this dialog over and over for each one.
+    const [zohoTaxSetupPo, setZohoTaxSetupPo] = useState<PurchaseOrder | null>(null);
+    const [zohoTaxSetupMaterialName, setZohoTaxSetupMaterialName] = useState("");
+    const [zohoTaxes, setZohoTaxes] = useState<{ id: string; name: string }[]>([]);
+    const [zohoTaxesLoading, setZohoTaxesLoading] = useState(false);
+    const [zohoTaxesError, setZohoTaxesError] = useState<string | null>(null);
+    const [zohoTaxSavingId, setZohoTaxSavingId] = useState<string | null>(null);
+
+    const openZohoConfirm = (po: PurchaseOrder, e: React.MouseEvent) => {
+        e.stopPropagation();
+        setZohoConfirmPo(po);
+    };
+
+    const runZohoSync = async (po: PurchaseOrder) => {
+        setZohoSyncingId(po.id);
+        try {
+            const res = await apiFetch(`/api/zoho-books/purchase-orders/${po.id}/sync`, {
+                method: "POST",
+            });
+            const data = await res.json().catch(() => ({}));
+
+            if (res.ok) {
+                setPurchaseOrders((prev) =>
+                    prev.map((p) =>
+                        p.id === po.id
+                            ? {
+                                ...p,
+                                zoho_sync_status: "synced",
+                                zoho_purchase_order_id: data.zohoPurchaseOrderId,
+                                zoho_synced_at: data.zohoSyncedAt,
+                                zoho_sync_error: null,
+                            }
+                            : p
+                    )
+                );
+                setZohoResultPo({
+                    po,
+                    success: true,
+                    message: data.alreadySynced
+                        ? "This Purchase Order was already synced to Zoho Books."
+                        : "Purchase Order successfully moved to Zoho Books.",
+                    zohoPurchaseOrderId: data.zohoPurchaseOrderId,
+                    syncedAt: data.zohoSyncedAt,
+                });
+            } else {
+                const message = data.message || "Something went wrong while syncing to Zoho Books.";
+                setPurchaseOrders((prev) =>
+                    prev.map((p) =>
+                        p.id === po.id ? { ...p, zoho_sync_status: "failed", zoho_sync_error: message } : p
+                    )
+                );
+                if (data.taxSetupRequired) {
+                    // No tax available for this material and no org-level
+                    // default configured yet - offer a one-time picker
+                    // instead of a dead-end error (and instead of hitting
+                    // this same wall again for the next untaxed material).
+                    setZohoTaxSetupPo(po);
+                    setZohoTaxSetupMaterialName(data.materialName || "this material");
+                    fetchZohoTaxes();
+                } else if (data.zohoMappingRequired && data.mappingType === "material") {
+                    // Material mapping couldn't be resolved automatically - offer
+                    // manual mapping or creating a new Zoho Books item instead of
+                    // just showing a dead-end error.
+                    setZohoMaterialMappingPo(po);
+                    setZohoMaterialMappingMaterialId(data.materialId || null);
+                    setZohoMaterialMappingMaterialName(data.materialName || "this material");
+                    setZohoMaterialMappingMaterialRate(Number(data.materialRate) || 0);
+                    setZohoMaterialMappingCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+                    setZohoMaterialMappingSearch("");
+                    setZohoMaterialMappingSearchResults([]);
+                    setZohoMaterialCreateName(data.materialName || "");
+                    setZohoMaterialCreateRate(data.materialRate ? String(data.materialRate) : "");
+                } else if (data.zohoMappingRequired) {
+                    // Vendor mapping couldn't be resolved automatically - offer
+                    // manual mapping instead of just showing a dead-end error.
+                    setZohoMappingPo(po);
+                    setZohoMappingCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+                    setZohoMappingSearch("");
+                    setZohoMappingSearchResults([]);
+                } else {
+                    setZohoResultPo({ po, success: false, message });
+                }
+            }
+        } catch (error) {
+            const message = "Network error while syncing to Zoho Books. Please retry.";
+            setPurchaseOrders((prev) =>
+                prev.map((p) =>
+                    p.id === po.id ? { ...p, zoho_sync_status: "failed", zoho_sync_error: message } : p
+                )
+            );
+            setZohoResultPo({ po, success: false, message });
+        } finally {
+            setZohoSyncingId(null);
+        }
+    };
+
+    const handleSendToZohoBooks = async () => {
+        const po = zohoConfirmPo;
+        if (!po) return;
+        setZohoConfirmPo(null);
+        await runZohoSync(po);
+    };
+
+    const zohoMappingSearchTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+    const handleZohoMappingSearchChange = (value: string) => {
+        setZohoMappingSearch(value);
+        if (zohoMappingSearchTimer.current) clearTimeout(zohoMappingSearchTimer.current);
+        if (value.trim().length < 2) {
+            setZohoMappingSearchResults([]);
+            return;
+        }
+        zohoMappingSearchTimer.current = setTimeout(async () => {
+            setZohoMappingSearching(true);
+            try {
+                const res = await apiFetch(`/api/zoho-books/vendors/search?q=${encodeURIComponent(value.trim())}`);
+                const data = await res.json().catch(() => ({}));
+                setZohoMappingSearchResults(res.ok && Array.isArray(data.vendors) ? data.vendors : []);
+            } catch {
+                setZohoMappingSearchResults([]);
+            } finally {
+                setZohoMappingSearching(false);
+            }
+        }, 350);
+    };
+
+    const handleSelectZohoVendorMapping = async (vendor: { id: string; name: string }) => {
+        const po = zohoMappingPo;
+        if (!po) return;
+        setZohoMappingSavingId(vendor.id);
+        try {
+            const res = await apiFetch(`/api/zoho-books/purchase-orders/${po.id}/map-vendor`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ zohoContactId: vendor.id }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) {
+                toast({
+                    title: "Vendor mapped",
+                    description: `"${po.vendor_name || "Vendor"}" mapped to "${vendor.name}" in Zoho Books.`,
+                });
+                setZohoMappingPo(null);
+                setZohoMappingCandidates([]);
+                setZohoMappingSearchResults([]);
+                await runZohoSync(po);
+            } else {
+                toast({
+                    title: "Could not save mapping",
+                    description: data.message || "Please try again.",
+                    variant: "destructive",
+                });
+            }
+        } catch {
+            toast({
+                title: "Network error",
+                description: "Could not save vendor mapping. Please try again.",
+                variant: "destructive",
+            });
+        } finally {
+            setZohoMappingSavingId(null);
+        }
+    };
+
+    const zohoMaterialMappingSearchTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+    const handleZohoMaterialMappingSearchChange = (value: string) => {
+        setZohoMaterialMappingSearch(value);
+        if (zohoMaterialMappingSearchTimer.current) clearTimeout(zohoMaterialMappingSearchTimer.current);
+        if (value.trim().length < 2) {
+            setZohoMaterialMappingSearchResults([]);
+            return;
+        }
+        zohoMaterialMappingSearchTimer.current = setTimeout(async () => {
+            setZohoMaterialMappingSearching(true);
+            try {
+                const res = await apiFetch(`/api/zoho-books/items/search?q=${encodeURIComponent(value.trim())}`);
+                const data = await res.json().catch(() => ({}));
+                setZohoMaterialMappingSearchResults(res.ok && Array.isArray(data.items) ? data.items : []);
+            } catch {
+                setZohoMaterialMappingSearchResults([]);
+            } finally {
+                setZohoMaterialMappingSearching(false);
+            }
+        }, 350);
+    };
+
+    const closeZohoMaterialMappingDialog = () => {
+        setZohoMaterialMappingPo(null);
+        setZohoMaterialMappingMaterialId(null);
+        setZohoMaterialMappingMaterialName("");
+        setZohoMaterialMappingMaterialRate(0);
+        setZohoMaterialMappingCandidates([]);
+        setZohoMaterialMappingSearch("");
+        setZohoMaterialMappingSearchResults([]);
+        setZohoMaterialCreateName("");
+        setZohoMaterialCreateRate("");
+    };
+
+    const handleSelectZohoItemMapping = async (item: { id: string; name: string }) => {
+        const po = zohoMaterialMappingPo;
+        const materialId = zohoMaterialMappingMaterialId;
+        if (!po || !materialId) return;
+        setZohoMaterialMappingSavingId(item.id);
+        try {
+            const res = await apiFetch(`/api/zoho-books/purchase-orders/${po.id}/map-material`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ materialId, zohoItemId: item.id }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) {
+                toast({
+                    title: "Material mapped",
+                    description: `"${zohoMaterialMappingMaterialName}" mapped to "${item.name}" in Zoho Books.`,
+                });
+                closeZohoMaterialMappingDialog();
+                await runZohoSync(po);
+            } else {
+                toast({
+                    title: "Could not save mapping",
+                    description: data.message || "Please try again.",
+                    variant: "destructive",
+                });
+            }
+        } catch {
+            toast({
+                title: "Network error",
+                description: "Could not save material mapping. Please try again.",
+                variant: "destructive",
+            });
+        } finally {
+            setZohoMaterialMappingSavingId(null);
+        }
+    };
+
+    const handleCreateZohoMaterial = async () => {
+        const po = zohoMaterialMappingPo;
+        const materialId = zohoMaterialMappingMaterialId;
+        if (!po || !materialId) return;
+        const name = zohoMaterialCreateName.trim();
+        if (!name) {
+            toast({ title: "Item name required", description: "Please enter a name for the new item.", variant: "destructive" });
+            return;
+        }
+        const rate = Number(zohoMaterialCreateRate);
+        setZohoMaterialCreating(true);
+        try {
+            const res = await apiFetch(`/api/zoho-books/purchase-orders/${po.id}/create-material`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ materialId, name, rate: Number.isFinite(rate) ? rate : 0 }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) {
+                toast({
+                    title: "Item created in Zoho Books",
+                    description: `"${name}" was created and mapped to "${zohoMaterialMappingMaterialName}".`,
+                });
+                closeZohoMaterialMappingDialog();
+                await runZohoSync(po);
+            } else {
+                toast({
+                    title: "Could not create item",
+                    description: data.message || "Please try again.",
+                    variant: "destructive",
+                });
+            }
+        } catch {
+            toast({
+                title: "Network error",
+                description: "Could not create the item in Zoho Books. Please try again.",
+                variant: "destructive",
+            });
+        } finally {
+            setZohoMaterialCreating(false);
+        }
+    };
+
+    const fetchZohoTaxes = async () => {
+        setZohoTaxesLoading(true);
+        setZohoTaxesError(null);
+        try {
+            const res = await apiFetch(`/api/zoho-books/taxes`);
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) {
+                setZohoTaxes(Array.isArray(data.taxes) ? data.taxes : []);
+            } else {
+                setZohoTaxes([]);
+                setZohoTaxesError(data.message || "Could not load taxes from Zoho Books.");
+            }
+        } catch {
+            setZohoTaxes([]);
+            setZohoTaxesError("Network error while loading taxes from Zoho Books.");
+        } finally {
+            setZohoTaxesLoading(false);
+        }
+    };
+
+    const closeZohoTaxSetupDialog = () => {
+        setZohoTaxSetupPo(null);
+        setZohoTaxSetupMaterialName("");
+        setZohoTaxes([]);
+        setZohoTaxesError(null);
+    };
+
+    const handleSaveDefaultTax = async (tax: { id: string; name: string }) => {
+        const po = zohoTaxSetupPo;
+        if (!po) return;
+        setZohoTaxSavingId(tax.id);
+        try {
+            const res = await apiFetch(`/api/zoho-books/settings/default-tax`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ taxId: tax.id }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) {
+                toast({
+                    title: "Default tax set",
+                    description: `"${tax.name}" will be used automatically for any material without its own tax in Zoho Books.`,
+                });
+                closeZohoTaxSetupDialog();
+                await runZohoSync(po);
+            } else {
+                toast({
+                    title: "Could not save default tax",
+                    description: data.message || "Please try again.",
+                    variant: "destructive",
+                });
+            }
+        } catch {
+            toast({
+                title: "Network error",
+                description: "Could not save the default tax. Please try again.",
+                variant: "destructive",
+            });
+        } finally {
+            setZohoTaxSavingId(null);
         }
     };
 
@@ -1005,6 +1394,43 @@ export default function PurchaseOrders() {
                                                                             <FileSpreadsheet className="h-4 w-4" />
                                                                         )}
                                                                     </Button>
+                                                                    {mainPo!.zoho_sync_status === "synced" ? (
+                                                                        <Button
+                                                                            variant="ghost"
+                                                                            size="sm"
+                                                                            className="h-8 w-8 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                setZohoResultPo({
+                                                                                    po: mainPo!,
+                                                                                    success: true,
+                                                                                    message: "Purchase Order successfully moved to Zoho Books.",
+                                                                                    zohoPurchaseOrderId: mainPo!.zoho_purchase_order_id!,
+                                                                                    syncedAt: mainPo!.zoho_synced_at!
+                                                                                });
+                                                                            }}
+                                                                            title="View Zoho Books Sync Details"
+                                                                        >
+                                                                            <CheckCircle2 className="h-4 w-4" />
+                                                                        </Button>
+                                                                    ) : (
+                                                                        <Button
+                                                                            variant="ghost"
+                                                                            size="sm"
+                                                                            className={`h-8 w-8 p-0 ${mainPo!.zoho_sync_status === "failed" ? "text-red-600 hover:text-red-800 hover:bg-red-50" : "text-orange-600 hover:text-orange-800 hover:bg-orange-50"}`}
+                                                                            onClick={(e) => openZohoConfirm(mainPo!, e)}
+                                                                            disabled={(user?.role === 'purchase_team' && !['approved', 'ordered', 'delivered'].includes(mainPo!.status)) || zohoSyncingId === mainPo!.id}
+                                                                            title={mainPo!.zoho_sync_status === "failed" ? "Retry Zoho Sync" : "Move to Zoho Books"}
+                                                                        >
+                                                                            {zohoSyncingId === mainPo!.id ? (
+                                                                                <Loader2 className="h-4 w-4 animate-spin" />
+                                                                            ) : mainPo!.zoho_sync_status === "failed" ? (
+                                                                                <AlertCircle className="h-4 w-4" />
+                                                                            ) : (
+                                                                                <UploadCloud className="h-4 w-4" />
+                                                                            )}
+                                                                        </Button>
+                                                                    )}
                                                                     <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
                                                                         <ChevronRight className="h-4 w-4" />
                                                                     </Button>
@@ -1096,6 +1522,43 @@ export default function PurchaseOrders() {
                                                                             <FileSpreadsheet className="h-3.5 w-3.5" />
                                                                         )}
                                                                     </Button>
+                                                                    {subPo.zoho_sync_status === "synced" ? (
+                                                                        <Button
+                                                                            variant="ghost"
+                                                                            size="sm"
+                                                                            className="h-7 w-7 p-0 text-emerald-500 hover:text-emerald-600 hover:bg-emerald-50"
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                setZohoResultPo({
+                                                                                    po: subPo,
+                                                                                    success: true,
+                                                                                    message: "Purchase Order successfully moved to Zoho Books.",
+                                                                                    zohoPurchaseOrderId: subPo.zoho_purchase_order_id!,
+                                                                                    syncedAt: subPo.zoho_synced_at!
+                                                                                });
+                                                                            }}
+                                                                            title="View Zoho Books Sync Details"
+                                                                        >
+                                                                            <CheckCircle2 className="h-3.5 w-3.5" />
+                                                                        </Button>
+                                                                    ) : (
+                                                                        <Button
+                                                                            variant="ghost"
+                                                                            size="sm"
+                                                                            className={`h-7 w-7 p-0 ${subPo.zoho_sync_status === "failed" ? "text-red-500 hover:text-red-700" : "text-orange-500 hover:text-orange-700"}`}
+                                                                            onClick={(e) => openZohoConfirm(subPo, e)}
+                                                                            disabled={(user?.role === 'purchase_team' && !['approved', 'ordered', 'delivered'].includes(subPo.status)) || zohoSyncingId === subPo.id}
+                                                                            title={subPo.zoho_sync_status === "failed" ? "Retry Zoho Sync" : "Move to Zoho Books"}
+                                                                        >
+                                                                            {zohoSyncingId === subPo.id ? (
+                                                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                                            ) : subPo.zoho_sync_status === "failed" ? (
+                                                                                <AlertCircle className="h-3.5 w-3.5" />
+                                                                            ) : (
+                                                                                <UploadCloud className="h-3.5 w-3.5" />
+                                                                            )}
+                                                                        </Button>
+                                                                    )}
                                                                 </TableCell>
                                                             </TableRow>
                                                         ))}
@@ -1180,6 +1643,382 @@ export default function PurchaseOrders() {
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
+
+            {/* Move to Zoho Books - Confirmation Dialog */}
+            <AlertDialog open={!!zohoConfirmPo} onOpenChange={(open) => !open && setZohoConfirmPo(null)}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle className="flex items-center gap-2">
+                            <UploadCloud className="h-5 w-5 text-orange-600" />
+                            Move Purchase Order to Zoho Books?
+                        </AlertDialogTitle>
+                        <AlertDialogDescription asChild>
+                            <div className="space-y-2 text-sm">
+                                <div><span className="font-medium text-foreground">PO Number:</span> {zohoConfirmPo?.po_number}</div>
+                                <div><span className="font-medium text-foreground">Vendor:</span> {zohoConfirmPo?.vendor_name || "N/A"}</div>
+                                <div><span className="font-medium text-foreground">Total:</span> ₹{zohoConfirmPo ? parseFloat(zohoConfirmPo.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 }) : ""}</div>
+                                <p className="pt-1">The Purchase Order will be created in your connected Zoho Books organization.</p>
+                            </div>
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            className="bg-orange-600 hover:bg-orange-700 text-white"
+                            onClick={handleSendToZohoBooks}
+                        >
+                            <UploadCloud className="h-4 w-4 mr-2" />
+                            Send to Zoho Books
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Move to Zoho Books - Result Dialog */}
+            <AlertDialog open={!!zohoResultPo} onOpenChange={(open) => !open && setZohoResultPo(null)}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle className="flex items-center gap-2">
+                            {zohoResultPo?.success ? (
+                                <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+                            ) : (
+                                <AlertCircle className="h-5 w-5 text-red-600" />
+                            )}
+                            {zohoResultPo?.success ? "Synced to Zoho Books" : "Sync Failed"}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription asChild>
+                            <div className="space-y-2 text-sm">
+                                <p>{zohoResultPo?.message}</p>
+                                {zohoResultPo?.success && (
+                                    <div className="rounded-md bg-emerald-50 border border-emerald-200 p-3 space-y-1">
+                                        <div><span className="font-medium text-foreground">BOQ PO:</span> {zohoResultPo.po.po_number}</div>
+                                        <div><span className="font-medium text-foreground">Zoho PO:</span> {zohoResultPo.zohoPurchaseOrderId}</div>
+                                        {zohoResultPo.syncedAt && (
+                                            <div><span className="font-medium text-foreground">Synced:</span> {new Date(zohoResultPo.syncedAt).toLocaleString()}</div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        {!zohoResultPo?.success && zohoResultPo && (
+                            <AlertDialogAction
+                                className="bg-orange-600 hover:bg-orange-700 text-white"
+                                onClick={() => {
+                                    const po = zohoResultPo.po;
+                                    setZohoResultPo(null);
+                                    setZohoConfirmPo(po);
+                                }}
+                            >
+                                Retry Zoho Sync
+                            </AlertDialogAction>
+                        )}
+                        <AlertDialogCancel onClick={() => setZohoResultPo(null)}>Close</AlertDialogCancel>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
+
+            {/* Move to Zoho Books - Manual Vendor Mapping (fallback when automatic
+                matching can't safely resolve the vendor: ambiguous or not found) */}
+            <Dialog
+                open={!!zohoMappingPo}
+                onOpenChange={(open) => {
+                    if (!open) {
+                        setZohoMappingPo(null);
+                        setZohoMappingCandidates([]);
+                        setZohoMappingSearchResults([]);
+                        setZohoMappingSearch("");
+                    }
+                }}
+            >
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Vendor mapping required</DialogTitle>
+                        <DialogDescription>
+                            Select the correct Zoho Books vendor for{" "}
+                            <span className="font-medium text-foreground">
+                                "{zohoMappingPo?.vendor_name || "this vendor"}"
+                            </span>
+                            . This mapping is saved and reused automatically on future syncs.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-3">
+                        {zohoMappingCandidates.length > 0 && (
+                            <div className="space-y-1.5">
+                                <Label className="text-xs text-muted-foreground">
+                                    Multiple possible matches were found - pick the right one:
+                                </Label>
+                                <div className="rounded-md border divide-y max-h-48 overflow-y-auto">
+                                    {zohoMappingCandidates.map((c) => (
+                                        <button
+                                            key={c.id}
+                                            type="button"
+                                            disabled={zohoMappingSavingId === c.id}
+                                            onClick={() => handleSelectZohoVendorMapping(c)}
+                                            className="w-full text-left px-3 py-2 text-sm hover:bg-muted flex items-center justify-between disabled:opacity-60"
+                                        >
+                                            <span>{c.name}</span>
+                                            {zohoMappingSavingId === c.id && (
+                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            )}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="space-y-1.5">
+                            <Label className="text-xs text-muted-foreground">
+                                {zohoMappingCandidates.length > 0
+                                    ? "Or search for a different vendor by name:"
+                                    : "Search Zoho Books vendors by name:"}
+                            </Label>
+                            <Input
+                                placeholder="Type at least 2 characters..."
+                                value={zohoMappingSearch}
+                                onChange={(e) => handleZohoMappingSearchChange(e.target.value)}
+                            />
+                            <div className="rounded-md border divide-y max-h-48 overflow-y-auto min-h-[2.5rem]">
+                                {zohoMappingSearching ? (
+                                    <div className="px-3 py-2 text-sm text-muted-foreground flex items-center gap-2">
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Searching...
+                                    </div>
+                                ) : zohoMappingSearchResults.length > 0 ? (
+                                    zohoMappingSearchResults.map((v) => (
+                                        <button
+                                            key={v.id}
+                                            type="button"
+                                            disabled={zohoMappingSavingId === v.id}
+                                            onClick={() => handleSelectZohoVendorMapping(v)}
+                                            className="w-full text-left px-3 py-2 text-sm hover:bg-muted flex items-center justify-between disabled:opacity-60"
+                                        >
+                                            <span>{v.name}</span>
+                                            {zohoMappingSavingId === v.id && (
+                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            )}
+                                        </button>
+                                    ))
+                                ) : zohoMappingSearch.trim().length >= 2 ? (
+                                    <div className="px-3 py-2 text-sm text-muted-foreground">No vendors found.</div>
+                                ) : null}
+                            </div>
+                        </div>
+                    </div>
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setZohoMappingPo(null)}>
+                            Cancel
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Move to Zoho Books - Manual Material Mapping (fallback when automatic
+                matching can't safely resolve the material: ambiguous or not found).
+                Also offers creating a brand-new Zoho Books item on the spot when it
+                genuinely doesn't exist there yet. */}
+            <Dialog
+                open={!!zohoMaterialMappingPo}
+                onOpenChange={(open) => {
+                    if (!open) closeZohoMaterialMappingDialog();
+                }}
+            >
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Material mapping required</DialogTitle>
+                        <DialogDescription>
+                            Select the correct Zoho Books item for{" "}
+                            <span className="font-medium text-foreground">
+                                "{zohoMaterialMappingMaterialName || "this material"}"
+                            </span>
+                            , or create it as a new item if it doesn't exist in Zoho Books yet. This is
+                            saved so future Purchase Orders for this material sync automatically.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-3">
+                        {zohoMaterialMappingCandidates.length > 0 && (
+                            <div className="space-y-1.5">
+                                <Label className="text-xs text-muted-foreground">
+                                    Multiple possible matches were found - pick the right one:
+                                </Label>
+                                <div className="rounded-md border divide-y max-h-48 overflow-y-auto">
+                                    {zohoMaterialMappingCandidates.map((c) => (
+                                        <button
+                                            key={c.id}
+                                            type="button"
+                                            disabled={zohoMaterialMappingSavingId === c.id}
+                                            onClick={() => handleSelectZohoItemMapping(c)}
+                                            className="w-full text-left px-3 py-2 text-sm hover:bg-muted flex items-center justify-between disabled:opacity-60"
+                                        >
+                                            <span>{c.name}</span>
+                                            {zohoMaterialMappingSavingId === c.id && (
+                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            )}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="space-y-1.5">
+                            <Label className="text-xs text-muted-foreground">
+                                {zohoMaterialMappingCandidates.length > 0
+                                    ? "Or search for a different item by name:"
+                                    : "Search Zoho Books items by name:"}
+                            </Label>
+                            <Input
+                                placeholder="Type at least 2 characters..."
+                                value={zohoMaterialMappingSearch}
+                                onChange={(e) => handleZohoMaterialMappingSearchChange(e.target.value)}
+                            />
+                            <div className="rounded-md border divide-y max-h-48 overflow-y-auto min-h-[2.5rem]">
+                                {zohoMaterialMappingSearching ? (
+                                    <div className="px-3 py-2 text-sm text-muted-foreground flex items-center gap-2">
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Searching...
+                                    </div>
+                                ) : zohoMaterialMappingSearchResults.length > 0 ? (
+                                    zohoMaterialMappingSearchResults.map((it) => (
+                                        <button
+                                            key={it.id}
+                                            type="button"
+                                            disabled={zohoMaterialMappingSavingId === it.id}
+                                            onClick={() => handleSelectZohoItemMapping(it)}
+                                            className="w-full text-left px-3 py-2 text-sm hover:bg-muted flex items-center justify-between disabled:opacity-60"
+                                        >
+                                            <span>{it.name}</span>
+                                            {zohoMaterialMappingSavingId === it.id && (
+                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            )}
+                                        </button>
+                                    ))
+                                ) : zohoMaterialMappingSearch.trim().length >= 2 ? (
+                                    <div className="px-3 py-2 text-sm text-muted-foreground">No items found.</div>
+                                ) : null}
+                            </div>
+                        </div>
+
+                        <div className="relative py-1">
+                            <div className="absolute inset-0 flex items-center">
+                                <span className="w-full border-t" />
+                            </div>
+                            <div className="relative flex justify-center text-xs">
+                                <span className="bg-background px-2 text-muted-foreground">
+                                    Not in Zoho Books yet?
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="space-y-2 rounded-md border p-3">
+                            <Label className="text-xs text-muted-foreground">
+                                Create it as a new item in Zoho Books:
+                            </Label>
+                            <Input
+                                placeholder="Item name"
+                                value={zohoMaterialCreateName}
+                                onChange={(e) => setZohoMaterialCreateName(e.target.value)}
+                                disabled={zohoMaterialCreating}
+                            />
+                            <Input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                placeholder="Rate"
+                                value={zohoMaterialCreateRate}
+                                onChange={(e) => setZohoMaterialCreateRate(e.target.value)}
+                                disabled={zohoMaterialCreating}
+                            />
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                className="w-full"
+                                onClick={handleCreateZohoMaterial}
+                                disabled={zohoMaterialCreating || !zohoMaterialCreateName.trim()}
+                            >
+                                {zohoMaterialCreating ? (
+                                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                ) : (
+                                    <PlusCircle className="h-4 w-4 mr-2" />
+                                )}
+                                Create new item &amp; map
+                            </Button>
+                        </div>
+                    </div>
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={closeZohoMaterialMappingDialog}>
+                            Cancel
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* Move to Zoho Books - Tax Setup Required (fires once, the first
+                time a material has no tax of its own and no org-level
+                default is configured; saving a default here fixes every
+                future material missing a tax, not just this one). */}
+            <Dialog
+                open={!!zohoTaxSetupPo}
+                onOpenChange={(open) => {
+                    if (!open) closeZohoTaxSetupDialog();
+                }}
+            >
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Tax setup required</DialogTitle>
+                        <DialogDescription>
+                            Material{" "}
+                            <span className="font-medium text-foreground">
+                                "{zohoTaxSetupMaterialName || "this material"}"
+                            </span>{" "}
+                            has no tax configured in Zoho Books, and this integration doesn't have a default
+                            tax set yet. Zoho Books requires a Tax, Tax Exemption, or Reverse Charge on every
+                            Purchase Order line item. Pick a default tax below - it's saved once and used
+                            automatically for any material without its own tax from now on.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-1.5">
+                        <Label className="text-xs text-muted-foreground">Choose a default tax:</Label>
+                        <div className="rounded-md border divide-y max-h-56 overflow-y-auto min-h-[2.5rem]">
+                            {zohoTaxesLoading ? (
+                                <div className="px-3 py-2 text-sm text-muted-foreground flex items-center gap-2">
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading taxes...
+                                </div>
+                            ) : zohoTaxesError ? (
+                                <div className="px-3 py-2 text-sm text-red-600">{zohoTaxesError}</div>
+                            ) : zohoTaxes.length > 0 ? (
+                                zohoTaxes.map((t) => (
+                                    <button
+                                        key={t.id}
+                                        type="button"
+                                        disabled={zohoTaxSavingId === t.id}
+                                        onClick={() => handleSaveDefaultTax(t)}
+                                        className="w-full text-left px-3 py-2 text-sm hover:bg-muted flex items-center justify-between disabled:opacity-60"
+                                    >
+                                        <span>{t.name}</span>
+                                        {zohoTaxSavingId === t.id && (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        )}
+                                    </button>
+                                ))
+                            ) : (
+                                <div className="px-3 py-2 text-sm text-muted-foreground">
+                                    No taxes found in Zoho Books. Create one under Settings &gt; Taxes first.
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={closeZohoTaxSetupDialog}>
+                            Cancel
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             {/* PDF Export Selection Dialog */}
             <Dialog open={isPdfExportDialogOpen} onOpenChange={setIsPdfExportDialogOpen}>

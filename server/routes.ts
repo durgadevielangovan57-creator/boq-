@@ -1357,6 +1357,7 @@ export async function registerRoutes(
       )
     `);
     await query(`CREATE INDEX IF NOT EXISTS idx_purchase_order_items_po_id ON purchase_order_items(po_id)`);
+    await query(`ALTER TABLE purchase_order_items ADD COLUMN IF NOT EXISTS gst_percentage DECIMAL(5,2)`);
     // Ensure hsn_code and sac_code columns exist (for upgrades from older schema)
     console.log("[db] purchase_order_items table verified/created");
   } catch (err: unknown) {
@@ -14161,8 +14162,8 @@ export async function registerRoutes(
             totalAmount += amount;
 
             await query(
-              `INSERT INTO purchase_order_items (po_id, material_id, item, description, unit, qty, original_qty, rate, amount, hsn_code, sac_code, qty_modified) 
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+              `INSERT INTO purchase_order_items (po_id, material_id, item, description, unit, qty, original_qty, rate, amount, hsn_code, sac_code, qty_modified, gst_percentage) 
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
               [
                 poId,
                 item._agg_mat_id,
@@ -14175,7 +14176,8 @@ export async function registerRoutes(
                 amount,
                 item.hsn_code || item.hsn_sac_code || null,
                 item.sac_code || null,
-                false // qty_modified starts false
+                false, // qty_modified starts false
+                item.tax_rate ?? item.gst_percentage ?? null
               ]
             );
           }
@@ -14447,9 +14449,9 @@ export async function registerRoutes(
       for (const fItem of finalItems) {
         await query(
           `INSERT INTO purchase_order_items 
-           (po_id, material_id, item, description, unit, qty, original_qty, rate, amount, qty_modified) 
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-          [newPo.id, fItem.material_id, fItem.item, fItem.description, fItem.unit, fItem.qty, fItem.qty, fItem.rate, fItem.amount, false]
+           (po_id, material_id, item, description, unit, qty, original_qty, rate, amount, qty_modified, gst_percentage) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          [newPo.id, fItem.material_id, fItem.item, fItem.description, fItem.unit, fItem.qty, fItem.qty, fItem.rate, fItem.amount, false, fItem.tax_rate ?? fItem.gst_percentage ?? null]
         );
       }
 
@@ -14585,9 +14587,9 @@ export async function registerRoutes(
         }
 
         const itemRes = await query(
-          `INSERT INTO purchase_order_items (po_id, material_id, item, description, unit, qty, original_qty, rate, amount, hsn_code, sac_code, qty_modified) 
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
-          [newPo.id, item.material_id || item.id || null, item.item || item.item_name, item.description || null, item.unit || null, item.qty, originalQty, item.rate, item.amount, item.hsn_code || null, item.sac_code || null, qtyModified]
+          `INSERT INTO purchase_order_items (po_id, material_id, item, description, unit, qty, original_qty, rate, amount, hsn_code, sac_code, qty_modified, gst_percentage) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
+          [newPo.id, item.material_id || item.id || null, item.item || item.item_name, item.description || null, item.unit || null, item.qty, originalQty, item.rate, item.amount, item.hsn_code || null, item.sac_code || null, qtyModified, item.tax_rate ?? item.gst_percentage ?? null]
         );
 
         if (originalItem && parseFloat(originalItem.rate) !== parseFloat(item.rate)) {
@@ -14632,9 +14634,9 @@ export async function registerRoutes(
           const qtyModified = originalItem ? (parseFloat(ditem.qty) !== originalQty) : false;
 
           await query(
-            `INSERT INTO purchase_order_items (po_id, material_id, item, description, unit, qty, original_qty, rate, amount, hsn_code, sac_code, qty_modified) 
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-            [defPo.id, ditem.material_id || ditem.id || null, ditem.item || ditem.item_name, ditem.description || null, ditem.unit || null, ditem.qty, originalQty, ditem.rate, ditem.amount, ditem.hsn_code || null, ditem.sac_code || null, qtyModified]
+            `INSERT INTO purchase_order_items (po_id, material_id, item, description, unit, qty, original_qty, rate, amount, hsn_code, sac_code, qty_modified, gst_percentage) 
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+            [defPo.id, ditem.material_id || ditem.id || null, ditem.item || ditem.item_name, ditem.description || null, ditem.unit || null, ditem.qty, originalQty, ditem.rate, ditem.amount, ditem.hsn_code || null, ditem.sac_code || null, qtyModified, ditem.tax_rate ?? ditem.gst_percentage ?? null]
           );
         }
       }

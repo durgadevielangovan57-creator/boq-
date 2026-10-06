@@ -104,6 +104,7 @@ interface PurchaseOrderItem {
     budget_qty?: number;
     received_qty?: number;
     tax_rate?: number; // Added for per-item tax selection
+    gst_percentage?: string | number | null;
     technical_specification?: string;
 }
 
@@ -460,8 +461,12 @@ export default function PurchaseOrderDetail() {
             if (res.ok) {
                 const data = await res.json();
                 setPo(data.purchaseOrder);
-                setItems(data.items || []);
-                setInitialItems(data.items || []);
+                const processedItems = (data.items || []).map((item: any) => ({
+                    ...item,
+                    tax_rate: item.tax_rate ?? (item.gst_percentage !== null && item.gst_percentage !== undefined ? Number(item.gst_percentage) : 18)
+                }));
+                setItems(processedItems);
+                setInitialItems(processedItems);
                 setRelatedPos(data.relatedPos || []);
                 setParentItems(data.parentItems || []);
                 if (data.purchaseOrder.delivery_date) {

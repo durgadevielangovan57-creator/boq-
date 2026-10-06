@@ -385,6 +385,7 @@ export function VersionCompareModal({
     if (!showComparison || !selectedColumns.includes("Total")) return null;
     let increased = 0, decreased = 0, unchanged = 0, added = 0, removed = 0, modified = 0;
     let baseTotal = 0, compareTotal = 0;
+    let addedValue = 0, removedValue = 0, modifiedValue = 0;
 
     comparisonData.forEach(row => {
       const bTotal = row.base ? (row.base["Total"] || 0) : 0;
@@ -392,13 +393,14 @@ export function VersionCompareModal({
       baseTotal += bTotal;
       compareTotal += cTotal;
 
-      if (!row.base) { added++; return; }
-      if (!row.compare) { removed++; return; }
+      if (!row.base) { added++; addedValue += cTotal; return; }
+      if (!row.compare) { removed++; removedValue += bTotal; return; }
 
       const diff = cTotal - bTotal;
       if (Math.abs(diff) < 0.01) unchanged++;
       else {
         modified++;
+        modifiedValue += diff;
         if (diff > 0) increased++;
         else decreased++;
       }
@@ -406,7 +408,7 @@ export function VersionCompareModal({
 
     const costDifference = compareTotal - baseTotal;
 
-    return { increased, decreased, unchanged, added, removed, modified, total: comparisonData.length, baseTotal, compareTotal, costDifference };
+    return { increased, decreased, unchanged, added, removed, modified, addedValue, removedValue, modifiedValue, total: comparisonData.length, baseTotal, compareTotal, costDifference };
   }, [comparisonData, showComparison, selectedColumns]);
 
   const handleDownloadPdf = async () => {
@@ -968,6 +970,11 @@ export function VersionCompareModal({
                           <span className="text-orange-500 font-medium">{summaryStats.removed} Deleted</span>
                           <span className="text-slate-600 font-medium">{summaryStats.modified} Modified</span>
                         </div>
+                        <div className="flex gap-2 text-[11px] tabular-nums mt-0.5">
+                          <span className="text-sky-600">+₹{Number(summaryStats.addedValue.toFixed(2)).toLocaleString('en-IN')}</span>
+                          <span className="text-orange-500">−₹{Number(summaryStats.removedValue.toFixed(2)).toLocaleString('en-IN')}</span>
+                          <span className="text-slate-600">{summaryStats.modifiedValue >= 0 ? '+' : '−'}₹{Math.abs(Number(summaryStats.modifiedValue.toFixed(2))).toLocaleString('en-IN')}</span>
+                        </div>
                       </div>
 
                       <div className="bg-white p-3 rounded-lg border border-slate-100 shadow-sm">
@@ -1147,7 +1154,12 @@ export function VersionCompareModal({
                                 <React.Fragment key={`${row.name}-${col}`}>
                                   <td className="px-3 py-2.5 border-r border-slate-100 text-right text-slate-500 text-xs tabular-nums">
                                     {isBaseMissing ? (
-                                      <span className="text-[9px] font-bold uppercase text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded tracking-tighter">NEW</span>
+                                      <span className="text-slate-300" title="Item not present in this version">—</span>
+                                    ) : isCompMissing ? (
+                                      <span className="inline-flex items-center gap-1.5">
+                                        <span className="text-[9px] font-bold uppercase text-orange-500 bg-orange-50 border border-orange-100 px-1 py-0.5 rounded tracking-tighter">Removed</span>
+                                        <span className="text-slate-700 font-medium">{Number(baseVal.toFixed(2)).toLocaleString()}</span>
+                                      </span>
                                     ) : baseVal !== 0 ? Number(baseVal.toFixed(2)).toLocaleString() : (
                                       <span className="text-slate-300">0</span>
                                     )}
@@ -1159,7 +1171,12 @@ export function VersionCompareModal({
                                         hasDiff && diff < 0 ? "text-emerald-600 bg-emerald-50/40" : "text-slate-600"
                                   )}>
                                     {isCompMissing ? (
-                                      <span className="text-[10px] font-medium text-orange-400 bg-orange-50 px-1.5 py-0.5 rounded border border-orange-100">removed</span>
+                                      <span className="text-slate-300" title="Item not present in this version">—</span>
+                                    ) : isBaseMissing ? (
+                                      <span className="inline-flex items-center gap-1.5">
+                                        <span className="text-[9px] font-bold uppercase text-emerald-600 bg-emerald-50 border border-emerald-100 px-1 py-0.5 rounded tracking-tighter">New</span>
+                                        <span className="text-slate-700 font-medium">{compVal !== 0 ? Number(compVal.toFixed(2)).toLocaleString() : 0}</span>
+                                      </span>
                                     ) : (
                                       <>
                                         {compVal !== 0 ? Number(compVal.toFixed(2)).toLocaleString() : <span className="text-slate-300">0</span>}

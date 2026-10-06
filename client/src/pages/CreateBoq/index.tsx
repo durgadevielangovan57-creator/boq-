@@ -2277,14 +2277,8 @@ export default function CreateBom() {
             const sRate = Number(getEditedValue(itemKey, "supply_rate", line.supplyRate));
             const iRate = Number(getEditedValue(itemKey, "install_rate", line.installRate));
             let rate = Number(getEditedValue(itemKey, "rate", sRate + iRate)) || (sRate + iRate);
-            // Only fall back to the pre-amendment rate while the amendment is still
-            // pending/draft/rejected. Once approved, keep the actual (amended) rate.
-            const itemRateAmendStatus = (line.rate_amendment_status === 'approved' || line.rate_amendment_status === 'rejected')
-              ? line.rate_amendment_status
-              : getEditedValue(itemKey, "rate_amendment_status", line.rate_amendment_status);
-            if (line.original_rate !== undefined && line.original_rate !== null && itemRateAmendStatus !== 'approved') {
-              rate = Number(line.original_rate);
-            }
+            // NOTE: header budget must match the card Grand Total, which always uses
+            // the amended rate (draft/pending/approved). Do not fall back to original_rate here.
 
             const isLumpSumLine = (line.unit || "").toLowerCase() === "ls";
             const reqQty = isFrozen ? line.roundOffQty : (isLumpSumLine ? 1 : Number((qty * target).toFixed(2)));
