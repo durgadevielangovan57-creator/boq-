@@ -52,6 +52,9 @@ function toCandidate(raw: any): ZohoItemCandidate | null {
     const itemId = raw?.item_id;
     const itemName = raw?.name;
     if (!itemId || !itemName) return null;
+    // Zoho rejects Purchase Orders for inactive items, so never offer or
+    // auto-match one.
+    if (String(raw?.status || "").toLowerCase() === "inactive") return null;
     logRawItemTaxShape("search result", raw);
     return {
         itemId: String(itemId),
@@ -278,6 +281,28 @@ export async function getZohoItemTax(itemId: string): Promise<ZohoItemTax | null
         };
     } catch {
         return null;
+    }
+}
+
+/**
+ * Checks whether a previously-mapped Zoho item can still be used on a
+ * Purchase Order. Zoho rejects POs containing items that were deleted or
+ * marked inactive. "unknown" (network/other failure) is never treated as
+ * unusable, so a transient error can't wipe a valid mapping.
+ */
+export async function getZohoItemUsability(itemId: string): Promise<"active" | "inactive" | "not_found" | "unknown"> {
+    const trimmed = (itemId || "").trim();
+    if (!trimmed) return "unknown";
+    try {
+        const res = await zohoApiRequest(`/items/${encodeURIComponent(trimmed)}`);
+        if (res.ok) {
+            const status = String(res.data?.item?.status || "").toLowerCase();
+            return status === "inactive" ? "inactive" : "active";
+        }
+        if (res.status === 404 || res.data?.code === 1002) return "not_found";
+        return "unknown";
+    } catch {
+        return "unknown";
     }
 }
 

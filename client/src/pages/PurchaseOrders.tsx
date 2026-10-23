@@ -41,6 +41,7 @@ import {
     UploadCloud,
     AlertCircle,
     PlusCircle,
+    Merge,
 } from "lucide-react";
 import {
     Table,
@@ -74,6 +75,7 @@ import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
 import ProcurementTabBar from "@/components/ProcurementTabBar";
+import MergePoItemsDialog from "@/components/MergePoItemsDialog";
 
 interface PurchaseOrder {
     id: string;
@@ -93,6 +95,7 @@ interface PurchaseOrder {
     zoho_sync_status?: "not_synced" | "syncing" | "synced" | "failed" | null;
     zoho_synced_at?: string | null;
     zoho_sync_error?: string | null;
+    merged_from?: string | null;
 }
 
 interface Project {
@@ -124,6 +127,9 @@ export default function PurchaseOrders() {
     const [selectedPoIds, setSelectedPoIds] = useState<Set<string>>(new Set());
     const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
     const [isDeletingBulk, setIsDeletingBulk] = useState(false);
+
+    // Merge selected items into one vendor PO
+    const [showMergeDialog, setShowMergeDialog] = useState(false);
 
     // Bulk Move to Delivery Tracker State
     const [showBulkMoveDialog, setShowBulkMoveDialog] = useState(false);
@@ -1240,6 +1246,19 @@ export default function PurchaseOrders() {
                                                     {selectedPoIds.size}
                                                 </span>
                                             </Button>
+                                            {selectedPoIds.size >= 2 && (
+                                                <Button
+                                                    onClick={() => setShowMergeDialog(true)}
+                                                    size="icon"
+                                                    className="h-9 w-9 ml-2 relative bg-purple-600 hover:bg-purple-700 text-white"
+                                                    title={`Merge items into one PO (${selectedPoIds.size})`}
+                                                >
+                                                    <Merge className="h-4 w-4" />
+                                                    <span className="absolute -top-1.5 -right-1.5 bg-white text-purple-700 text-[10px] font-bold rounded-full h-4 min-w-[16px] px-1 flex items-center justify-center border border-purple-600">
+                                                        {selectedPoIds.size}
+                                                    </span>
+                                                </Button>
+                                            )}
                                             {user?.role !== 'purchase_team' && (
                                                 <Button
                                                     variant="destructive"
@@ -1304,7 +1323,7 @@ export default function PurchaseOrders() {
 
                                                 return (
                                                     <React.Fragment key={mainPo!.id}>
-                                                        <TableRow className="hover:bg-slate-50/50 cursor-pointer group" onClick={() => setLocation(`/purchase-orders/${mainPo!.id}`)}>
+                                                        <TableRow className={`cursor-pointer group ${mainPo!.merged_from ? "bg-purple-50/70 hover:bg-purple-100/60 border-l-4 border-l-purple-500" : "hover:bg-slate-50/50"}`} onClick={() => setLocation(`/purchase-orders/${mainPo!.id}`)}>
                                                             <TableCell className="text-center border-r" onClick={(e) => e.stopPropagation()}>
                                                                 <input
                                                                     type="checkbox"
@@ -1322,6 +1341,11 @@ export default function PurchaseOrders() {
                                                             </TableCell>
                                                             <TableCell className="font-bold text-primary flex items-center gap-2">
                                                                 {mainPo!.po_number}
+                                                                {mainPo!.merged_from && (
+                                                                    <Badge className="text-[10px] h-4 px-1.5 bg-purple-600 hover:bg-purple-600 text-white" title={`Merged from: ${mainPo!.merged_from}`}>
+                                                                        <Merge className="h-3 w-3 mr-0.5" />Merged
+                                                                    </Badge>
+                                                                )}
                                                                 {hasMultiple && <Badge variant="secondary" className="text-[10px] h-4 px-1.5">{group.length}</Badge>}
                                                             </TableCell>
                                                             <TableCell className="font-medium">{mainPo!.project_name || "N/A"}</TableCell>
@@ -1419,7 +1443,7 @@ export default function PurchaseOrders() {
                                                                             size="sm"
                                                                             className={`h-8 w-8 p-0 ${mainPo!.zoho_sync_status === "failed" ? "text-red-600 hover:text-red-800 hover:bg-red-50" : "text-orange-600 hover:text-orange-800 hover:bg-orange-50"}`}
                                                                             onClick={(e) => openZohoConfirm(mainPo!, e)}
-                                                                            disabled={(user?.role === 'purchase_team' && !['approved', 'ordered', 'delivered'].includes(mainPo!.status)) || zohoSyncingId === mainPo!.id}
+                                                                            disabled={zohoSyncingId === mainPo!.id}
                                                                             title={mainPo!.zoho_sync_status === "failed" ? "Retry Zoho Sync" : "Move to Zoho Books"}
                                                                         >
                                                                             {zohoSyncingId === mainPo!.id ? (
@@ -1439,7 +1463,7 @@ export default function PurchaseOrders() {
                                                         </TableRow>
 
                                                         {isExpanded && subPos.map((subPo) => (
-                                                            <TableRow key={subPo.id} className="bg-slate-50/50 hover:bg-slate-100/50 cursor-pointer border-l-4 border-l-slate-200" onClick={() => setLocation(`/purchase-orders/${subPo.id}`)}>
+                                                            <TableRow key={subPo.id} className={`cursor-pointer border-l-4 ${subPo.merged_from ? "bg-purple-50/70 hover:bg-purple-100/60 border-l-purple-500" : "bg-slate-50/50 hover:bg-slate-100/50 border-l-slate-200"}`} onClick={() => setLocation(`/purchase-orders/${subPo.id}`)}>
                                                                 <TableCell className="text-center border-r" onClick={(e) => e.stopPropagation()}>
                                                                     <input
                                                                         type="checkbox"
@@ -1453,6 +1477,11 @@ export default function PurchaseOrders() {
                                                                     <div className="flex items-center gap-2">
                                                                         <span className="w-2 h-2 rounded-full bg-slate-200"></span>
                                                                         {subPo.po_number}
+                                                                        {subPo.merged_from && (
+                                                                            <Badge className="text-[10px] h-4 px-1.5 bg-purple-600 hover:bg-purple-600 text-white not-italic" title={`Merged from: ${subPo.merged_from}`}>
+                                                                                <Merge className="h-3 w-3 mr-0.5" />Merged
+                                                                            </Badge>
+                                                                        )}
                                                                     </div>
                                                                 </TableCell>
                                                                 <TableCell className="text-sm text-slate-500">{subPo.project_name || "N/A"}</TableCell>
@@ -1547,7 +1576,7 @@ export default function PurchaseOrders() {
                                                                             size="sm"
                                                                             className={`h-7 w-7 p-0 ${subPo.zoho_sync_status === "failed" ? "text-red-500 hover:text-red-700" : "text-orange-500 hover:text-orange-700"}`}
                                                                             onClick={(e) => openZohoConfirm(subPo, e)}
-                                                                            disabled={(user?.role === 'purchase_team' && !['approved', 'ordered', 'delivered'].includes(subPo.status)) || zohoSyncingId === subPo.id}
+                                                                            disabled={zohoSyncingId === subPo.id}
                                                                             title={subPo.zoho_sync_status === "failed" ? "Retry Zoho Sync" : "Move to Zoho Books"}
                                                                         >
                                                                             {zohoSyncingId === subPo.id ? (
@@ -1594,6 +1623,17 @@ export default function PurchaseOrders() {
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
+
+            {/* Merge selected items into one vendor PO */}
+            <MergePoItemsDialog
+                open={showMergeDialog}
+                onOpenChange={setShowMergeDialog}
+                poIds={Array.from(selectedPoIds)}
+                onMerged={() => {
+                    setSelectedPoIds(new Set());
+                    fetchData();
+                }}
+            />
 
             {/* Bulk Delete Confirmation Dialog */}
             <AlertDialog open={showBulkDeleteDialog} onOpenChange={setShowBulkDeleteDialog}>

@@ -4,7 +4,7 @@ import { authMiddleware, requireRole } from "./middleware";
 import { isZohoConfigured } from "./zoho/token_service";
 import { zohoApiRequest, ZOHO_BOOKS_ORGANIZATION_ID, ZOHO_DEFAULT_TAX_ID, ZOHO_DEFAULT_TAX_EXEMPTION_ID } from "./zoho/api_client";
 import { findZohoVendorMatch, searchZohoVendorContacts, getZohoContactGstInfo } from "./zoho/vendor_matching";
-import { findZohoItemMatch, searchZohoBooksItems, createZohoBooksItem, getZohoItemTax, listZohoTaxes, findEquivalentTax, classifyTax, logZohoTaxGroupsDiagnostic } from "./zoho/item_matching";
+import { findZohoItemMatch, searchZohoBooksItems, createZohoBooksItem, getZohoItemTax, getZohoItemUsability, listZohoTaxes, findEquivalentTax, classifyTax, logZohoTaxGroupsDiagnostic } from "./zoho/item_matching";
 import {
     ensureZohoSettingsSchema,
     getZohoSetting,
@@ -43,6 +43,8 @@ import {
 // 'ordered', 'delivered']), so "Move to Zoho Books" follows the same rule
 // the Purchase Team already understands.
 const SYNCABLE_STATUSES = ["approved", "ordered", "delivered"];
+// Set to false to go back to "Approved (or later) only".
+const ALLOW_SYNC_FROM_ANY_STATUS = true;
 
 /** Adds the (nullable, additive-only) Zoho sync columns this feature needs. */
 async function ensureZohoSchema() {
@@ -242,7 +244,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                 }
 
                 // 3. Validate PO status is appropriate for sending.
-                if (!SYNCABLE_STATUSES.includes(String(po.status || "").toLowerCase())) {
+                if (!ALLOW_SYNC_FROM_ANY_STATUS && !SYNCABLE_STATUSES.includes(String(po.status || "").toLowerCase())) {
                     const errorMessage = `Purchase Order must be Approved (or later) before it can be sent to Zoho Books. Current status: ${po.status}.`;
                     await query(
                         `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
@@ -441,6 +443,28 @@ export async function registerZohoBooksRoutes(app: Express) {
                     let materialTaxNameFromItem: string | null = null;
                     let materialTaxPercentageFromItem: number | null = null;
 
+                    // A cached mapping may point at an item that was since deleted
+                    // or marked inactive in Zoho Books (Zoho then rejects the PO).
+                    // Drop such a mapping so the item is re-matched below, which
+                    // only considers active items.
+                    if (materialZohoItemId) {
+                        const usability = await getZohoItemUsability(materialZohoItemId);
+                        if (usability === "inactive" || usability === "not_found") {
+                            safeLog(id, "cached Zoho item is inactive/deleted - re-matching", {
+                                material: displayName,
+                                staleZohoItemId: materialZohoItemId,
+                                usability,
+                            });
+                            if (row.material_id) {
+                                await query(
+                                    `UPDATE materials SET zoho_item_id = NULL WHERE id::text = $1 AND zoho_item_id = $2`,
+                                    [String(row.material_id), materialZohoItemId]
+                                );
+                            }
+                            materialZohoItemId = null;
+                        }
+                    }
+
                     if (!materialZohoItemId) {
                         const itemMatch = await findZohoItemMatch(displayName);
 
@@ -523,10 +547,10 @@ export async function registerZohoBooksRoutes(app: Express) {
                         }
                     }
 
-                    let targetGstPercentage = row.gst_percentage !== null && row.gst_percentage !== undefined ? Number(row.gst_percentage) : null;
-                    if (targetGstPercentage === null) {
-                        targetGstPercentage = materialTaxPercentageFromItem;
-                    }
+                    // The PO screen shows 18% whenever an item has no saved GST,
+                    // so treat a missing value the same way here (otherwise the
+                    // sync fails until the user re-saves the PO with 18% picked).
+                    let targetGstPercentage = row.gst_percentage !== null && row.gst_percentage !== undefined ? Number(row.gst_percentage) : 18;
 
                     if (targetGstPercentage === null || targetGstPercentage === undefined || isNaN(targetGstPercentage)) {
                         const errorMessage = `GST rate is not configured for material '${displayName}'. Set the GST rate before syncing this Purchase Order.`;

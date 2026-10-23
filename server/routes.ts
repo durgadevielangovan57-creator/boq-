@@ -23,6 +23,7 @@ import { query } from "./db/client";
 import { sendSketchPlanEmail, sendSiteReportEmail, sendProposalStatusEmail, sendMaterialRateChangeEmail, sendCommentMentionEmail, sendPasswordUpdatedEmail, sendMaterialSubmissionRejectedEmail, sendVersionSubmittedEmail, sendVersionApprovedEmail } from "./email";
 import { logActivity } from "./audit";
 import { registerSketchRoutes } from "./sketch_routes";
+import { registerPoMergeRoutes } from "./po_merge_routes";
 import { convertSketchToBoqItems } from "./lib/sketch_converter";
 import { WebSocketServer } from 'ws';
 import bomSketchSync from "./lib/bom_sketch_sync";
@@ -65,6 +66,9 @@ export async function registerRoutes(
 
   // Sketch Plan Routes
   await registerSketchRoutes(app);
+
+  // PO merge-selected-items routes (additive)
+  await registerPoMergeRoutes(app);
 
   // Upload Route for Supabase Storage
   app.post("/api/upload", authMiddleware, upload.single("file"), async (req: Request, res: Response): Promise<any> => {
@@ -14177,7 +14181,7 @@ export async function registerRoutes(
                 item.hsn_code || item.hsn_sac_code || null,
                 item.sac_code || null,
                 false, // qty_modified starts false
-                item.tax_rate ?? item.gst_percentage ?? null
+                item.tax_rate ?? item.gst_percentage ?? 18
               ]
             );
           }
@@ -14451,7 +14455,7 @@ export async function registerRoutes(
           `INSERT INTO purchase_order_items 
            (po_id, material_id, item, description, unit, qty, original_qty, rate, amount, qty_modified, gst_percentage) 
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-          [newPo.id, fItem.material_id, fItem.item, fItem.description, fItem.unit, fItem.qty, fItem.qty, fItem.rate, fItem.amount, false, fItem.tax_rate ?? fItem.gst_percentage ?? null]
+          [newPo.id, fItem.material_id, fItem.item, fItem.description, fItem.unit, fItem.qty, fItem.qty, fItem.rate, fItem.amount, false, 18]
         );
       }
 
@@ -14589,7 +14593,7 @@ export async function registerRoutes(
         const itemRes = await query(
           `INSERT INTO purchase_order_items (po_id, material_id, item, description, unit, qty, original_qty, rate, amount, hsn_code, sac_code, qty_modified, gst_percentage) 
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id`,
-          [newPo.id, item.material_id || item.id || null, item.item || item.item_name, item.description || null, item.unit || null, item.qty, originalQty, item.rate, item.amount, item.hsn_code || null, item.sac_code || null, qtyModified, item.tax_rate ?? item.gst_percentage ?? null]
+          [newPo.id, item.material_id || item.id || null, item.item || item.item_name, item.description || null, item.unit || null, item.qty, originalQty, item.rate, item.amount, item.hsn_code || null, item.sac_code || null, qtyModified, item.tax_rate ?? item.gst_percentage ?? 18]
         );
 
         if (originalItem && parseFloat(originalItem.rate) !== parseFloat(item.rate)) {
@@ -14636,7 +14640,7 @@ export async function registerRoutes(
           await query(
             `INSERT INTO purchase_order_items (po_id, material_id, item, description, unit, qty, original_qty, rate, amount, hsn_code, sac_code, qty_modified, gst_percentage) 
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-            [defPo.id, ditem.material_id || ditem.id || null, ditem.item || ditem.item_name, ditem.description || null, ditem.unit || null, ditem.qty, originalQty, ditem.rate, ditem.amount, ditem.hsn_code || null, ditem.sac_code || null, qtyModified, ditem.tax_rate ?? ditem.gst_percentage ?? null]
+            [defPo.id, ditem.material_id || ditem.id || null, ditem.item || ditem.item_name, ditem.description || null, ditem.unit || null, ditem.qty, originalQty, ditem.rate, ditem.amount, ditem.hsn_code || null, ditem.sac_code || null, qtyModified, ditem.tax_rate ?? ditem.gst_percentage ?? 18]
           );
         }
       }

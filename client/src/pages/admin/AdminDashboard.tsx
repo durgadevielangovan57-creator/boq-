@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useDeferredValue } from "react";
 import { differenceInDays, format } from "date-fns";
-import { fuzzySearch } from "@/lib/utils";
+import { fuzzySearch, smartSearch, smartSearchScore } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
 import {
   Card,
@@ -1004,10 +1004,34 @@ export default function AdminDashboard() {
   const [showMaterialsList, setShowMaterialsList] = useState(false);
   const [showProductsList, setShowProductsList] = useState(false);
 
+  // Keep typing smooth: the (potentially large) lists are filtered with a
+  // deferred copy of what was typed, so the input itself never lags.
+  const deferredShopSearch = useDeferredValue(shopSearch);
+  const deferredMaterialSearch = useDeferredValue(materialSearch);
+
+  // shop id -> searchable text of every material that shop sells, so typing
+  // "gypsum" in the Shops search also lists the shops that have gypsum.
+  const shopMaterialIndex = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const m of localMaterials as any[]) {
+      const sid = m?.shop_id ?? m?.shopId;
+      if (sid === undefined || sid === null || sid === "") continue;
+      const key = String(sid);
+      const text = [m.name, m.code, m.brandName || m.brand_name || m.brand, m.modelNumber || m.model_number].filter(Boolean).join(" ");
+      const arr = map.get(key);
+      if (arr) arr.push(text); else map.set(key, [text]);
+    }
+    return map;
+  }, [localMaterials]);
+
   const filteredShops = useMemo(() => localShops.filter((s: any) => {
-    // text search
-    if (shopSearch) {
-      if (!fuzzySearch(shopSearch, [s.name || "", s.location || "", s.city || ""])) return false;
+    // text search (shop name / city / location, or any material the shop sells)
+    if (deferredShopSearch) {
+      const ownMatch = smartSearch(deferredShopSearch, [s.name || "", s.location || "", s.city || ""]);
+      if (!ownMatch) {
+        const mats = shopMaterialIndex.get(String(s.id)) || [];
+        if (!mats.some((t) => smartSearch(deferredShopSearch, t))) return false;
+      }
     }
 
     // vendor category filter
@@ -1017,7 +1041,7 @@ export default function AdminDashboard() {
     }
 
     return true;
-  }), [localShops, shopSearch, shopVendorCategoryFilter]);
+  }), [localShops, deferredShopSearch, shopVendorCategoryFilter, shopMaterialIndex]);
   // filteredMaterials is memoized because localMaterials can run into the
   // thousands of rows, and this filter previously re-ran from scratch,
   // synchronously, on every single render of this page — including
@@ -1027,10 +1051,15 @@ export default function AdminDashboard() {
   // materials catalog on every keystroke/render was the actual cause of
   // materials feeling slower to show than shops even though both loaded
   // from the store at the same time.
-  const filteredMaterials = useMemo(() => localMaterials.filter((m: any) => {
+  const filteredMaterials = useMemo(() => { const list = localMaterials.filter((m: any) => {
     // text search
-    if (materialSearch) {
-      if (!fuzzySearch(materialSearch, [m.name || "", m.code || ""])) return false;
+    if (deferredMaterialSearch) {
+      // Only the material's own name / code, so typing "gypsum" lists materials
+      // that are gypsum - not everything sold by a shop that has "Gypsum" in its name.
+      if (!smartSearch(deferredMaterialSearch, [
+        m.name || "",
+        m.code || "",
+      ])) return false;
     }
 
     // category filter (supports comma-separated stored categories)
@@ -1058,7 +1087,14 @@ export default function AdminDashboard() {
     }
 
     return true;
-  }), [localMaterials, materialSearch, materialCategoryFilter, materialSubcategoryFilter]);
+  });
+    // While searching, show the best matches first (stable for equal scores).
+    if (!deferredMaterialSearch) return list;
+    return list
+      .map((m: any, i: number) => ({ m, i, score: smartSearchScore(deferredMaterialSearch, m.name || "") }))
+      .sort((a: any, b: any) => b.score - a.score || a.i - b.i)
+      .map((x: any) => x.m);
+  }, [localMaterials, deferredMaterialSearch, materialCategoryFilter, materialSubcategoryFilter]);
 
   // SUPPORT MESSAGES STATE moved to top
 
@@ -2675,7 +2711,7 @@ export default function AdminDashboard() {
                           <Input
                             value={shopSearch}
                             onChange={(e) => setShopSearch(e.target.value)}
-                            placeholder="Search shops by name, city or location..."
+                            placeholder="Search shops by name, city, location or material..."
                             className="h-10 pl-9"
                           />
                         </div>
@@ -3116,7 +3152,7 @@ export default function AdminDashboard() {
                             <p className="text-center text-muted-foreground py-6">No categories created yet</p>
                           ) : (
                             categories
-                              .filter(cat => fuzzySearch(searchCategories, cat))
+                              .filter(cat => smartSearch(searchCategories, cat))
                               .map((cat: string, idx: number) => {
                                 const subCats = getSubCategoriesForCategory(cat);
                                 return (
@@ -3297,7 +3333,7 @@ export default function AdminDashboard() {
                           ) : (
                             subCategories
                               .filter(sub => {
-                                const matchesSearch = fuzzySearch(searchSubCategories, sub.name);
+                                const matchesSearch = smartSearch(searchSubCategories, sub.name);
                                 const matchesCategory = filterSubCategoryByCategory === "all" ||
                                   (filterSubCategoryByCategory === "uncategorized" ? !sub.category : sub.category === filterSubCategoryByCategory);
                                 return matchesSearch && matchesCategory;
@@ -3658,7 +3694,7 @@ export default function AdminDashboard() {
                           ) : (
                             products
                               .filter(prod => {
-                                const matchesSearch = fuzzySearch(searchProducts, prod.name);
+                                const matchesSearch = smartSearch(searchProducts, prod.name);
 
                                 let matchesSubCategory = filterProductBySubCategory === "all";
                                 if (filterProductBySubCategory === "uncategorized") {
@@ -4084,7 +4120,7 @@ export default function AdminDashboard() {
                     <div className="space-y-2 max-h-80 overflow-y-auto p-2">
                       {masterMaterials
                         .filter((t: any) => {
-                          const matchesSearch = fuzzySearch(masterSearch, [t.name || "", t.code || "", t.category || ""]);
+                          const matchesSearch = smartSearch(masterSearch, [t.name || "", t.code || "", t.category || ""]);
                           if (showOnlyUnlinked) {
                             return matchesSearch && !usedTemplateIds.has(t.id);
                           }

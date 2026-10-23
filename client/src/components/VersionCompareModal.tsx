@@ -196,13 +196,19 @@ export function VersionCompareModal({
   const getItemMetrics = (td: any, item: any, isLumpSum: boolean) => {
     const step11 = Array.isArray(td.step11_items) ? td.step11_items : [];
     let itemTotal = 0, itemQty = 0;
-    if (td.materialLines && td.targetRequiredQty !== undefined) {
-      try {
-        const res = computeBoq(td.configBasis, td.materialLines, td.targetRequiredQty);
-        const manualTotal = step11.filter((it: any) => it.manual).reduce((s: number, it: any) =>
-          s + (Number(it.qty) || 0) * (Number(it.supply_rate || 0) + Number(it.install_rate || 0)), 0);
-        itemTotal = res.grandTotal + manualTotal;
-      } catch { }
+    // Same branching as FinalizeBoq's getItemMetrics so totals match exactly.
+    if (td.targetRequiredQty !== undefined && td.targetRequiredQty !== null) {
+      if (td.materialLines) {
+        try {
+          const res = computeBoq(td.configBasis, td.materialLines, td.targetRequiredQty);
+          const manualTotal = step11.filter((it: any) => it.manual).reduce((s: number, it: any) =>
+            s + (Number(it.qty) || 0) * (Number(it.supply_rate || 0) + Number(it.install_rate || 0)), 0);
+          itemTotal = res.grandTotal + manualTotal;
+        } catch { }
+      } else {
+        itemTotal = step11.reduce((s: number, it: any) =>
+          s + (it.qty || 0) * ((it.supply_rate || 0) + (it.install_rate || 0)), 0);
+      }
       itemQty = td.targetRequiredQty;
     } else {
       itemTotal = step11.reduce((s: number, it: any) =>
@@ -211,7 +217,12 @@ export function VersionCompareModal({
     }
 
     let rate = itemQty > 0 ? itemTotal / itemQty : itemTotal;
-    if (isLumpSum) { itemQty = 1; rate = itemTotal; }
+    if (isLumpSum) {
+      // Lump sum keeps the amount frozen when it was converted to LS.
+      itemQty = 1;
+      if (td.ls_frozen_total !== undefined && td.ls_frozen_total !== null) itemTotal = Number(td.ls_frozen_total);
+      rate = itemTotal;
+    }
 
     // Parity with FinalizeBoq's getItemMetrics: standard/fixed rate overrides
     if (td.use_standard_rate && td.materialLines) {
@@ -268,7 +279,11 @@ export function VersionCompareModal({
     let td = item.table_data || {};
     if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
 
-    const isLumpSum = td.is_lump_sum === true || (String(td.finalize_unit || "").toLowerCase() === 'ls');
+    const lsLines: any[] = (Array.isArray(td.materialLines) && td.materialLines.length > 0)
+      ? td.materialLines
+      : (Array.isArray(td.step11_items) ? td.step11_items : []);
+    const allLinesLS = lsLines.length > 0 && lsLines.every((l: any) => String(l?.unit || "").trim().toLowerCase() === "ls");
+    const isLumpSum = td.is_lump_sum === true || (String(td.finalize_unit || "").toLowerCase() === 'ls') || allLinesLS;
     const metrics = getItemMetrics(td, item, isLumpSum);
 
     const currentStep11Items = Array.isArray(td.step11_items) ? td.step11_items : [];
@@ -352,32 +367,32 @@ export function VersionCompareModal({
   const comparisonData = useMemo(() => {
     if (!showComparison) return [];
 
-    const productMap = new Map<string, { base: any, compare: any }>();
+    // Items are matched across versions by product name + occurrence number, so
+    // two rows with the same name are compared one-to-one instead of the later
+    // row overwriting / being ignored (which showed wrong totals).
+    const productMap = new Map<string, { name: string; base: any, compare: any }>();
+    const makeKeys = (items: any[]) => {
+      const seen = new Map<string, number>();
+      return items.map(item => {
+        const data = extractItemData(item);
+        if (!data) return null;
+        const n = (seen.get(data.productName) || 0) + 1;
+        seen.set(data.productName, n);
+        return { data, key: `${data.productName}__${n}` };
+      }).filter(Boolean) as { data: any; key: string }[];
+    };
 
-    baseItems.forEach(item => {
-      const data = extractItemData(item);
-      if (data) {
-        const key = data.productName;
-        if (!productMap.has(key)) productMap.set(key, { base: data, compare: null });
-      }
+    makeKeys(baseItems).forEach(({ data, key }) => {
+      productMap.set(key, { name: data.productName, base: data, compare: null });
     });
 
-    compareItems.forEach(item => {
-      const data = extractItemData(item);
-      if (data) {
-        const key = data.productName;
-        if (productMap.has(key)) {
-          productMap.get(key)!.compare = data;
-        } else {
-          productMap.set(key, { base: null, compare: data });
-        }
-      }
+    makeKeys(compareItems).forEach(({ data, key }) => {
+      const existing = productMap.get(key);
+      if (existing) existing.compare = data;
+      else productMap.set(key, { name: data.productName, base: null, compare: data });
     });
 
-    return Array.from(productMap.entries()).map(([name, data]) => ({
-      name,
-      ...data
-    })).sort((a, b) => a.name.localeCompare(b.name));
+    return Array.from(productMap.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [baseItems, compareItems, showComparison]);
 
   // Summary stats
@@ -944,6 +959,9 @@ export function VersionCompareModal({
                 {/* Version badge row */}
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2 text-sm">
+                    <span className="px-2.5 py-0.5 bg-slate-100 border border-slate-200 rounded-md text-xs font-semibold text-slate-700">
+                      {projects.find(p => p.id === selectedProjectId)?.name || "—"}
+                    </span>
                     <span className="text-slate-500 text-xs">Comparing</span>
                     <span className="px-2.5 py-0.5 bg-indigo-50 border border-indigo-100 rounded-md text-xs font-semibold text-indigo-700 tabular-nums">
                       V{getBaseVersionNumber()}

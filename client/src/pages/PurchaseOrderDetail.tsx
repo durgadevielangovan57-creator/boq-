@@ -781,6 +781,19 @@ export default function PurchaseOrderDetail() {
             return;
         }
 
+        // Only ask for a reason when something actually needs justification:
+        // a quantity increase on an existing item, or a newly added item.
+        const needsReason = editedItems.some(item => {
+            const original = initialItems.find(o => o.id === item.id);
+            if (!original) return true;
+            return (parseFloat(item.qty) || 0) > (parseFloat(original.qty) || 0);
+        });
+
+        if (!needsReason) {
+            submitRevision("");
+            return;
+        }
+
         setShowReviseDialog(true);
         setReviseReason("");
     };

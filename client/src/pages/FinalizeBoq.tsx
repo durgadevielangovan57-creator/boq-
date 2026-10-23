@@ -94,7 +94,8 @@ import {
   Star,
   GitMerge,
   Check,
-  FolderOpen
+  FolderOpen,
+  Filter,
 } from "lucide-react";
 import { BoqAnalysisDialog } from "@/components/BoqAnalysisDialog";
 import { RateSuggestionPopover } from "@/components/RateSuggestionPopover";
@@ -1155,6 +1156,8 @@ export default function FinalizeBoq() {
   }, [projects, projectStatusFilter, projectSearchTerm]);
   const [boqSearchTerm, setBoqSearchTerm] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
+  // "New Items" filter (Table Actions): when on, only rows newly synced from the BOM are listed.
+  const [showNewItemsOnly, setShowNewItemsOnly] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [historyModalVersionId, setHistoryModalVersionId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -1250,6 +1253,9 @@ export default function FinalizeBoq() {
         if (itemCat !== categoryFilter) return false;
       }
 
+      // Filter: only items newly synced from the BOM (same flag that highlights the row)
+      if (showNewItemsOnly && !td.synced_from_bom_at) return false;
+
       return true;
     });
 
@@ -1267,7 +1273,14 @@ export default function FinalizeBoq() {
     }
 
     return filtered;
-  }, [boqItems, boqSearchTerm, categoryFilter, categoryOrder]);
+  }, [boqItems, boqSearchTerm, categoryFilter, categoryOrder, showNewItemsOnly]);
+
+  // How many rows are newly synced from the BOM (drives the New Items action)
+  const newItemsCount = React.useMemo(() => boqItems.filter(item => {
+    let td: any = item.table_data || {};
+    if (typeof td === "string") try { td = JSON.parse(td); } catch { td = {}; }
+    return !!td.synced_from_bom_at;
+  }).length, [boqItems]);
 
   // BOM View (compact panel) items, re-sorted to follow the exact same
   // category order as the main Finalize BOQ table (categoryOrder) — the
@@ -1306,7 +1319,7 @@ export default function FinalizeBoq() {
   // Reset to page 1 when filter changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [boqSearchTerm, categoryFilter]);
+  }, [boqSearchTerm, categoryFilter, showNewItemsOnly]);
 
   const availableCategories = React.useMemo(() => {
     // Read category_order from active BOQ version first, then fallback to BOM version
@@ -5248,6 +5261,14 @@ export default function FinalizeBoq() {
     destructive?: boolean;
   }[] = [
       {
+        id: "filter-new-items",
+        label: showNewItemsOnly ? "Show All Items" : `New Items (${newItemsCount})`,
+        icon: <Filter className="w-3.5 h-3.5" />,
+        // Nothing to filter on if no row has been newly synced (but always allow turning it off)
+        disabled: !showNewItemsOnly && newItemsCount === 0,
+        onClick: () => setShowNewItemsOnly(v => !v),
+      },
+      {
         id: "add-global-column",
         label: "Add Global Column",
         icon: <Plus className="w-3.5 h-3.5" />,
@@ -6563,6 +6584,36 @@ export default function FinalizeBoq() {
                   )}
                 </div>
 
+                {/* NEW: "New Items" button — blinks while the BOQ has newly added
+                    (synced from BOM) items. Click = show only those items;
+                    click again = back to the full list. Uses the existing
+                    showNewItemsOnly / newItemsCount state. */}
+                {(newItemsCount > 0 || showNewItemsOnly) && (
+                  <>
+                    {!showNewItemsOnly && (
+                      <style>{`
+                        @keyframes newItemsBlink {
+                          0%, 49% { opacity: 1; }
+                          50%, 100% { opacity: 0.3; }
+                        }
+                        .new-items-blink { animation: newItemsBlink 0.8s steps(1, end) infinite; }
+                      `}</style>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setShowNewItemsOnly(v => !v)}
+                      title={showNewItemsOnly ? "Click to clear the filter and show all items" : `${newItemsCount} new item(s) added — click to show only these`}
+                      className={`flex items-center gap-2 h-11 px-4 rounded-lg border text-[11px] font-bold uppercase tracking-wide shrink-0 cursor-pointer ${showNewItemsOnly
+                        ? "bg-indigo-600 border-indigo-700 text-white shadow-md"
+                        : "new-items-blink bg-indigo-500 border-indigo-600 text-white shadow-md"
+                        }`}
+                    >
+                      <Plus className="w-4 h-4" />
+                      {showNewItemsOnly ? `Showing New (${newItemsCount}) · Clear` : `New Items (${newItemsCount})`}
+                    </button>
+                  </>
+                )}
+
                 {/* NEW: Price Update alert — blinks non-stop whenever any material
                     used in this BOQ has a rate in the master catalog that no longer
                     matches the rate captured when it was added here. Silent/grey
@@ -6787,6 +6838,24 @@ export default function FinalizeBoq() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Active "New Items" filter chip — sits right next to Table Actions with a
+                        clear (×) button so the filter can be removed without opening the menu. */}
+                    {showNewItemsOnly && (
+                      <div className="inline-flex items-center gap-1.5 h-9 pl-3 pr-1.5 rounded-[14px] border border-indigo-200 bg-indigo-50 text-[11px] font-bold uppercase tracking-wide text-indigo-700 shadow-sm">
+                        <Filter className="w-3.5 h-3.5" />
+                        New Items ({filteredBoqItems.length})
+                        <button
+                          type="button"
+                          onClick={() => setShowNewItemsOnly(false)}
+                          title="Clear New Items filter"
+                          aria-label="Clear New Items filter"
+                          className="ml-0.5 inline-flex items-center justify-center h-6 w-6 rounded-full text-indigo-500 hover:bg-indigo-100 hover:text-indigo-800 transition-colors"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
 
                     {/* Bulk actions for the current checkbox selection — shown right next to
                         "Table Actions" (moved here from above the search bar per request).
