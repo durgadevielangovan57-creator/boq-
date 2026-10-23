@@ -382,6 +382,7 @@ export default function PurchaseOrders() {
     // doesn't exist yet.
     const [zohoMaterialMappingPo, setZohoMaterialMappingPo] = useState<PurchaseOrder | null>(null);
     const [zohoMaterialMappingMaterialId, setZohoMaterialMappingMaterialId] = useState<string | null>(null);
+    const [zohoMaterialMappingItemRowId, setZohoMaterialMappingItemRowId] = useState<string | null>(null);
     const [zohoMaterialMappingMaterialName, setZohoMaterialMappingMaterialName] = useState<string>("");
     const [zohoMaterialMappingMaterialRate, setZohoMaterialMappingMaterialRate] = useState<number>(0);
     const [zohoMaterialMappingCandidates, setZohoMaterialMappingCandidates] = useState<{ id: string; name: string }[]>([]);
@@ -463,6 +464,7 @@ export default function PurchaseOrders() {
                     // just showing a dead-end error.
                     setZohoMaterialMappingPo(po);
                     setZohoMaterialMappingMaterialId(data.materialId || null);
+                    setZohoMaterialMappingItemRowId(data.itemRowId || null);
                     setZohoMaterialMappingMaterialName(data.materialName || "this material");
                     setZohoMaterialMappingMaterialRate(Number(data.materialRate) || 0);
                     setZohoMaterialMappingCandidates(Array.isArray(data.candidates) ? data.candidates : []);
@@ -586,6 +588,7 @@ export default function PurchaseOrders() {
     const closeZohoMaterialMappingDialog = () => {
         setZohoMaterialMappingPo(null);
         setZohoMaterialMappingMaterialId(null);
+        setZohoMaterialMappingItemRowId(null);
         setZohoMaterialMappingMaterialName("");
         setZohoMaterialMappingMaterialRate(0);
         setZohoMaterialMappingCandidates([]);
@@ -598,13 +601,14 @@ export default function PurchaseOrders() {
     const handleSelectZohoItemMapping = async (item: { id: string; name: string }) => {
         const po = zohoMaterialMappingPo;
         const materialId = zohoMaterialMappingMaterialId;
-        if (!po || !materialId) return;
+        const itemRowId = zohoMaterialMappingItemRowId;
+        if (!po || (!materialId && !itemRowId)) return;
         setZohoMaterialMappingSavingId(item.id);
         try {
             const res = await apiFetch(`/api/zoho-books/purchase-orders/${po.id}/map-material`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ materialId, zohoItemId: item.id }),
+                body: JSON.stringify({ materialId, itemRowId, zohoItemId: item.id }),
             });
             const data = await res.json().catch(() => ({}));
             if (res.ok) {
@@ -635,7 +639,8 @@ export default function PurchaseOrders() {
     const handleCreateZohoMaterial = async () => {
         const po = zohoMaterialMappingPo;
         const materialId = zohoMaterialMappingMaterialId;
-        if (!po || !materialId) return;
+        const itemRowId = zohoMaterialMappingItemRowId;
+        if (!po || (!materialId && !itemRowId)) return;
         const name = zohoMaterialCreateName.trim();
         if (!name) {
             toast({ title: "Item name required", description: "Please enter a name for the new item.", variant: "destructive" });
@@ -647,7 +652,7 @@ export default function PurchaseOrders() {
             const res = await apiFetch(`/api/zoho-books/purchase-orders/${po.id}/create-material`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ materialId, name, rate: Number.isFinite(rate) ? rate : 0 }),
+                body: JSON.stringify({ materialId, itemRowId, name, rate: Number.isFinite(rate) ? rate : 0 }),
             });
             const data = await res.json().catch(() => ({}));
             if (res.ok) {

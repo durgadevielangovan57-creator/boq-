@@ -75,6 +75,11 @@ async function ensureZohoSchema() {
         await query(
             `ALTER TABLE materials ADD COLUMN IF NOT EXISTS zoho_item_id TEXT`
         );
+        // Per-PO-line Zoho item mapping. Used when a line has no (or an unknown)
+        // material id, so a chosen mapping is still remembered for that line.
+        await query(
+            `ALTER TABLE purchase_order_items ADD COLUMN IF NOT EXISTS zoho_item_id TEXT`
+        );
         console.log("[zoho-routes] Zoho sync columns verified/created");
     } catch (err: any) {
         console.warn(
@@ -434,7 +439,7 @@ export async function registerZohoBooksRoutes(app: Express) {
 
                     // Resolve material -> Zoho item mapping, same cached-first,
                     // safe-auto-match-second approach as vendor mapping above.
-                    let materialZohoItemId: string | null = row.material_zoho_item_id || null;
+                    let materialZohoItemId: string | null = row.zoho_item_id || row.material_zoho_item_id || null;
                     // The item's own tax id in Zoho Books, when we can see it. Only
                     // populated here when a fresh search just returned it; the
                     // cached-mapping path below fetches it separately since a cached
@@ -461,6 +466,10 @@ export async function registerZohoBooksRoutes(app: Express) {
                                     [String(row.material_id), materialZohoItemId]
                                 );
                             }
+                            await query(
+                                `UPDATE purchase_order_items SET zoho_item_id = NULL WHERE id::text = $1 AND zoho_item_id = $2`,
+                                [String(row.id), materialZohoItemId]
+                            );
                             materialZohoItemId = null;
                         }
                     }
@@ -484,6 +493,10 @@ export async function registerZohoBooksRoutes(app: Express) {
                                     [materialZohoItemId, String(row.material_id)]
                                 );
                             }
+                            await query(
+                                `UPDATE purchase_order_items SET zoho_item_id = $1 WHERE id::text = $2`,
+                                [materialZohoItemId, String(row.id)]
+                            );
                         } else if (itemMatch.status === "error") {
                             const isAuthError = itemMatch.message === "ZOHO_AUTH_FAILED" || itemMatch.message === "ZOHO_NOT_CONFIGURED";
                             const errorMessage = isAuthError
@@ -514,6 +527,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                                 zohoMappingRequired: true,
                                 mappingType: "material",
                                 materialId: row.material_id ? String(row.material_id) : null,
+                                itemRowId: row.id ? String(row.id) : null,
                                 materialName: displayName,
                                 materialRate: rate,
                                 candidates:
@@ -963,8 +977,9 @@ export async function registerZohoBooksRoutes(app: Express) {
         async (req: Request, res: Response) => {
             const { id } = req.params;
             const materialId = String(req.body?.materialId || "").trim();
+            const itemRowId = String(req.body?.itemRowId || "").trim();
             const zohoItemId = String(req.body?.zohoItemId || "").trim();
-            if (!materialId) {
+            if (!materialId && !itemRowId) {
                 return res.status(400).json({ message: "A material could not be identified for this mapping." });
             }
             if (!zohoItemId) {
@@ -974,9 +989,9 @@ export async function registerZohoBooksRoutes(app: Express) {
             try {
                 const check = await query(
                     `SELECT 1 FROM purchase_order_items poi
-           WHERE poi.po_id = $1 AND poi.material_id = $2
+           WHERE poi.po_id = $1 AND (poi.id::text = $2 OR ($3 <> '' AND poi.material_id = $3))
            LIMIT 1`,
-                    [id, materialId]
+                    [id, itemRowId, materialId]
                 );
                 if (check.rows.length === 0) {
                     return res.status(422).json({
@@ -984,11 +999,20 @@ export async function registerZohoBooksRoutes(app: Express) {
                     });
                 }
 
-                // Scoped to exactly this one material - never a bulk update.
-                await query(`UPDATE materials SET zoho_item_id = $1 WHERE id::text = $2`, [
-                    zohoItemId,
-                    materialId,
-                ]);
+                // Remember it on the material (reused by future POs)...
+                if (materialId) {
+                    await query(`UPDATE materials SET zoho_item_id = $1 WHERE id::text = $2`, [
+                        zohoItemId,
+                        materialId,
+                    ]);
+                }
+                // ...and on this PO's line(s), so the sync can never ask again for
+                // the same line even when the material record can't be found.
+                await query(
+                    `UPDATE purchase_order_items SET zoho_item_id = $1
+           WHERE po_id = $2 AND (id::text = $3 OR ($4 <> '' AND material_id = $4))`,
+                    [zohoItemId, id, itemRowId, materialId]
+                );
 
                 // Clear any previous failed-sync state so a retry starts clean.
                 await query(
@@ -1023,10 +1047,11 @@ export async function registerZohoBooksRoutes(app: Express) {
         async (req: Request, res: Response) => {
             const { id } = req.params;
             const materialId = String(req.body?.materialId || "").trim();
+            const itemRowId = String(req.body?.itemRowId || "").trim();
             const name = String(req.body?.name || "").trim();
             const rate = Number(req.body?.rate);
 
-            if (!materialId) {
+            if (!materialId && !itemRowId) {
                 return res.status(400).json({ message: "A material could not be identified for this mapping." });
             }
             if (!name) {
@@ -1042,9 +1067,9 @@ export async function registerZohoBooksRoutes(app: Express) {
 
                 const check = await query(
                     `SELECT 1 FROM purchase_order_items poi
-           WHERE poi.po_id = $1 AND poi.material_id = $2
+           WHERE poi.po_id = $1 AND (poi.id::text = $2 OR ($3 <> '' AND poi.material_id = $3))
            LIMIT 1`,
-                    [id, materialId]
+                    [id, itemRowId, materialId]
                 );
                 if (check.rows.length === 0) {
                     return res.status(422).json({
@@ -1061,10 +1086,17 @@ export async function registerZohoBooksRoutes(app: Express) {
                 }
 
                 // Scoped to exactly this one material - never a bulk update.
-                await query(`UPDATE materials SET zoho_item_id = $1 WHERE id::text = $2`, [
-                    created.candidate.itemId,
-                    materialId,
-                ]);
+                if (materialId) {
+                    await query(`UPDATE materials SET zoho_item_id = $1 WHERE id::text = $2`, [
+                        created.candidate.itemId,
+                        materialId,
+                    ]);
+                }
+                await query(
+                    `UPDATE purchase_order_items SET zoho_item_id = $1
+           WHERE po_id = $2 AND (id::text = $3 OR ($4 <> '' AND material_id = $4))`,
+                    [created.candidate.itemId, id, itemRowId, materialId]
+                );
 
                 await query(
                     `UPDATE purchase_orders
