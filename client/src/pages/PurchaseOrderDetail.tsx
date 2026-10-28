@@ -85,6 +85,7 @@ interface PurchaseOrder {
     items?: PurchaseOrderItem[];
     version_number?: string;
     rateReductions?: any[];
+    source?: string;
 }
 
 interface PurchaseOrderItem {
@@ -380,7 +381,7 @@ export default function PurchaseOrderDetail() {
                 ["ANNEXURE"],
                 [`Annexure No.`, po.po_number],
                 [`Date`, po.created_at ? new Date(po.created_at).toLocaleDateString('en-IN') : ''],
-                [`BOM Version`, po.version_number ? `V${po.version_number}` : 'N/A'],
+                ...(po.version_number ? [[`BOM Version`, `V${po.version_number}`]] : []),
                 [],
                 [`Bill From`, po.vendor_name || "Vendor"],
                 [`Bill From Address`, [po.vendor_location, po.vendor_city, po.vendor_state, po.vendor_pincode].filter(Boolean).join(', ')],
@@ -1029,6 +1030,16 @@ export default function PurchaseOrderDetail() {
                             {isGeneratingExcel ? "Generating..." : "Download Excel"}
                         </Button>
 
+                        {po?.source === "manual" && po?.status?.toLowerCase() !== "approved" && !isReviseMode && (
+                            <Button
+                                variant="outline"
+                                onClick={() => setLocation(`/purchase-orders/edit/${po.id}`)}
+                                className="border-slate-300 hover:bg-slate-50"
+                            >
+                                <Edit className="h-4 w-4 mr-2" /> Edit PO
+                            </Button>
+                        )}
+
                         {po.status === "draft" && (
                             <Button onClick={() => handleStatusUpdate("pending_approval")} className="bg-blue-600 hover:bg-blue-700 text-white">
                                 Submit for Approval
@@ -1140,10 +1151,12 @@ export default function PurchaseOrderDetail() {
                                             <span className="font-bold text-slate-700">{po?.created_at ? new Date(po.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }) : ''}</span>
                                         </div>
 
+                                        {po?.version_number && (
                                         <div className="flex justify-end gap-3 text-xs">
                                             <span className="text-slate-500 uppercase font-semibold tracking-wider">BOM Version:</span>
-                                            <span className="font-bold text-blue-700">{po?.version_number ? `V${po.version_number}` : 'N/A'}</span>
+                                            <span className="font-bold text-blue-700">V{po.version_number}</span>
                                         </div>
+                                        )}
 
                                         {isReviseMode ? (
                                             <div className="flex justify-end gap-2 items-center">
@@ -1531,7 +1544,7 @@ export default function PurchaseOrderDetail() {
                                                                 {po.comments || po.approval_comments}
                                                             </div>
                                                         )}
-                                                        {po.vendor_terms && (
+                                                        {po.vendor_terms && !/^\d+$/.test(po.vendor_terms.trim()) && (
                                                             <div className="text-[11px] text-slate-600 whitespace-pre-wrap bg-blue-50/40 p-4 rounded-md border border-blue-100/50 leading-relaxed">
                                                                 <p className="font-bold text-blue-800 mb-1 uppercase text-[9px] tracking-wider">Shop Terms & Conditions:</p>
                                                                 {po.vendor_terms}

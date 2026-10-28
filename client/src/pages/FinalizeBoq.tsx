@@ -252,7 +252,9 @@ const getItemMetrics = (td: any) => {
     try {
       const baseQty = Number(td.configBasis?.baseRequiredQty || 1);
       const resBase = computeBoq({ ...td.configBasis, wastagePctDefault: 0 }, td.materialLines.map((l: any) => ({ ...l, applyWastage: false })), baseQty);
-      finalRate = resBase.grandTotal / baseQty;
+      // CHANGED: use the BOM's saved total_cost for Fixed Rate items so BOQ matches BOM
+      const savedTotalCost = Number(td.total_cost ?? td.configBasis?.total_cost ?? 0);
+      finalRate = savedTotalCost > 0 ? savedTotalCost / baseQty : resBase.grandTotal / baseQty;
       itemTotal = finalRate * itemQty;
     } catch { }
   } else if (td.use_fixed_rate) {
@@ -4442,7 +4444,9 @@ export default function FinalizeBoq() {
               tableData.materialLines.map((l: any) => ({ ...l, applyWastage: false })),
               baseQty
             );
-            rateSqft = resBase.grandTotal / baseQty;
+            // CHANGED: use the BOM's saved total_cost for Fixed Rate items so BOQ matches BOM
+            const savedTotalCost = Number(tableData.total_cost ?? tableData.configBasis?.total_cost ?? 0);
+            rateSqft = savedTotalCost > 0 ? savedTotalCost / baseQty : resBase.grandTotal / baseQty;
           } catch { }
         } else if (tableData.use_fixed_rate) {
           rateSqft = Number(tableData.fixed_rate || 0);
@@ -4778,7 +4782,9 @@ export default function FinalizeBoq() {
               tableData.materialLines.map((l: any) => ({ ...l, applyWastage: false })),
               baseQty
             );
-            rateSqft = resBase.grandTotal / baseQty;
+            // CHANGED: use the BOM's saved total_cost for Fixed Rate items so BOQ matches BOM
+            const savedTotalCost = Number(tableData.total_cost ?? tableData.configBasis?.total_cost ?? 0);
+            rateSqft = savedTotalCost > 0 ? savedTotalCost / baseQty : resBase.grandTotal / baseQty;
           } catch { }
         } else if (tableData.use_fixed_rate) {
           rateSqft = Number(tableData.fixed_rate || 0);
@@ -7546,7 +7552,9 @@ export default function FinalizeBoq() {
                               tableData.materialLines.map((l: any) => ({ ...l, applyWastage: false })),
                               baseQty
                             );
-                            rateSqft = resBase.grandTotal / baseQty;
+                            // CHANGED: use the BOM's saved total_cost for Fixed Rate items so BOQ matches BOM
+                            const savedTotalCost = Number(tableData.total_cost ?? tableData.configBasis?.total_cost ?? 0);
+                            rateSqft = savedTotalCost > 0 ? savedTotalCost / baseQty : resBase.grandTotal / baseQty;
                             total = rateSqft * (isLumpSum ? 1 : (tableData.targetRequiredQty || 1));
                           } catch { }
                         } else if (tableData.use_fixed_rate) {

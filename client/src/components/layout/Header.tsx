@@ -82,6 +82,7 @@ export function Header() {
     { label: "Finalize BOQ", href: "/finalize-bom" },
     { label: "Site Reports", href: "/site-reports" },
     { label: "Purchase Orders", href: "/purchase-orders" },
+    { label: "Reports (Analytics & POs)", href: "/reports" },
     { label: "Delivery Tracker", href: "/delivery-tracker" },
     { label: "PO Approvals", href: "/po-approvals" },
     { label: "Raise PO Request", href: "/raise-po-request" },
@@ -101,8 +102,6 @@ export function Header() {
     { label: "User Manual", href: "/user-manual" },
   ];
 
-  const filteredSearchPages = searchablePages.filter(p => p.label.toLowerCase().includes(searchQuery.toLowerCase()));
-
   // Role helpers — same as Sidebar.tsx
   const isAdmin = user?.role === "admin";
   const isSoftwareTeam = user?.role === "software_team";
@@ -112,6 +111,11 @@ export function Header() {
   const isContractor = user?.role === "contractor";
   const isAdminOrSoftware = isAdmin || isSoftwareTeam;
   const isAdminOnly = isAdmin;
+
+  const filteredSearchPages = searchablePages.filter(p => {
+    if (p.href === "/reports" && !isAdminOrSoftware) return false;
+    return p.label.toLowerCase().includes(searchQuery.toLowerCase());
+  });
 
   // isVisible — same logic as Sidebar.tsx
   const isVisible = (

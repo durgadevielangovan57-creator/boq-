@@ -8255,9 +8255,10 @@ export async function registerRoutes(
     if (!sourceTd || typeof sourceTd !== "object") return changedKeys;
     for (const key of LINE_SYNC_KEYS) {
       if (sourceTd[key] === undefined || sourceTd[key] === null) continue;
-      let srcVal = key === "materialLines" && Array.isArray(sourceTd[key])
-        ? effectiveBomMaterialLines(sourceTd[key])
-        : sourceTd[key];
+      // CHANGED: copy the BOM's lines exactly as the BOM shows them (amended rate included),
+      // instead of reverting unapproved amended rates to original_rate. This keeps the BOQ
+      // total equal to the BOM budget. effectiveBomMaterialLines() is kept above, unused here.
+      let srcVal = sourceTd[key];
       // A value edited DIRECTLY in the BOQ wins: keep those fields from the BOQ line.
       if (key === "materialLines" || key === "step11_items") {
         srcVal = keepBoqEditedFields(srcVal, newTd[key]);
@@ -14847,20 +14848,22 @@ export async function registerRoutes(
         `SELECT po.*, po.total as total_amount,
         p.name as project_name, p.client as project_client, p.location as project_location,
         COALESCE(po.vendor_name, s.name, po.vendor_id) as vendor_name,
-        COALESCE(po.version_number, (
+        CASE WHEN COALESCE(po.source, '') = 'manual' THEN po.version_number
+        ELSE COALESCE(po.version_number, (
           SELECT CAST(v.version_number AS TEXT)
           FROM boq_versions v
           WHERE v.project_id = po.project_id AND v.created_at <= po.created_at
           ORDER BY v.created_at DESC
           LIMIT 1
-        )) as version_number,
-        COALESCE(po.version_id, (
+        )) END as version_number,
+        CASE WHEN COALESCE(po.source, '') = 'manual' THEN po.version_id
+        ELSE COALESCE(po.version_id, (
           SELECT CAST(v.id AS TEXT)
           FROM boq_versions v
           WHERE v.project_id = po.project_id AND v.created_at <= po.created_at
           ORDER BY v.created_at DESC
           LIMIT 1
-        )) as version_id,
+        )) END as version_id,
         s.location as vendor_location, s.new_location as vendor_new_location, s.city as vendor_city,
         s.state as vendor_state, s.pincode as vendor_pincode, s.gstno as vendor_gstin,
         s.contactnumber as vendor_phone, s.phonecountrycode as vendor_phone_code,

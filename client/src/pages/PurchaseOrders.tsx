@@ -42,6 +42,7 @@ import {
     AlertCircle,
     PlusCircle,
     Merge,
+    Edit,
 } from "lucide-react";
 import {
     Table,
@@ -96,6 +97,7 @@ interface PurchaseOrder {
     zoho_synced_at?: string | null;
     zoho_sync_error?: string | null;
     merged_from?: string | null;
+    source?: string | null;
 }
 
 interface Project {
@@ -1032,6 +1034,7 @@ export default function PurchaseOrders() {
     const handleSelectProject = (projectId: string) => {
         setSelectedProjectId(projectId);
         setProjectFilter(projectId);
+        setLocation(`/purchase-orders?projectId=${projectId}`);
     };
 
     const handleBackToProjects = () => {
@@ -1104,7 +1107,21 @@ export default function PurchaseOrders() {
                         <h1 className="text-3xl font-bold tracking-tight">Annexures</h1>
                         <p className="text-muted-foreground">Manage and track your procurement orders.</p>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex items-center gap-2">
+                        <Button
+                            size="sm"
+                            onClick={() => {
+                                if (selectedProjectId && selectedProjectId !== "all") {
+                                    setLocation(`/purchase-orders/create?projectId=${selectedProjectId}`);
+                                } else {
+                                    setLocation("/purchase-orders/create");
+                                }
+                            }}
+                            className="h-9 gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm"
+                        >
+                            <Plus className="h-4 w-4" />
+                            Create Purchase Order
+                        </Button>
                         {user?.role === 'admin' && (
                             <Button
                                 variant="outline"
@@ -1359,6 +1376,10 @@ export default function PurchaseOrders() {
                                                                     <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 font-bold">
                                                                         V{mainPo!.version_number}
                                                                     </Badge>
+                                                                ) : mainPo!.source === 'manual' ? (
+                                                                    <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200 text-xs">
+                                                                        Direct PO
+                                                                    </Badge>
                                                                 ) : (
                                                                     <span className="text-muted-foreground italic text-xs">N/A</span>
                                                                 )}
@@ -1384,6 +1405,21 @@ export default function PurchaseOrders() {
                                                                             }}
                                                                         >
                                                                             <Trash2 className="h-4 w-4" />
+                                                                        </Button>
+                                                                    )}
+                                                                    {mainPo!.source === 'manual' && mainPo!.status?.toLowerCase() !== 'approved' && (
+                                                                        <Button
+                                                                            variant="ghost"
+                                                                            size="sm"
+                                                                            className="h-8 w-8 p-0 text-amber-600 hover:text-amber-800 hover:bg-amber-50"
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                const returnProj = (selectedProjectId && selectedProjectId !== "all") ? selectedProjectId : mainPo!.project_id;
+                                                                                setLocation(returnProj ? `/purchase-orders/edit/${mainPo!.id}?returnProjectId=${returnProj}` : `/purchase-orders/edit/${mainPo!.id}`);
+                                                                            }}
+                                                                            title="Edit Purchase Order"
+                                                                        >
+                                                                            <Edit className="h-4 w-4" />
                                                                         </Button>
                                                                     )}
                                                                     <Button
@@ -1495,6 +1531,10 @@ export default function PurchaseOrders() {
                                                                         <Badge variant="outline" className="bg-blue-50/50 text-blue-600 border-blue-100 text-[10px] h-5">
                                                                             V{subPo.version_number}
                                                                         </Badge>
+                                                                    ) : subPo.source === 'manual' ? (
+                                                                        <Badge variant="outline" className="bg-purple-50/50 text-purple-600 border-purple-100 text-[10px] h-5">
+                                                                            Direct PO
+                                                                        </Badge>
                                                                     ) : "-"}
                                                                 </TableCell>
                                                                 <TableCell className="text-sm text-slate-500">{subPo.vendor_name || "N/A"}</TableCell>
@@ -1517,6 +1557,21 @@ export default function PurchaseOrders() {
                                                                             }}
                                                                         >
                                                                             <Trash2 className="h-3.5 w-3.5" />
+                                                                        </Button>
+                                                                    )}
+                                                                    {subPo.source === 'manual' && subPo.status?.toLowerCase() !== 'approved' && (
+                                                                        <Button
+                                                                            variant="ghost"
+                                                                            size="sm"
+                                                                            className="h-7 w-7 p-0 text-amber-600 hover:text-amber-800 hover:bg-amber-50"
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                const returnProj = (selectedProjectId && selectedProjectId !== "all") ? selectedProjectId : subPo.project_id;
+                                                                                setLocation(returnProj ? `/purchase-orders/edit/${subPo.id}?returnProjectId=${returnProj}` : `/purchase-orders/edit/${subPo.id}`);
+                                                                            }}
+                                                                            title="Edit Purchase Order"
+                                                                        >
+                                                                            <Edit className="h-3.5 w-3.5" />
                                                                         </Button>
                                                                     )}
                                                                     <Button

@@ -67,8 +67,8 @@
   --color-sidebar-border: hsl(var(--sidebar-border));
   --color-sidebar-ring: hsl(var(--sidebar-ring));
 
-  --font-sans: 'Inter', sans-serif;
-  --font-heading: 'Montserrat', sans-serif;
+  --font-sans: 'Roboto', sans-serif;
+  --font-heading: 'Roboto', sans-serif;
 
   --radius: 0.5rem;
 }

@@ -72,6 +72,7 @@ import SupplierShops from "@/pages/supplier/SupplierShops";
 import { SupplierSupport } from "@/pages/supplier/SupplierSupport";
 
 import PurchaseOrders from "@/pages/PurchaseOrders";
+import CreatePurchaseOrder from "@/pages/CreatePurchaseOrder";
 import PurchaseOrderDetail from "@/pages/PurchaseOrderDetail";
 import POApprovals from "@/pages/POApprovals";
 import DeliveryTracker from "@/pages/DeliveryTracker";
@@ -85,6 +86,7 @@ import UserManual from "@/pages/UserManual";
 import SiteReports from "@/pages/SiteReports";
 import CreateSiteReport from "@/pages/CreateSiteReport";
 import SiteReportDetail from "@/pages/SiteReportDetail";
+import Reports from "@/pages/Reports";
 
 function Router() {
   return (
@@ -134,6 +136,8 @@ function Router() {
 
       {/* ================= PROCUREMENT ================= */}
       <Route path="/purchase-orders" component={PurchaseOrders} />
+      <Route path="/purchase-orders/create" component={CreatePurchaseOrder} />
+      <Route path="/purchase-orders/edit/:id" component={CreatePurchaseOrder} />
       <Route path="/purchase-orders/:id" component={PurchaseOrderDetail} />
       <Route path="/po-approvals" component={POApprovals} />
       <Route path="/po-requests/:id" component={PORequestDetail} />
@@ -191,6 +195,10 @@ function Router() {
       <Route path="/site-reports" component={SiteReports} />
       <Route path="/site-reports/new" component={CreateSiteReport} />
       <Route path="/site-reports/:id" component={SiteReportDetail} />
+
+      {/* ================= REPORTS (ZOHO BOOKS STYLE) ================= */}
+      <Route path="/reports" component={Reports} />
+      <Route path="/reports/:reportId" component={Reports} />
 
       {/* ================= FALLBACK ================= */}
       <Route component={NotFound} />

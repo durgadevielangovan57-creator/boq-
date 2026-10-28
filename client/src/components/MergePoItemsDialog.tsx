@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { Loader2, Merge, AlertCircle, ChevronsUpDown, Check } from "lucide-react";
+import { Loader2, Merge, AlertCircle, ChevronsUpDown, Check, Search } from "lucide-react";
 import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
@@ -50,6 +50,7 @@ export default function MergePoItemsDialog({ open, onOpenChange, poIds, onMerged
     const [checked, setChecked] = useState<Set<string>>(new Set());
     const [manualRates, setManualRates] = useState<Record<string, string>>({});
     const [reason, setReason] = useState("");
+    const [itemSearch, setItemSearch] = useState("");
 
     const previewRequest = async (vId?: string) => {
         const res = await apiFetch("/api/purchase-orders/merge-items/preview", {
@@ -69,6 +70,7 @@ export default function MergePoItemsDialog({ open, onOpenChange, poIds, onMerged
         setChecked(new Set());
         setManualRates({});
         setReason("");
+        setItemSearch("");
         setVendorId("");
         setLoading(true);
         (async () => {
@@ -116,6 +118,32 @@ export default function MergePoItemsDialog({ open, onOpenChange, poIds, onMerged
         setChecked((prev) => {
             const next = new Set(prev);
             next.has(key) ? next.delete(key) : next.add(key);
+            return next;
+        });
+
+    const filteredGroups = useMemo(() => {
+        const q = itemSearch.trim().toLowerCase();
+        if (!q) return groups;
+        return groups.filter(
+            (g) =>
+                g.item.toLowerCase().includes(q) ||
+                (g.unit || "").toLowerCase().includes(q) ||
+                g.lines.some(
+                    (l) =>
+                        (l.vendorName || "").toLowerCase().includes(q) ||
+                        (l.poNumber || "").toLowerCase().includes(q)
+                )
+        );
+    }, [groups, itemSearch]);
+
+    const allFilteredChecked = filteredGroups.length > 0 && filteredGroups.every((g) => checked.has(g.key));
+
+    // Selects (or clears) every item currently visible in the list (respects the search filter)
+    const toggleSelectAll = () =>
+        setChecked((prev) => {
+            const next = new Set(prev);
+            if (allFilteredChecked) filteredGroups.forEach((g) => next.delete(g.key));
+            else filteredGroups.forEach((g) => next.add(g.key));
             return next;
         });
 
@@ -221,6 +249,27 @@ export default function MergePoItemsDialog({ open, onOpenChange, poIds, onMerged
                             </Popover>
                         </div>
 
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                            <div className="relative flex-1">
+                                <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                                <Input
+                                    value={itemSearch}
+                                    onChange={(e) => setItemSearch(e.target.value)}
+                                    placeholder="Search materials..."
+                                    className="h-9 pl-8"
+                                />
+                            </div>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={toggleSelectAll}
+                                disabled={loading || filteredGroups.length === 0}
+                            >
+                                {allFilteredChecked ? "Deselect all" : "Select all"}
+                            </Button>
+                        </div>
+
                         <div className="flex-1 overflow-y-auto border rounded-md min-h-[200px]">
                             {loading ? (
                                 <div className="flex items-center justify-center py-12 text-slate-500">
@@ -230,7 +279,14 @@ export default function MergePoItemsDialog({ open, onOpenChange, poIds, onMerged
                                 <table className="w-full text-sm">
                                     <thead className="bg-slate-50 sticky top-0 z-10">
                                         <tr className="text-left text-xs uppercase text-slate-500">
-                                            <th className="p-2 w-10"></th>
+                                            <th className="p-2 w-10">
+                                                <Checkbox
+                                                    checked={allFilteredChecked}
+                                                    onCheckedChange={toggleSelectAll}
+                                                    disabled={filteredGroups.length === 0}
+                                                    aria-label="Select all"
+                                                />
+                                            </th>
                                             <th className="p-2">Item</th>
                                             <th className="p-2">Currently in</th>
                                             <th className="p-2 text-right">Total qty</th>
@@ -239,7 +295,7 @@ export default function MergePoItemsDialog({ open, onOpenChange, poIds, onMerged
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {groups.map((g) => {
+                                        {filteredGroups.map((g) => {
                                             const rate = effectiveRate(g);
                                             const missing = vendorId && g.vendorRate == null;
                                             const higher = rate !== null && rate > g.avgOriginalRate + 0.005;
@@ -297,6 +353,13 @@ export default function MergePoItemsDialog({ open, onOpenChange, poIds, onMerged
                                                 </tr>
                                             );
                                         })}
+                                        {filteredGroups.length === 0 && (
+                                            <tr>
+                                                <td colSpan={6} className="p-6 text-center text-sm text-slate-500">
+                                                    No materials match "{itemSearch}".
+                                                </td>
+                                            </tr>
+                                        )}
                                     </tbody>
                                 </table>
                             )}

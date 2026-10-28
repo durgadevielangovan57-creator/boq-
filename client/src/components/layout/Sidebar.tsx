@@ -42,6 +42,7 @@ import {
   ChevronLeft,
   PlusCircle,
   FileStack,
+  BarChart3,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -171,6 +172,8 @@ export function Sidebar({ isOpen, setIsOpen }: SidebarProps) {
       loc.includes('form-builder') || loc.includes('tenders') ||
       loc.includes('po-approvals'))
       return 'procurement';
+    if (loc.includes('/reports'))
+      return 'reports';
     if (loc.includes('raise-po-request') || loc.includes('my-po-requests'))
       return 'porequests';
     if (loc.includes('approvals') || loc.includes('suppliers') ||
@@ -1241,6 +1244,18 @@ export function Sidebar({ isOpen, setIsOpen }: SidebarProps) {
               </div>
             );
           })()}
+
+          {/* Reports Section (Admin & Software Team Only) */}
+          {isAdminOrSoftware && (
+            <div className="space-y-0.5">
+              <DirectSectionLink
+                href="/reports"
+                icon={BarChart3}
+                label="Reports"
+                activePaths={["/reports"]}
+              />
+            </div>
+          )}
 
           {/* Approvals Section — hidden from sidebar per request; the header's
               "Approvals" dropdown now covers all of these (including PO Approvals,
