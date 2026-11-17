@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef, useDeferredValue } from "react";
 import { useLocation, useRoute } from "wouter";
 import { Layout } from "@/components/layout/Layout";
 import ProcurementTabBar from "@/components/ProcurementTabBar";
@@ -109,6 +109,9 @@ interface Material {
     hsn_code?: string;
     hsn_sac_code?: string;
     code?: string;
+    category?: string | null;
+    subcategory?: string | null;
+    brandName?: string | null;
 }
 
 interface POItem {
@@ -289,6 +292,13 @@ export default function CreatePurchaseOrder() {
     const [catalogSearch, setCatalogSearch] = useState<string>("");
     const [catalogActiveItemIdx, setCatalogActiveItemIdx] = useState<number | null>(null);
     const [isSearchingCatalog, setIsSearchingCatalog] = useState<boolean>(false);
+    // Catalog filters (category / subcategory) + incremental rendering
+    const [catalogCategory, setCatalogCategory] = useState<string>("");
+    const [catalogSubcategory, setCatalogSubcategory] = useState<string>("");
+    const [catalogFilterOptions, setCatalogFilterOptions] = useState<{ category: string; subcategory: string; count: number }[]>([]);
+    const [catalogVisibleCount, setCatalogVisibleCount] = useState<number>(100);
+    const catalogReqIdRef = useRef<number>(0);
+    const catalogDirtyRef = useRef<boolean>(false);
 
     // Vendor and Project combobox state
     const [vendorComboboxOpen, setVendorComboboxOpen] = useState<boolean>(false);
@@ -575,31 +585,74 @@ export default function CreatePurchaseOrder() {
         });
     };
 
-    // Debounced server search when typing 2+ chars
+    // Debounced server search (2+ chars and/or category / subcategory filter).
+    // Stale requests are cancelled and out-of-order responses are ignored.
     useEffect(() => {
         if (!catalogModalOpen) return;
         const q = catalogSearch.trim();
-        if (q.length < 2) return;
+        const hasQuery = q.length >= 2;
+        const hasFilter = !!(catalogCategory || catalogSubcategory);
+        // Nothing to search for, and no earlier search/filter results to reset
+        if (!hasQuery && !hasFilter && !catalogDirtyRef.current) return;
 
+        const controller = new AbortController();
         const timer = setTimeout(async () => {
+            const reqId = ++catalogReqIdRef.current;
             try {
                 setIsSearchingCatalog(true);
-                const res = await apiFetch(`/api/manual-purchase-orders/materials?q=${encodeURIComponent(q)}`);
-                if (res.ok) {
+                const params = new URLSearchParams();
+                if (hasQuery) params.set("q", q);
+                if (catalogCategory) params.set("category", catalogCategory);
+                if (catalogSubcategory) params.set("subcategory", catalogSubcategory);
+                const qs = params.toString();
+                const res = await apiFetch(
+                    `/api/manual-purchase-orders/materials${qs ? `?${qs}` : ""}`,
+                    { signal: controller.signal }
+                );
+                if (res.ok && reqId === catalogReqIdRef.current) {
                     const data = await res.json();
                     if (Array.isArray(data.materials)) {
                         setMaterials(data.materials);
+                        catalogDirtyRef.current = hasQuery || hasFilter;
                     }
                 }
-            } catch (err) {
-                console.error("Catalog server search failed", err);
+            } catch (err: any) {
+                if (err?.name !== "AbortError") console.error("Catalog server search failed", err);
             } finally {
-                setIsSearchingCatalog(false);
+                if (reqId === catalogReqIdRef.current) setIsSearchingCatalog(false);
             }
-        }, 300);
+        }, 250);
 
-        return () => clearTimeout(timer);
-    }, [catalogSearch, catalogModalOpen]);
+        return () => {
+            clearTimeout(timer);
+            controller.abort();
+        };
+    }, [catalogSearch, catalogCategory, catalogSubcategory, catalogModalOpen]);
+
+    // Load category / subcategory options once, the first time the catalog opens
+    useEffect(() => {
+        if (!catalogModalOpen || catalogFilterOptions.length > 0) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await apiFetch("/api/manual-purchase-orders/material-filters");
+                if (res.ok) {
+                    const data = await res.json();
+                    if (!cancelled && Array.isArray(data.filters)) setCatalogFilterOptions(data.filters);
+                }
+            } catch (err) {
+                console.error("Failed to load catalog filters", err);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [catalogModalOpen]);
+
+    // Start from the first page of results whenever the search or filters change
+    useEffect(() => {
+        setCatalogVisibleCount(100);
+    }, [catalogSearch, catalogCategory, catalogSubcategory, catalogModalOpen]);
 
     // Material search in catalog modal
     const openCatalogModal = async (targetIdx?: number) => {
@@ -664,19 +717,35 @@ export default function CreatePurchaseOrder() {
         setCatalogModalOpen(false);
     };
 
-    // Filter materials for catalog modal
+    // Filter materials for catalog modal: every typed word must match (any order), plus category / subcategory
+    const deferredCatalogSearch = useDeferredValue(catalogSearch);
     const filteredMaterials = useMemo(() => {
-        if (!catalogSearch.trim()) return materials;
-        const q = catalogSearch.toLowerCase();
-        return materials.filter(
-            (m) =>
-                m.name?.toLowerCase().includes(q) ||
-                m.technicalspecification?.toLowerCase().includes(q) ||
-                m.hsn_code?.toLowerCase().includes(q) ||
-                m.hsn_sac_code?.toLowerCase().includes(q) ||
-                m.code?.toLowerCase().includes(q)
-        );
-    }, [materials, catalogSearch]);
+        const tokens = deferredCatalogSearch.toLowerCase().split(/\s+/).filter(Boolean);
+        const cat = catalogCategory.trim().toLowerCase();
+        const sub = catalogSubcategory.trim().toLowerCase();
+        if (tokens.length === 0 && !cat && !sub) return materials;
+        return materials.filter((m) => {
+            if (cat && (m.category || "").trim().toLowerCase() !== cat) return false;
+            if (sub && (m.subcategory || "").trim().toLowerCase() !== sub) return false;
+            if (tokens.length === 0) return true;
+            const hay = `${m.name || ""} ${m.technicalspecification || ""} ${m.hsn_code || ""} ${m.hsn_sac_code || ""} ${m.code || ""} ${m.category || ""} ${m.subcategory || ""} ${m.brandName || ""}`.toLowerCase();
+            return tokens.every((t) => hay.includes(t));
+        });
+    }, [materials, deferredCatalogSearch, catalogCategory, catalogSubcategory]);
+
+    // Dropdown options for the catalog filters
+    const catalogCategories = useMemo(() => {
+        const map = new Map<string, number>();
+        catalogFilterOptions.forEach((o) => map.set(o.category, (map.get(o.category) || 0) + o.count));
+        return Array.from(map.entries()).map(([name, count]) => ({ name, count }));
+    }, [catalogFilterOptions]);
+    const catalogSubcategories = useMemo(() => {
+        const map = new Map<string, number>();
+        catalogFilterOptions
+            .filter((o) => o.subcategory && (!catalogCategory || o.category === catalogCategory))
+            .forEach((o) => map.set(o.subcategory, (map.get(o.subcategory) || 0) + o.count));
+        return Array.from(map.entries()).map(([name, count]) => ({ name, count }));
+    }, [catalogFilterOptions, catalogCategory]);
 
     // Financial Calculations (Zoho Books logic)
     const calculation = useMemo(() => {
@@ -1798,6 +1867,43 @@ export default function CreatePurchaseOrder() {
                                 className="pl-9 h-9"
                             />
                         </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2">
+                            <Select
+                                value={catalogCategory || "__all__"}
+                                onValueChange={(v) => {
+                                    setCatalogCategory(v === "__all__" ? "" : v);
+                                    setCatalogSubcategory("");
+                                }}
+                            >
+                                <SelectTrigger className="h-8 text-xs bg-white">
+                                    <SelectValue placeholder="All categories" />
+                                </SelectTrigger>
+                                <SelectContent className="max-h-64">
+                                    <SelectItem value="__all__">All categories</SelectItem>
+                                    {catalogCategories.map((c) => (
+                                        <SelectItem key={c.name} value={c.name}>
+                                            {c.name} ({c.count})
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                            <Select
+                                value={catalogSubcategory || "__all__"}
+                                onValueChange={(v) => setCatalogSubcategory(v === "__all__" ? "" : v)}
+                            >
+                                <SelectTrigger className="h-8 text-xs bg-white">
+                                    <SelectValue placeholder="All subcategories" />
+                                </SelectTrigger>
+                                <SelectContent className="max-h-64">
+                                    <SelectItem value="__all__">All subcategories</SelectItem>
+                                    {catalogSubcategories.map((c) => (
+                                        <SelectItem key={c.name} value={c.name}>
+                                            {c.name} ({c.count})
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
                         <div className="flex items-center justify-between text-xs text-muted-foreground pt-1.5">
                             <span>{filteredMaterials.length} material{filteredMaterials.length === 1 ? "" : "s"} available</span>
                             {isSearchingCatalog && (
@@ -1808,14 +1914,22 @@ export default function CreatePurchaseOrder() {
                         </div>
                     </DialogHeader>
 
-                    <div className="flex-1 overflow-y-auto max-h-[60vh] min-h-[300px] p-4 divide-y divide-slate-100">
+                    <div
+                        className="flex-1 overflow-y-auto max-h-[60vh] min-h-[300px] p-4 divide-y divide-slate-100"
+                        onScroll={(e) => {
+                            const el = e.currentTarget;
+                            if (el.scrollTop + el.clientHeight >= el.scrollHeight - 300) {
+                                setCatalogVisibleCount((c) => (c < filteredMaterials.length ? c + 100 : c));
+                            }
+                        }}
+                    >
                         {filteredMaterials.length === 0 ? (
                             <div className="py-12 text-center text-sm text-muted-foreground">
                                 {isSearchingCatalog ? "Searching catalog..." : "No materials match your search."}
                             </div>
                         ) : (
                             <div className="divide-y divide-slate-100">
-                                {filteredMaterials.map((mat) => (
+                                {filteredMaterials.slice(0, catalogVisibleCount).map((mat) => (
                                     <div
                                         key={mat.id}
                                         onClick={() => handleSelectMaterial(mat)}
@@ -1835,6 +1949,11 @@ export default function CreatePurchaseOrder() {
                                                     <span>HSN: <span className="font-mono">{mat.hsn_code || mat.hsn_sac_code}</span></span>
                                                 )}
                                                 <span>Unit: {mat.unit || "Nos"}</span>
+                                                {mat.category && (
+                                                    <span className="truncate">
+                                                        {mat.category}{mat.subcategory ? ` › ${mat.subcategory}` : ""}
+                                                    </span>
+                                                )}
                                             </div>
                                         </div>
                                         <div className="text-right flex-shrink-0">
@@ -1847,6 +1966,19 @@ export default function CreatePurchaseOrder() {
                                         </div>
                                     </div>
                                 ))}
+                                {filteredMaterials.length > catalogVisibleCount && (
+                                    <div className="py-3 text-center">
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-8 text-xs"
+                                            onClick={() => setCatalogVisibleCount((c) => c + 100)}
+                                        >
+                                            Show more ({filteredMaterials.length - catalogVisibleCount} remaining)
+                                        </Button>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>

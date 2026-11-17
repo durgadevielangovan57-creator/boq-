@@ -132,7 +132,7 @@ const parseImages = (imageField: any): string[] => {
 // Helper to append auth token to URLs for <img> and <a> tags
 const appendAuthToken = (url: string) => {
   if (!url || url.startsWith('data:')) return url;
-  
+
   // Do NOT append our backend JWT token to direct Supabase Storage URLs.
   // Doing so will cause Supabase to reject the request, as our backend JWT is invalid for them.
   if (url.includes('supabase.co')) {
@@ -2908,6 +2908,17 @@ export default function CreateSketchPlan() {
     if (updateCategory && material.category) newItems[idx].category = material.category;
     if (material.unit) {
       newItems[idx].unit = material.unit;
+      // Also update the visible Unit column (dimension_unit) to the new item's unit, so a
+      // unit synced earlier from the mobile app doesn't stay behind. Only applied when the
+      // item's unit is a recognised one; otherwise the existing unit is left as it is.
+      {
+        const rawUnit = String(material.unit).toLowerCase().trim();
+        const isFeetForm = rawUnit.includes("feet") || rawUnit === "ft" || rawUnit === "'";
+        const mappedUnit = normalizeDimensionUnit(String(material.unit));
+        if (mappedUnit !== "feet" || isFeetForm) {
+          newItems[idx].dimension_unit = mappedUnit as any;
+        }
+      }
       if (material.unit.toLowerCase() === "ls") {
         newItems[idx].dimension_unit = "ls";
         newItems[idx].qty = "1";

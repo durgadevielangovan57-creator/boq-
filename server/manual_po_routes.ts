@@ -147,7 +147,7 @@ export async function registerManualPoRoutes(app: Express) {
         async (req: Request, res: Response) => {
             try {
                 const search = (req.query.q as string || "").trim();
-                let queryStr = `SELECT m.id, m.name, m.unit, m.rate, 
+                let queryStr = `SELECT m.id, m.name, m.unit, m.rate, m.category, m.subcategory, m.brandname AS "brandName",
                                        m.technicalspecification, 
                                        COALESCE(
                                            NULLIF(TRIM(m.hsn_code), ''),
@@ -168,16 +168,73 @@ export async function registerManualPoRoutes(app: Express) {
                                 LEFT JOIN material_templates mt ON m.template_id = mt.id
                                 WHERE (m.disabled IS NOT TRUE AND m.is_trashed IS NOT TRUE)`;
                 const params: any[] = [];
-                if (search.length >= 2) {
-                    queryStr += ` AND (m.name ILIKE $1 OR COALESCE(m.code, mt.code, '') ILIKE $1 OR COALESCE(m.technicalspecification, '') ILIKE $1)`;
-                    params.push(`%${search}%`);
+                // Optional category / subcategory filters (exact, case-insensitive)
+                const categoryFilter = (req.query.category as string || "").trim();
+                const subcategoryFilter = (req.query.subcategory as string || "").trim();
+                if (categoryFilter) {
+                    params.push(categoryFilter);
+                    queryStr += ` AND LOWER(TRIM(COALESCE(m.category, ''))) = LOWER($${params.length})`;
                 }
-                queryStr += ` ORDER BY m.name ASC LIMIT 500`;
+                if (subcategoryFilter) {
+                    params.push(subcategoryFilter);
+                    queryStr += ` AND LOWER(TRIM(COALESCE(m.subcategory, ''))) = LOWER($${params.length})`;
+                }
+
+                let orderBy = ` ORDER BY m.name ASC`;
+                if (search.length >= 2) {
+                    // Multi-word search: every word must match somewhere (name, code, spec, HSN/SAC, category, brand),
+                    // in any order — so "door closer dorma" finds "Door Closer ... (Dorma)".
+                    const tokens = search.split(/\s+/).filter(Boolean).slice(0, 6);
+                    for (const tok of tokens) {
+                        params.push(`%${tok}%`);
+                        const n = params.length;
+                        queryStr += ` AND (m.name ILIKE $${n}
+                                        OR COALESCE(m.code, mt.code, '') ILIKE $${n}
+                                        OR COALESCE(m.technicalspecification, '') ILIKE $${n}
+                                        OR COALESCE(m.hsn_code, mt.hsn_code, '') ILIKE $${n}
+                                        OR COALESCE(m.sac_code, mt.sac_code, '') ILIKE $${n}
+                                        OR COALESCE(m.category, '') ILIKE $${n}
+                                        OR COALESCE(m.subcategory, '') ILIKE $${n}
+                                        OR COALESCE(m.brandname, '') ILIKE $${n})`;
+                    }
+                    // Best matches first: whole phrase in name, then name starting with the first word
+                    params.push(`%${search}%`);
+                    const phraseIdx = params.length;
+                    params.push(`${tokens[0]}%`);
+                    const startsIdx = params.length;
+                    orderBy = ` ORDER BY CASE WHEN m.name ILIKE $${startsIdx} THEN 0 WHEN m.name ILIKE $${phraseIdx} THEN 1 ELSE 2 END, m.name ASC`;
+                }
+                queryStr += `${orderBy} LIMIT 500`;
                 const result = await query(queryStr, params);
                 res.json({ materials: result.rows });
             } catch (err) {
                 console.error("GET /api/manual-purchase-orders/materials error:", err);
                 res.status(500).json({ message: "Failed to search materials" });
+            }
+        }
+    );
+
+    // GET /api/manual-purchase-orders/material-filters - Distinct category / subcategory options for the catalog filters
+    app.get(
+        "/api/manual-purchase-orders/material-filters",
+        authMiddleware,
+        async (_req: Request, res: Response) => {
+            try {
+                const result = await query(
+                    `SELECT TRIM(m.category) AS category,
+                            COALESCE(TRIM(m.subcategory), '') AS subcategory,
+                            COUNT(*)::int AS count
+                     FROM materials m
+                     WHERE (m.disabled IS NOT TRUE AND m.is_trashed IS NOT TRUE)
+                       AND COALESCE(TRIM(m.category), '') <> ''
+                     GROUP BY TRIM(m.category), COALESCE(TRIM(m.subcategory), '')
+                     ORDER BY TRIM(m.category) ASC, COALESCE(TRIM(m.subcategory), '') ASC`
+                );
+                res.set("Cache-Control", "private, max-age=60");
+                res.json({ filters: result.rows });
+            } catch (err) {
+                console.error("GET /api/manual-purchase-orders/material-filters error:", err);
+                res.status(500).json({ message: "Failed to load catalog filters" });
             }
         }
     );

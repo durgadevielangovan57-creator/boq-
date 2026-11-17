@@ -236,6 +236,23 @@ export default function CreateBom() {
   const [ignoredPpMismatches, setIgnoredPpMismatches] = useState<Set<string>>(new Set());
   const [projectStatusFilter, setProjectStatusFilter] = useState<string>("all");
   const [projectSearchTerm, setProjectSearchTerm] = useState("");
+  // Keeps the cursor inside the "Search projects..." box while typing (the dropdown
+  // list re-renders on every letter and was pulling focus away to an item).
+  const projectSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const refocusProjectSearch = useCallback(() => {
+    const restore = () => {
+      const el = projectSearchInputRef.current;
+      if (el && document.activeElement !== el) {
+        el.focus({ preventScroll: true });
+        const len = el.value.length;
+        try { el.setSelectionRange(len, len); } catch { /* ignore */ }
+      }
+    };
+    requestAnimationFrame(() => {
+      restore();
+      setTimeout(restore, 0);
+    });
+  }, []);
 
   // Collapsed by default — Load Template / Import Approved Proposals /
   // Compare are used far less often than Add Product / Add Item, so they
@@ -3852,9 +3869,10 @@ export default function CreateBom() {
                                   <div className="relative">
                                     <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
                                     <Input
+                                      ref={projectSearchInputRef}
                                       placeholder="Search projects..."
                                       value={projectSearchTerm}
-                                      onChange={(e) => setProjectSearchTerm(e.target.value)}
+                                      onChange={(e) => { setProjectSearchTerm(e.target.value); refocusProjectSearch(); }}
                                       onKeyDown={(e) => e.stopPropagation()}
                                       className="pl-7 h-8 text-[11px] border-slate-200 bg-slate-50 focus:bg-white transition-colors w-full"
                                     />
