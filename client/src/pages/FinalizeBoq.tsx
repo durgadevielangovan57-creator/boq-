@@ -218,6 +218,38 @@ const computeNaturalItemTotal = (td: any): number => {
   return step11.reduce((s: number, it: any) => s + (it.qty || 0) * ((it.supply_rate || 0) + (it.install_rate || 0)), 0);
 };
 
+// NEW (additive): LS-aware total used ONLY when taking the one-time
+// ls_frozen_total snapshot. The BOM page (BoqItemCard `isLumpSumLine`) treats
+// any material line whose unit is "LS" as a fixed quantity of 1, but
+// computeBoq() scales every line by the project qty, so the snapshot used to
+// come out higher than the BOM (e.g. False Ceiling 22,015 vs 10,370).
+// This helper prices LS lines at qty 1 and lets computeBoq() handle only the
+// remaining lines, so the snapshot matches the BOM. computeBoq and
+// computeNaturalItemTotal are intentionally left unchanged.
+const computeLsAwareItemTotal = (td: any): number => {
+  try {
+    const lines: any[] = Array.isArray(td?.materialLines) ? td.materialLines : [];
+    const hasTarget = td?.targetRequiredQty !== undefined && td?.targetRequiredQty !== null;
+    const isLsLine = (l: any) => String(l?.unit || "").trim().toLowerCase() === "ls";
+    // Only deviate from the existing calculation when there is at least one LS
+    // line that sits alongside non-LS lines in a materialLines-based item.
+    if (!hasTarget || lines.length === 0 || !lines.some(isLsLine) || lines.every(isLsLine)) {
+      return computeNaturalItemTotal(td);
+    }
+    const step11 = Array.isArray(td?.step11_items) ? td.step11_items : [];
+    const nonLs = lines.filter((l: any) => !isLsLine(l));
+    const lsLines = lines.filter(isLsLine);
+    const res = computeBoq(td.configBasis, nonLs, td.targetRequiredQty);
+    const lsTotal = lsLines.reduce((s: number, l: any) =>
+      s + (Number(l.supplyRate) || 0) + (Number(l.installRate) || 0), 0);
+    const manualTotal = step11.filter((it: any) => it.manual).reduce((s: number, it: any) =>
+      s + (Number(it.qty) || 0) * (Number(it.supply_rate || 0) + Number(it.install_rate || 0)), 0);
+    return res.grandTotal + lsTotal + manualTotal;
+  } catch {
+    return computeNaturalItemTotal(td);
+  }
+};
+
 const getItemMetrics = (td: any) => {
   const step11 = Array.isArray(td.step11_items) ? td.step11_items : [];
   let itemTotal = 0, itemQty = 0;
@@ -1400,7 +1432,7 @@ export default function FinalizeBoq() {
       if (typeof tableData === "string") { try { tableData = JSON.parse(tableData); } catch { tableData = {}; } }
       const isLS = tableData.is_lump_sum === true || productUnits[boqItem.id]?.toLowerCase() === 'ls' || isAllLinesLS(tableData);
       if (!isLS || tableData.ls_frozen_total !== undefined) return;
-      const naturalTotal = computeNaturalItemTotal(tableData);
+      const naturalTotal = computeLsAwareItemTotal(tableData);
       const updatedTd = { ...tableData, ls_frozen_total: naturalTotal, ls_frozen_rate: naturalTotal };
       apiFetch(`/api/boq-items/${boqItem.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ table_data: updatedTd }) })
         .then((resp) => {

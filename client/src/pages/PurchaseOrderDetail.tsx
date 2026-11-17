@@ -106,6 +106,7 @@ interface PurchaseOrderItem {
     received_qty?: number;
     tax_rate?: number; // Added for per-item tax selection
     gst_percentage?: string | number | null;
+    discount_percent?: string | number | null;
     technical_specification?: string;
 }
 
@@ -495,6 +496,9 @@ export default function PurchaseOrderDetail() {
             if (res.ok) {
                 toast({ title: "Success", description: `PO status updated to ${newStatus}` });
                 fetchPODetail();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                toast({ title: "Error", description: err.message || "Failed to update status", variant: "destructive" });
             }
         } catch (error) {
             toast({ title: "Error", description: "Failed to update status", variant: "destructive" });
@@ -519,6 +523,9 @@ export default function PurchaseOrderDetail() {
                 });
                 setShowApprovalDialog(false);
                 fetchPODetail();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                toast({ title: "Error", description: err.message || "Failed to process approval", variant: "destructive" });
             }
         } catch (error) {
             toast({ title: "Error", description: "Failed to process approval", variant: "destructive" });
@@ -1030,7 +1037,7 @@ export default function PurchaseOrderDetail() {
                             {isGeneratingExcel ? "Generating..." : "Download Excel"}
                         </Button>
 
-                        {po?.source === "manual" && po?.status?.toLowerCase() !== "approved" && !isReviseMode && (
+                        {po?.source === "manual" && ["draft", "rejected"].includes(po?.status?.toLowerCase()) && !isReviseMode && (
                             <Button
                                 variant="outline"
                                 onClick={() => setLocation(`/purchase-orders/edit/${po.id}`)}
@@ -1040,13 +1047,13 @@ export default function PurchaseOrderDetail() {
                             </Button>
                         )}
 
-                        {po.status === "draft" && (
+                        {(po.status === "draft" || (po.source === "manual" && po.status === "rejected")) && (
                             <Button onClick={() => handleStatusUpdate("pending_approval")} className="bg-blue-600 hover:bg-blue-700 text-white">
-                                Submit for Approval
+                                {po.status === "rejected" ? "Resubmit for Approval" : "Submit for Approval"}
                             </Button>
                         )}
 
-                        {po.status === "pending_approval" && mode === "approval" && (
+                        {po.status === "pending_approval" && mode === "approval" && (po.source !== "manual" || user?.role === "admin") && (
                             <>
                                 <Button variant="outline" className="border-red-600 text-red-600 hover:bg-red-50" onClick={() => { setApprovalAction("reject"); setShowApprovalDialog(true); }}>
                                     Reject
@@ -1069,7 +1076,7 @@ export default function PurchaseOrderDetail() {
                             </Button>
                         )}
 
-                        {po.status !== "revised" && po.status !== "delivered" && po.status !== "rejected" && !isReviseMode && (
+                        {po.source !== "manual" && po.status !== "revised" && po.status !== "delivered" && po.status !== "rejected" && !isReviseMode && (
                             <Button variant="outline" onClick={handleReviseClick}>
                                 <Edit className="h-4 w-4 mr-2" /> Revise PO
                             </Button>
@@ -1152,10 +1159,10 @@ export default function PurchaseOrderDetail() {
                                         </div>
 
                                         {po?.version_number && (
-                                        <div className="flex justify-end gap-3 text-xs">
-                                            <span className="text-slate-500 uppercase font-semibold tracking-wider">BOM Version:</span>
-                                            <span className="font-bold text-blue-700">V{po.version_number}</span>
-                                        </div>
+                                            <div className="flex justify-end gap-3 text-xs">
+                                                <span className="text-slate-500 uppercase font-semibold tracking-wider">BOM Version:</span>
+                                                <span className="font-bold text-blue-700">V{po.version_number}</span>
+                                            </div>
                                         )}
 
                                         {isReviseMode ? (
@@ -1471,7 +1478,14 @@ export default function PurchaseOrderDetail() {
                                                                 title={`Max: ${parseFloat(initialItems.find(i => i.id === item.id)?.rate || '0').toLocaleString('en-IN', { minimumFractionDigits: 2 })} (Original Rate)`}
                                                             />
                                                         ) : (
-                                                            parseFloat(item.rate).toLocaleString('en-IN', { minimumFractionDigits: 2 })
+                                                            <>
+                                                                {parseFloat(item.rate).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                                                                {po?.source === "manual" && Number(item.discount_percent) > 0 && (
+                                                                    <div className="text-[9px] text-emerald-600 font-medium leading-none mt-0.5">
+                                                                        Disc. {Number(item.discount_percent)}%
+                                                                    </div>
+                                                                )}
+                                                            </>
                                                         )}
                                                     </TableCell>
 
@@ -1657,7 +1671,7 @@ export default function PurchaseOrderDetail() {
                             <Button
                                 className={approvalAction === "approve" ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"}
                                 onClick={handleApproval}
-                                disabled={isSubmitting}
+                                disabled={isSubmitting || (po?.source === "manual" && approvalAction === "reject" && !comment.trim())}
                             >
                                 {isSubmitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                                 {approvalAction === "approve" ? "Confirm Approve" : "Confirm Reject"}

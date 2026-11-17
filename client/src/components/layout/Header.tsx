@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { ChevronDown, Bell, Search, LogOut, Zap } from "lucide-react";
 import { useData } from "@/lib/store";
 import apiFetch from "@/lib/api";
+import { PoNotificationsPanel, usePoNotifications } from "@/components/PoNotificationsPanel";
 
 export function Header() {
   const [, setLocation] = useLocation();
@@ -26,6 +27,24 @@ export function Header() {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [alertsCount, setAlertsCount] = useState(0);
+
+  // PO created notifications (Admin + Presales only) - additive
+  const [poNotifOpen, setPoNotifOpen] = useState(false);
+  const poNotifRef = useRef<HTMLDivElement>(null);
+  const canSeePoNotifications = user?.role === "admin" || user?.role === "pre_sales";
+  const poNotif = usePoNotifications(canSeePoNotifications);
+
+  useEffect(() => {
+    if (!poNotifOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (poNotifRef.current && !poNotifRef.current.contains(e.target as Node) && !t?.closest('[role="dialog"]')) {
+        setPoNotifOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [poNotifOpen]);
 
   // Easy Access Dropdown state
   const [easyAccessOpen, setEasyAccessOpen] = useState(false);
@@ -551,8 +570,16 @@ export function Header() {
           </div>
 
           {/* 2. NOTIFICATION BELL */}
+          <div className="relative" ref={poNotifRef}>
           <button
-            onClick={() => console.log("notifications")}
+            onClick={() => {
+              if (canSeePoNotifications) {
+                setPoNotifOpen((p) => !p);
+                if (!poNotifOpen) poNotif.reload();
+              } else {
+                console.log("notifications");
+              }
+            }}
             className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-[#F3F4F6] transition-colors relative"
             title="Notifications"
           >
@@ -560,7 +587,22 @@ export function Header() {
             {alertsCount > 0 && (
               <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#EF4444] ring-1 ring-white" />
             )}
+            {canSeePoNotifications && poNotif.unread > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-[#6366f1] text-white text-[10px] font-semibold flex items-center justify-center ring-1 ring-white">
+                {poNotif.unread > 9 ? "9+" : poNotif.unread}
+              </span>
+            )}
           </button>
+          {canSeePoNotifications && (
+            <PoNotificationsPanel
+              open={poNotifOpen}
+              list={poNotif.list}
+              setList={poNotif.setList}
+              setUnread={poNotif.setUnread}
+              onClose={() => setPoNotifOpen(false)}
+            />
+          )}
+          </div>
 
           {/* 3. USER AVATAR & DROPDOWN */}
           <div className="relative" ref={dropdownRef}>

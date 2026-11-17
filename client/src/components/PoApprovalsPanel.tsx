@@ -37,6 +37,7 @@ import {
 } from "lucide-react";
 import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth-context";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 // ── Generate PO: standalone "Approvals" panel (NEW, isolated) ──────────────
@@ -57,6 +58,7 @@ interface ApprovalItem {
     total_amount: string;
     created_at: string;
     status: string;
+    source?: string; // 'manual' = direct "Create Purchase Order" PO
 }
 
 type PoApprovalsPanelProps = {
@@ -68,6 +70,8 @@ type PoApprovalsPanelProps = {
 export default function PoApprovalsPanel({ onActioned, onNavigate, returnPath }: PoApprovalsPanelProps) {
     const [, setLocation] = useLocation();
     const { toast } = useToast();
+    const { user } = useAuth();
+    const isAdmin = user?.role === "admin";
     const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [showApprovalDialog, setShowApprovalDialog] = useState(false);
@@ -97,7 +101,8 @@ export default function PoApprovalsPanel({ onActioned, onNavigate, returnPath }:
                 vendor_name: po.vendor_name || "N/A",
                 total_amount: po.total_amount,
                 created_at: po.created_at,
-                status: po.status
+                status: po.status,
+                source: po.source
             }));
 
             const mappedReqs = (reqData.poRequests || []).map((req: any) => ({
@@ -156,6 +161,9 @@ export default function PoApprovalsPanel({ onActioned, onNavigate, returnPath }:
                 setComment("");
                 fetchApprovals();
                 onActioned?.();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                toast({ title: "Error", description: err.message || "Failed to process approval", variant: "destructive" });
             }
         } catch (error) {
             toast({ title: "Error", description: "Failed to process approval", variant: "destructive" });
@@ -233,6 +241,9 @@ export default function PoApprovalsPanel({ onActioned, onNavigate, returnPath }:
                                                 {item.type === 'Request' && (
                                                     <Badge variant="secondary" className="ml-2 bg-orange-50 text-orange-600 border-orange-200 text-[10px] h-4 px-1">REQ</Badge>
                                                 )}
+                                                {item.source === 'manual' && (
+                                                    <Badge variant="secondary" className="ml-2 bg-sky-50 text-sky-700 border-sky-200 text-[10px] h-4 px-1">Direct PO</Badge>
+                                                )}
                                             </TableCell>
                                             <TableCell>
                                                 <div className="flex items-center gap-2">
@@ -272,12 +283,18 @@ export default function PoApprovalsPanel({ onActioned, onNavigate, returnPath }:
                                                     }}>
                                                         <Eye className="h-4 w-4 mr-1" /> View
                                                     </Button>
-                                                    <Button variant="outline" size="sm" className="border-red-600 text-red-600 hover:bg-red-50" onClick={() => { setSelectedItem(item); setApprovalAction("reject"); setShowApprovalDialog(true); }}>
-                                                        <XCircle className="h-4 w-4 mr-1" /> Reject
-                                                    </Button>
-                                                    <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={() => { setSelectedItem(item); setApprovalAction("approve"); setShowApprovalDialog(true); }}>
-                                                        <CheckCircle2 className="h-4 w-4 mr-1" /> Approve
-                                                    </Button>
+                                                    {item.source === 'manual' && !isAdmin ? (
+                                                        <span className="text-xs text-muted-foreground italic self-center">Admin approval required</span>
+                                                    ) : (
+                                                        <>
+                                                            <Button variant="outline" size="sm" className="border-red-600 text-red-600 hover:bg-red-50" onClick={() => { setSelectedItem(item); setApprovalAction("reject"); setShowApprovalDialog(true); }}>
+                                                                <XCircle className="h-4 w-4 mr-1" /> Reject
+                                                            </Button>
+                                                            <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={() => { setSelectedItem(item); setApprovalAction("approve"); setShowApprovalDialog(true); }}>
+                                                                <CheckCircle2 className="h-4 w-4 mr-1" /> Approve
+                                                            </Button>
+                                                        </>
+                                                    )}
                                                 </div>
                                             </TableCell>
                                         </TableRow>

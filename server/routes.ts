@@ -24,6 +24,8 @@ import { sendSketchPlanEmail, sendSiteReportEmail, sendProposalStatusEmail, send
 import { logActivity } from "./audit";
 import { registerSketchRoutes } from "./sketch_routes";
 import { registerPoMergeRoutes } from "./po_merge_routes";
+import { registerPoNotificationRoutes } from "./po_notification_routes";
+import { registerZohoPoAdditionsRoutes } from "./zoho_po_additions_routes";
 import { convertSketchToBoqItems } from "./lib/sketch_converter";
 import { WebSocketServer } from 'ws';
 import bomSketchSync from "./lib/bom_sketch_sync";
@@ -69,6 +71,12 @@ export async function registerRoutes(
 
   // PO merge-selected-items routes (additive)
   await registerPoMergeRoutes(app);
+
+  // PO created notifications: e-mail + bell (additive)
+  await registerPoNotificationRoutes(app);
+
+  // Zoho: append newly added items to an already-synced PO (additive)
+  await registerZohoPoAdditionsRoutes(app);
 
   // Upload Route for Supabase Storage
   app.post("/api/upload", authMiddleware, upload.single("file"), async (req: Request, res: Response): Promise<any> => {

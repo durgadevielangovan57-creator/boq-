@@ -238,6 +238,10 @@ export default function CreatePurchaseOrder() {
     const [isLoadingInitial, setIsLoadingInitial] = useState<boolean>(true);
     const [isSaving, setIsSaving] = useState<boolean>(false);
     const [isSyncingZoho, setIsSyncingZoho] = useState<boolean>(false);
+    const [isSubmittingApproval, setIsSubmittingApproval] = useState<boolean>(false);
+    const [submitConfirmOpen, setSubmitConfirmOpen] = useState<boolean>(false);
+    // Reason given by the Admin when this direct PO was rejected (kept until the next decision)
+    const [rejectionReason, setRejectionReason] = useState<string>("");
 
     // Master data
     const [projects, setProjects] = useState<Project[]>([]);
@@ -362,15 +366,20 @@ export default function CreatePurchaseOrder() {
                             return;
                         }
 
-                        if (po.status?.toLowerCase() === "approved") {
+                        const loadedStatus = (po.status || "draft").toLowerCase();
+                        if (loadedStatus !== "draft" && loadedStatus !== "rejected") {
                             toast({
                                 title: "Editing Not Allowed",
-                                description: "Approved purchase orders cannot be edited.",
+                                description:
+                                    loadedStatus === "pending_approval"
+                                        ? "This purchase order is awaiting approval and cannot be modified."
+                                        : "Approved purchase orders cannot be edited.",
                                 variant: "destructive",
                             });
                             setLocation(`/purchase-orders/${editPoId}`);
                             return;
                         }
+                        setRejectionReason(loadedStatus === "rejected" ? (po.approval_comments || "") : "");
 
                         setPoNumber(po.po_number || "");
                         setReferenceNumber(po.reference_number || "");
@@ -716,7 +725,7 @@ export default function CreatePurchaseOrder() {
     const selectedProject = projects.find((p) => p.id === projectId);
 
     // Save PO logic
-    const handleSave = async (opts: { status?: string; sendToZoho?: boolean } = {}) => {
+    const handleSave = async (opts: { status?: string; sendToZoho?: boolean; submitForApproval?: boolean } = {}) => {
         if (!poNumber.trim()) {
             toast({
                 title: "Validation Error",
@@ -783,6 +792,8 @@ export default function CreatePurchaseOrder() {
         try {
             if (opts.sendToZoho) {
                 setIsSyncingZoho(true);
+            } else if (opts.submitForApproval) {
+                setIsSubmittingApproval(true);
             } else {
                 setIsSaving(true);
             }
@@ -807,10 +818,38 @@ export default function CreatePurchaseOrder() {
 
             toast({
                 title: "Success",
-                description: editPoId
-                    ? "Purchase Order updated successfully."
-                    : "Purchase Order created successfully.",
+                description: opts.submitForApproval
+                    ? "Purchase Order saved."
+                    : editPoId
+                        ? "Purchase Order updated successfully."
+                        : "Purchase Order saved as Draft.",
             });
+
+            // Submit for approval: reuses the EXISTING "Submit for Approval" endpoint
+            // (PATCH /api/purchase-orders/:id/status -> pending_approval). The PO then
+            // appears on the existing PO Approvals page for an Admin to approve / reject.
+            if (opts.submitForApproval && savedPoId) {
+                const submitRes = await apiFetch(`/api/purchase-orders/${savedPoId}/status`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ status: "pending_approval" }),
+                });
+                if (!submitRes.ok) {
+                    const submitErr = await submitRes.json().catch(() => ({}));
+                    toast({
+                        title: "Saved, but not submitted",
+                        description: submitErr.message || "Your changes were saved as Draft. Please try submitting for approval again.",
+                        variant: "destructive",
+                    });
+                    // Stay on the saved draft (avoid re-creating it with the same PO number).
+                    if (!editPoId) setLocation(`/purchase-orders/edit/${savedPoId}`);
+                    return;
+                }
+                toast({
+                    title: "Submitted for Approval",
+                    description: `PO ${poNumber} was sent to PO Approvals. It is locked until an Admin approves or rejects it.`,
+                });
+            }
 
             // If user chose to sync directly to Zoho Books
             if (opts.sendToZoho && savedPoId) {
@@ -862,6 +901,8 @@ export default function CreatePurchaseOrder() {
         } finally {
             setIsSaving(false);
             setIsSyncingZoho(false);
+            setIsSubmittingApproval(false);
+            setSubmitConfirmOpen(false);
         }
     };
 
@@ -1050,7 +1091,7 @@ export default function CreatePurchaseOrder() {
                                 {editPoId ? `Edit ${poNumber}` : "Create Purchase Order"}
                             </h1>
                             <Badge variant="outline" className="bg-slate-100 text-slate-700 capitalize font-medium text-xs">
-                                Status: {editPoId ? status : "Draft"}
+                                Status: {editPoId ? status.replace(/_/g, " ") : "Draft"}
                             </Badge>
                         </div>
                         <p className="text-sm text-muted-foreground mt-0.5">
@@ -1072,37 +1113,36 @@ export default function CreatePurchaseOrder() {
                             variant="secondary"
                             size="sm"
                             onClick={() => handleSave({ status: "draft" })}
-                            disabled={isSaving || isSyncingZoho}
+                            disabled={isSaving || isSyncingZoho || isSubmittingApproval}
                             className="h-9 gap-1.5"
                         >
                             {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                             Save Draft
                         </Button>
                         <Button
-                            variant="outline"
                             size="sm"
-                            onClick={() => handleSave({ status: "approved", sendToZoho: true })}
-                            disabled={isSaving || isSyncingZoho}
-                            className="h-9 gap-1.5 border-emerald-600 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-500 dark:text-emerald-400"
-                        >
-                            {isSyncingZoho ? (
-                                <Loader2 className="h-4 w-4 animate-spin text-emerald-600" />
-                            ) : (
-                                <UploadCloud className="h-4 w-4 text-emerald-600" />
-                            )}
-                            Save & Sync to Zoho
-                        </Button>
-                        <Button
-                            size="sm"
-                            onClick={() => handleSave({ status: status || "draft" })}
-                            disabled={isSaving || isSyncingZoho}
+                            onClick={() => setSubmitConfirmOpen(true)}
+                            disabled={isSaving || isSyncingZoho || isSubmittingApproval}
                             className="h-9 gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
                         >
-                            {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-                            {editPoId ? "Update Purchase Order" : "Generate Purchase Order"}
+                            {isSubmittingApproval ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                            {status === "rejected" ? "Resubmit for Approval" : "Submit for Approval"}
                         </Button>
                     </div>
                 </div>
+
+                {/* Rejection feedback from the Admin (kept until the PO is resubmitted and decided) */}
+                {editPoId && status === "rejected" && (
+                    <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-md">
+                        <h3 className="text-sm font-semibold text-red-800">This Purchase Order was rejected</h3>
+                        <p className="mt-1 text-sm text-red-700 whitespace-pre-wrap">
+                            {rejectionReason || "No reason was provided."}
+                        </p>
+                        <p className="mt-2 text-xs text-red-600">
+                            Make the required changes, then use “Resubmit for Approval”.
+                        </p>
+                    </div>
+                )}
 
                 {/* Section 1: Vendor & Project Details */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -1685,37 +1725,60 @@ export default function CreatePurchaseOrder() {
 
                                 <div className="pt-3 space-y-2">
                                     <Button
-                                        onClick={() => handleSave({ status: status || "draft" })}
-                                        disabled={isSaving || isSyncingZoho}
+                                        onClick={() => setSubmitConfirmOpen(true)}
+                                        disabled={isSaving || isSyncingZoho || isSubmittingApproval}
                                         className="w-full h-10 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-sm"
+                                    >
+                                        {isSubmittingApproval ? (
+                                            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                        ) : (
+                                            <Send className="h-4 w-4 mr-2" />
+                                        )}
+                                        {status === "rejected" ? "Resubmit for Approval" : "Submit for Approval"}
+                                    </Button>
+
+                                    <Button
+                                        variant="secondary"
+                                        onClick={() => handleSave({ status: "draft" })}
+                                        disabled={isSaving || isSyncingZoho || isSubmittingApproval}
+                                        className="w-full h-10 font-semibold"
                                     >
                                         {isSaving ? (
                                             <Loader2 className="h-4 w-4 animate-spin mr-2" />
                                         ) : (
-                                            <CheckCircle2 className="h-4 w-4 mr-2" />
+                                            <Save className="h-4 w-4 mr-2" />
                                         )}
-                                        {editPoId ? "Update Purchase Order" : "Generate Purchase Order"}
+                                        Save Draft
                                     </Button>
 
-                                    <Button
-                                        variant="outline"
-                                        onClick={() => handleSave({ status: "approved", sendToZoho: true })}
-                                        disabled={isSaving || isSyncingZoho}
-                                        className="w-full h-10 border-emerald-600 text-emerald-700 hover:bg-emerald-50"
-                                    >
-                                        {isSyncingZoho ? (
-                                            <Loader2 className="h-4 w-4 animate-spin mr-2 text-emerald-600" />
-                                        ) : (
-                                            <UploadCloud className="h-4 w-4 mr-2 text-emerald-600" />
-                                        )}
-                                        Save & Move to Zoho Books
-                                    </Button>
                                 </div>
                             </CardContent>
                         </Card>
                     </div>
                 </div>
             </div>
+
+            {/* Submit for Approval confirmation */}
+            <Dialog open={submitConfirmOpen} onOpenChange={(o) => !isSubmittingApproval && setSubmitConfirmOpen(o)}>
+                <DialogContent className="max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Submit {poNumber || "this Purchase Order"} for approval?</DialogTitle>
+                        <DialogDescription>
+                            Your latest changes will be saved and the PO will be sent to PO Approvals. It cannot be
+                            edited while it is awaiting an Admin decision, and it is permanently locked once approved.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setSubmitConfirmOpen(false)} disabled={isSubmittingApproval}>
+                            Keep Editing
+                        </Button>
+                        <Button onClick={() => { setSubmitConfirmOpen(false); handleSave({ status: "draft", submitForApproval: true }); }} disabled={isSubmittingApproval}>
+                            {isSubmittingApproval ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}
+                            Submit for Approval
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             {/* Material Catalog Selection Dialog */}
             <Dialog open={catalogModalOpen} onOpenChange={setCatalogModalOpen}>

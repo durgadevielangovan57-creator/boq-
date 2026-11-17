@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/lib/auth-context";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface ApprovalItem {
@@ -49,11 +50,14 @@ interface ApprovalItem {
     total_amount: string;
     created_at: string;
     status: string;
+    source?: string; // 'manual' = direct "Create Purchase Order" PO
 }
 
 export default function POApprovals() {
     const [, setLocation] = useLocation();
     const { toast } = useToast();
+    const { user } = useAuth();
+    const isAdmin = user?.role === "admin";
     const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [showApprovalDialog, setShowApprovalDialog] = useState(false);
@@ -83,7 +87,8 @@ export default function POApprovals() {
                 vendor_name: po.vendor_name || "N/A",
                 total_amount: po.total_amount,
                 created_at: po.created_at,
-                status: po.status
+                status: po.status,
+                source: po.source
             }));
 
             const mappedReqs = (reqData.poRequests || []).map((req: any) => ({
@@ -97,7 +102,7 @@ export default function POApprovals() {
                 status: req.status
             }));
 
-            const combined = [...mappedPos, ...mappedReqs].sort((a, b) => 
+            const combined = [...mappedPos, ...mappedReqs].sort((a, b) =>
                 new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
             );
 
@@ -118,12 +123,12 @@ export default function POApprovals() {
         setIsSubmitting(true);
         try {
             const isRequest = selectedItem.type === 'Request';
-            const endpoint = isRequest 
+            const endpoint = isRequest
                 ? `/api/po-requests/${selectedItem.id}/status`
                 : `/api/purchase-orders/${selectedItem.id}/approve`;
-            
+
             const method = isRequest ? "PATCH" : "POST";
-            const body = isRequest 
+            const body = isRequest
                 ? { status: approvalAction === "approve" ? "approved" : "rejected" }
                 : { approve: approvalAction === "approve", comment };
 
@@ -141,6 +146,9 @@ export default function POApprovals() {
                 setShowApprovalDialog(false);
                 setComment("");
                 fetchApprovals();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                toast({ title: "Error", description: err.message || "Failed to process approval", variant: "destructive" });
             }
         } catch (error) {
             toast({ title: "Error", description: "Failed to process approval", variant: "destructive" });
@@ -224,6 +232,9 @@ export default function POApprovals() {
                                                 {item.type === 'Request' && (
                                                     <Badge variant="secondary" className="ml-2 bg-orange-50 text-orange-600 border-orange-200 text-[10px] h-4 px-1">REQ</Badge>
                                                 )}
+                                                {item.source === 'manual' && (
+                                                    <Badge variant="secondary" className="ml-2 bg-sky-50 text-sky-700 border-sky-200 text-[10px] h-4 px-1">Direct PO</Badge>
+                                                )}
                                             </TableCell>
                                             <TableCell>
                                                 <div className="flex items-center gap-2">
@@ -259,12 +270,18 @@ export default function POApprovals() {
                                                     <Button variant="outline" size="sm" onClick={() => setLocation(item.type === 'Annexure' ? `/purchase-orders/${item.id}?mode=approval` : `/po-requests/${item.id}?mode=approval`)}>
                                                         <Eye className="h-4 w-4 mr-1" /> View
                                                     </Button>
-                                                    <Button variant="outline" size="sm" className="border-red-600 text-red-600 hover:bg-red-50" onClick={() => { setSelectedItem(item); setApprovalAction("reject"); setShowApprovalDialog(true); }}>
-                                                        <XCircle className="h-4 w-4 mr-1" /> Reject
-                                                    </Button>
-                                                    <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={() => { setSelectedItem(item); setApprovalAction("approve"); setShowApprovalDialog(true); }}>
-                                                        <CheckCircle2 className="h-4 w-4 mr-1" /> Approve
-                                                    </Button>
+                                                    {item.source === 'manual' && !isAdmin ? (
+                                                        <span className="text-xs text-muted-foreground italic self-center">Admin approval required</span>
+                                                    ) : (
+                                                        <>
+                                                            <Button variant="outline" size="sm" className="border-red-600 text-red-600 hover:bg-red-50" onClick={() => { setSelectedItem(item); setApprovalAction("reject"); setShowApprovalDialog(true); }}>
+                                                                <XCircle className="h-4 w-4 mr-1" /> Reject
+                                                            </Button>
+                                                            <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white" onClick={() => { setSelectedItem(item); setApprovalAction("approve"); setShowApprovalDialog(true); }}>
+                                                                <CheckCircle2 className="h-4 w-4 mr-1" /> Approve
+                                                            </Button>
+                                                        </>
+                                                    )}
                                                 </div>
                                             </TableCell>
                                         </TableRow>

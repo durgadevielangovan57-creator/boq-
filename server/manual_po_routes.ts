@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { query } from "./db/client";
 import { authMiddleware, requireRole } from "./middleware";
+import { isManualPoEditable } from "./manual_po_workflow";
 
 /**
  * =====================================================================
@@ -298,7 +299,9 @@ export async function registerManualPoRoutes(app: Express) {
 
                 const total = subtotal + totalTax;
                 const formattedPoDate = poDate || new Date().toISOString().split("T")[0];
-                const poStatus = status || "draft";
+                // Direct POs always start as Draft. Approval is only reachable through
+                // "Submit for Approval" -> Admin decision on PO Approvals, never via the payload.
+                const poStatus = "draft";
 
                 // Insert PO header
                 const poResult = await query(
@@ -415,8 +418,16 @@ export async function registerManualPoRoutes(app: Express) {
                     return res.status(400).json({ message: "Only manually created purchase orders can be edited." });
                 }
 
-                if (existing.rows[0].status?.toLowerCase() === "approved") {
-                    return res.status(400).json({ message: "Approved purchase orders cannot be edited." });
+                // Editable only in Draft / Rejected. Pending approval = locked for review,
+                // Approved (and later) = permanently locked.
+                if (!isManualPoEditable(existing.rows[0].status)) {
+                    const st = String(existing.rows[0].status || "").toLowerCase();
+                    return res.status(409).json({
+                        message:
+                            st === "pending_approval"
+                                ? "This Purchase Order is awaiting approval and cannot be modified."
+                                : "Approved purchase orders cannot be edited.",
+                    });
                 }
 
                 // Calculate totals
@@ -450,15 +461,19 @@ export async function registerManualPoRoutes(app: Express) {
                 const total = subtotal + totalTax;
                 const formattedPoDate = poDate || new Date().toISOString().split("T")[0];
 
-                // Update PO header
-                await query(
+                // Update PO header. The status is never taken from the request body
+                // (it only changes through the submit/approve endpoints) and the WHERE
+                // clause re-checks editability so a concurrent submit/approve can't be overwritten.
+                const headerUpdate = await query(
                     `UPDATE purchase_orders SET
                      po_number = $1, reference_number = $2, project_id = $3, project_name = $4,
                      vendor_id = $5, vendor_name = $6, subtotal = $7, tax = $8,
-                     total = $9, status = $10, po_date = $11, delivery_date = $12,
+                     total = $9, status = COALESCE(status, $10), po_date = $11, delivery_date = $12,
                      payment_terms = $13, delivery_address = $14, shipping_address = $15,
                      notes = $16, comments = $17, updated_at = NOW()
-                     WHERE id = $18`,
+                     WHERE id = $18 AND source = 'manual'
+                       AND (status IS NULL OR LOWER(status) IN ('draft', 'rejected'))
+                     RETURNING id`,
                     [
                         poNumber,
                         referenceNumber || null,
@@ -469,7 +484,7 @@ export async function registerManualPoRoutes(app: Express) {
                         subtotal.toFixed(2),
                         totalTax.toFixed(2),
                         total.toFixed(2),
-                        status || existing.rows[0].status || "draft",
+                        "draft",
                         formattedPoDate,
                         deliveryDate || null,
                         paymentTerms || null,
@@ -480,6 +495,11 @@ export async function registerManualPoRoutes(app: Express) {
                         id,
                     ]
                 );
+                if (headerUpdate.rows.length === 0) {
+                    return res.status(409).json({
+                        message: "This Purchase Order is no longer editable (it was submitted or approved). Please refresh.",
+                    });
+                }
 
                 // Replace items: delete old, insert new
                 await query(`DELETE FROM purchase_order_items WHERE po_id = $1`, [id]);

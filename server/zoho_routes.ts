@@ -5,6 +5,7 @@ import { isZohoConfigured } from "./zoho/token_service";
 import { zohoApiRequest, ZOHO_BOOKS_ORGANIZATION_ID, ZOHO_DEFAULT_TAX_ID, ZOHO_DEFAULT_TAX_EXEMPTION_ID } from "./zoho/api_client";
 import { findZohoVendorMatch, searchZohoVendorContacts, getZohoContactGstInfo } from "./zoho/vendor_matching";
 import { findZohoItemMatch, searchZohoBooksItems, createZohoBooksItem, getZohoItemTax, getZohoItemUsability, listZohoTaxes, findEquivalentTax, classifyTax, logZohoTaxGroupsDiagnostic } from "./zoho/item_matching";
+import { guardManualPoZohoSync } from "./manual_po_workflow";
 import {
     ensureZohoSettingsSchema,
     getZohoSetting,
@@ -230,6 +231,13 @@ export async function registerZohoBooksRoutes(app: Express) {
                         zohoSyncedAt: po.zoho_synced_at,
                         alreadySynced: true,
                     });
+                }
+
+                // Direct (Create Purchase Order) POs: hold the sync while the PO is awaiting
+                // Admin approval. Drafts and approved POs sync as before; no-op for all other POs.
+                const wfError = await guardManualPoZohoSync(String(id));
+                if (wfError) {
+                    return res.status(wfError.code).json({ message: wfError.message });
                 }
 
                 // Prevent duplicate concurrent clicks: atomically claim the PO by

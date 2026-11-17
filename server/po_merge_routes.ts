@@ -2,6 +2,7 @@ import type { Express, Request, Response } from "express";
 import { query } from "./db/client";
 import { authMiddleware, requireRole } from "./middleware";
 
+import { findLockedManualPos } from "./manual_po_workflow";
 /**
  * =====================================================================
  * PO "Merge selected items" (additive feature)
@@ -63,6 +64,14 @@ async function loadAndValidatePos(poIds: any): Promise<{ error?: string; pos?: P
         error: `Only Draft purchase orders can be merged. Not draft: ${notDraft.map((p) => p.po_number).join(", ")}.`,
       };
     }
+  }
+  // Direct (Create Purchase Order) POs that are pending approval / approved are locked:
+  // their items must not be moved out by a merge.
+  const lockedDirect = await findLockedManualPos(ids);
+  if (lockedDirect.length > 0) {
+    return {
+      error: `These direct purchase orders are pending approval or approved and cannot be merged: ${lockedDirect.join(", ")}.`,
+    };
   }
   const synced = pos.filter((p) => p.zoho_purchase_order_id || p.zoho_sync_status === "synced");
   if (synced.length > 0) {

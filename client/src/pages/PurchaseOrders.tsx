@@ -1407,7 +1407,7 @@ export default function PurchaseOrders() {
                                                                             <Trash2 className="h-4 w-4" />
                                                                         </Button>
                                                                     )}
-                                                                    {mainPo!.source === 'manual' && mainPo!.status?.toLowerCase() !== 'approved' && (
+                                                                    {mainPo!.source === 'manual' && ['draft', 'rejected'].includes(mainPo!.status?.toLowerCase()) && (
                                                                         <Button
                                                                             variant="ghost"
                                                                             size="sm"
@@ -1478,14 +1478,14 @@ export default function PurchaseOrders() {
                                                                         >
                                                                             <CheckCircle2 className="h-4 w-4" />
                                                                         </Button>
-                                                                    ) : (
+                                                                    ) : (mainPo!.source === 'manual' && !['approved', 'ordered', 'delivered'].includes(mainPo!.status?.toLowerCase())) ? null : (
                                                                         <Button
                                                                             variant="ghost"
                                                                             size="sm"
                                                                             className={`h-8 w-8 p-0 ${mainPo!.zoho_sync_status === "failed" ? "text-red-600 hover:text-red-800 hover:bg-red-50" : "text-orange-600 hover:text-orange-800 hover:bg-orange-50"}`}
                                                                             onClick={(e) => openZohoConfirm(mainPo!, e)}
-                                                                            disabled={zohoSyncingId === mainPo!.id}
-                                                                            title={mainPo!.zoho_sync_status === "failed" ? "Retry Zoho Sync" : "Move to Zoho Books"}
+                                                                            disabled={zohoSyncingId === mainPo!.id || (mainPo!.source === 'manual' && mainPo!.status?.toLowerCase() === 'pending_approval')}
+                                                                            title={(mainPo!.source === 'manual' && mainPo!.status?.toLowerCase() === 'pending_approval') ? "Awaiting Admin approval - sync is available once approved" : mainPo!.zoho_sync_status === "failed" ? "Retry Zoho Sync" : "Move to Zoho Books"}
                                                                         >
                                                                             {zohoSyncingId === mainPo!.id ? (
                                                                                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -1559,7 +1559,7 @@ export default function PurchaseOrders() {
                                                                             <Trash2 className="h-3.5 w-3.5" />
                                                                         </Button>
                                                                     )}
-                                                                    {subPo.source === 'manual' && subPo.status?.toLowerCase() !== 'approved' && (
+                                                                    {subPo.source === 'manual' && ['draft', 'rejected'].includes(subPo.status?.toLowerCase()) && (
                                                                         <Button
                                                                             variant="ghost"
                                                                             size="sm"
@@ -1630,14 +1630,14 @@ export default function PurchaseOrders() {
                                                                         >
                                                                             <CheckCircle2 className="h-3.5 w-3.5" />
                                                                         </Button>
-                                                                    ) : (
+                                                                    ) : (subPo.source === 'manual' && !['approved', 'ordered', 'delivered'].includes(subPo.status?.toLowerCase())) ? null : (
                                                                         <Button
                                                                             variant="ghost"
                                                                             size="sm"
                                                                             className={`h-7 w-7 p-0 ${subPo.zoho_sync_status === "failed" ? "text-red-500 hover:text-red-700" : "text-orange-500 hover:text-orange-700"}`}
                                                                             onClick={(e) => openZohoConfirm(subPo, e)}
-                                                                            disabled={zohoSyncingId === subPo.id}
-                                                                            title={subPo.zoho_sync_status === "failed" ? "Retry Zoho Sync" : "Move to Zoho Books"}
+                                                                            disabled={zohoSyncingId === subPo.id || (subPo.source === 'manual' && subPo.status?.toLowerCase() === 'pending_approval')}
+                                                                            title={(subPo.source === 'manual' && subPo.status?.toLowerCase() === 'pending_approval') ? "Awaiting Admin approval - sync is available once approved" : subPo.zoho_sync_status === "failed" ? "Retry Zoho Sync" : "Move to Zoho Books"}
                                                                         >
                                                                             {zohoSyncingId === subPo.id ? (
                                                                                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
