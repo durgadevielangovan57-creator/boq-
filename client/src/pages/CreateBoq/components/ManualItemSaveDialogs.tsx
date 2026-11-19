@@ -126,6 +126,37 @@ export function SaveConfirmDialog({
   );
 }
 
+// ── Save (individual item) → pre-Step-3 confirmation ───────────────────
+// Shown only when the user clicks an individual item's Save button. OK
+// continues to the existing Step 3 (Configuration) screen; Cancel closes
+// with no changes. Not used by Save As.
+export function SaveUpdateQuantitiesPrompt({
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-lg font-black text-slate-800">Confirm</DialogTitle>
+          <DialogDescription className="text-base text-slate-600 mt-2">
+            Do you want to update all quantities based on the original product settings?
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="mt-4 flex gap-2 sm:justify-end">
+          <Button variant="outline" onClick={() => onOpenChange(false)} className="font-bold">Cancel</Button>
+          <Button onClick={() => { onOpenChange(false); onConfirm(); }} className="font-bold text-white bg-primary hover:bg-primary/90">OK</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ── Save As wizard dialog ───────────────────────────────────────────────
 // Step 1: Product Name / Category / Subcategory (unchanged).
 // Step 2: "Configuration" — a full-screen dialog that mirrors the Manage
@@ -134,10 +165,25 @@ export function SaveConfirmDialog({
 // the product description — are captured and submitted exactly the same
 // way Manage Product does it.
 
+// A step11 item added via the card's "+ Add Item" that isn't yet locked into
+// an approval request (engine material lines are never "newly added").
+const isNewlyAddedItem = (it: any) =>
+  it?.manual === true && !it?.manualApproval && it?._materialIdx === undefined;
+
+// Save mode, existing (engine) material lines: the raw values saved in Step 3
+// of Manage Product. renderLines only carries per-unit rounded values
+// (qtyPerSqf = total qty / basis), which is NOT what Manage Product shows.
+const isEngineSaveLine = (it: any) => it?._materialIdx !== undefined && it?._s11Idx === undefined;
+const savedBaseQty = (it: any): number | undefined => {
+  const v = it?._baseQtyAtBasis;
+  return v !== undefined && v !== null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : undefined;
+};
+const savedItemDescription = (it: any): string => (isEngineSaveLine(it) && it?._location) ? String(it._location) : (it?.description || it?.title || "");
+
 type ItemConfig = {
   selected: boolean;
   qty: number;
-  wastagePct: number;
+  wastagePct: number | undefined; // undefined = use the global Wastage % ("Global" placeholder)
   supplyRate: number;
   installRate: number;
   freezeAndEdit: boolean;
@@ -431,13 +477,21 @@ export function SaveAsWizardDialog({
         // qtyPerSqf is the per-unit qty from renderLines (engine-computed or manual)
         qty: (() => {
           const perUnit = Number(it.qtyPerSqf ?? it.qty ?? 0) || 0;
+          // Save (individual item) only: a newly added item starts at 0; its
+          // system-suggested qty (perUnit, from the existing calculation
+          // logic) is offered next to the input. Existing items are untouched.
+          if (mode === "save" && isNewlyAddedItem(it)) return 0;
+          // Save: existing materials show their saved qty at the product's basis
+          // (same number Manage Product Step 3 shows), not the per-unit total.
+          if (mode === "save" && isEngineSaveLine(it) && savedBaseQty(it) !== undefined) return savedBaseQty(it) as number;
           if (seedBase === 1) return perUnit;
           // LS rows are a single lump sum whatever the size; frozen rows carry a fixed total
           if (String((it as any).unit || "").toLowerCase() === "ls") return perUnit;
           if (it.freezeAndEdit || (it as any).freeze_and_edit) return Number((it as any).requiredQty ?? perUnit) || 0;
           return Number((perUnit * seedBase).toFixed(4));
         })(),
-        wastagePct: Number(it.wastagePct) || 0,
+        // Save: keep per-row wastage blank (= Global) when none was saved, like Manage Product.
+        wastagePct: (mode === "save" && (it.wastagePct === undefined || it.wastagePct === null)) ? undefined : (Number(it.wastagePct) || 0),
         // renderLines stores rates as rateSqft (total rate), but individual supply/install
         // rates come from supply_rate / install_rate
         supplyRate: Number(it.supply_rate ?? (it as any).supplyRate ?? 0) || 0,
@@ -445,7 +499,7 @@ export function SaveAsWizardDialog({
         freezeAndEdit: !!(it.freezeAndEdit || (it as any).freeze_and_edit),
         applyWastage: (it as any).applyWastage !== false,
         applyRounding: (it as any).applyRounding !== false,
-        description: it.description || it.title || "",
+        description: mode === "save" ? savedItemDescription(it) : (it.description || it.title || ""),
       };
     });
     setConfigByIndex(initial);
@@ -462,6 +516,8 @@ export function SaveAsWizardDialog({
   // once already; they can edit or clear it here), since it's just
   // descriptive text, not physical config. Fetch it once per genuine open,
   // right after the reset above has run, and fill in the fields it finds. ─
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   const prefillFetchedRef = useRef(false);
   useEffect(() => {
     if (!open) { prefillFetchedRef.current = false; return; }
@@ -472,7 +528,7 @@ export function SaveAsWizardDialog({
       try {
         const res = await apiFetch(`/api/product-step3-config/${encodeURIComponent(productId)}`);
         if (!res.ok) return; // 404 = no saved config yet, leave blank defaults
-        const { config } = await res.json();
+        const { config, items: cfgItems } = await res.json();
         if (!config) return;
         setProductDescription(config.description || "");
         if (mode === "save") {
@@ -484,6 +540,35 @@ export function SaveAsWizardDialog({
           setRequiredUnitType(config.required_unit_type || "Sqft");
           setBaseRequiredQty(Number(config.base_required_qty || 1));
           setWastagePctDefault(Number(config.wastage_pct_default || 0));
+
+          // Existing materials: load qty / wastage % / item description straight from
+          // the product's saved Step 3 rows (the same rows Manage Product shows),
+          // matched by material id. Rows with no match keep the values seeded above.
+          if (Array.isArray(cfgItems) && cfgItems.length > 0) {
+            const pool = [...cfgItems];
+            const patches: Record<number, Partial<ItemConfig>> = {};
+            itemsRef.current.forEach((it: any) => {
+              if (!isEngineSaveLine(it)) return;
+              const id = String(it.id ?? it.materialId ?? "");
+              if (!id) return;
+              const at = pool.findIndex((c: any) => String(c.material_id) === id);
+              if (at < 0) return;
+              const c = pool.splice(at, 1)[0];
+              const q = c.base_qty ?? c.qty;
+              patches[it.index] = {
+                ...(q !== undefined && q !== null ? { qty: Number(q) || 0 } : {}),
+                wastagePct: c.wastage_pct != null ? Number(c.wastage_pct) : undefined,
+                ...(c.location ? { description: String(c.location) } : {}),
+              };
+            });
+            if (Object.keys(patches).length > 0) {
+              setConfigByIndex((prev) => {
+                const next = { ...prev };
+                Object.entries(patches).forEach(([k, v]) => { if (next[Number(k)]) next[Number(k)] = { ...next[Number(k)], ...v }; });
+                return next;
+              });
+            }
+          }
         }
       } catch (err) {
         console.error("Failed to load existing product configuration for prefill:", err);
@@ -494,6 +579,17 @@ export function SaveAsWizardDialog({
   // All items available to this wizard: the original manual items passed in,
   // plus any brand-new materials brought in via "+ Add Item" (master catalog).
   const allItems = useMemo(() => [...items, ...extraItems], [items, extraItems]);
+
+  // Save mode only: system-suggested qty for each newly added item (the qty
+  // the existing logic had already computed for it before we zeroed it).
+  const suggestedQtyByIndex = useMemo(() => {
+    const out: Record<number, number> = {};
+    if (mode !== "save") return out;
+    items.forEach((it) => {
+      if (isNewlyAddedItem(it)) out[it.index] = Number(it.qtyPerSqf ?? it.qty ?? 0) || 0;
+    });
+    return out;
+  }, [items, mode]);
 
   const selectedItems = useMemo(() => allItems.filter((it) => configByIndex[it.index]?.selected), [allItems, configByIndex]);
   const removedItems = useMemo(() => allItems.filter((it) => configByIndex[it.index] && !configByIndex[it.index]?.selected), [allItems, configByIndex]);
@@ -660,14 +756,16 @@ export function SaveAsWizardDialog({
       }
       // Existing item (or fresh add) — compare against its original persisted values to
       // detect an edit worth submitting.
-      const origQty = Number((item as any).qtyPerSqf ?? item.qty ?? 0) || 0;
-      const origWastage = Number((item as any).wastagePct) || 0;
+      const origQty = (isEngineLine && savedBaseQty(item) !== undefined)
+        ? (savedBaseQty(item) as number)
+        : (Number((item as any).qtyPerSqf ?? item.qty ?? 0) || 0);
+      const origWastage: number | undefined = ((item as any).wastagePct === undefined || (item as any).wastagePct === null) ? undefined : (Number((item as any).wastagePct) || 0);
       const origSupply = Number((item as any).supply_rate ?? (item as any).supplyRate ?? 0) || 0;
       const origInstall = Number((item as any).install_rate ?? (item as any).installRate ?? 0) || 0;
       const origFreeze = !!((item as any).freezeAndEdit || (item as any).freeze_and_edit);
       const origApplyWastage = (item as any).applyWastage !== false;
       const origApplyRounding = (item as any).applyRounding !== false;
-      const origDescription = (item as any).description || (item as any).title || "";
+      const origDescription = savedItemDescription(item);
       const changed = cfg.qty !== origQty || cfg.wastagePct !== origWastage || cfg.supplyRate !== origSupply
         || cfg.installRate !== origInstall || cfg.freezeAndEdit !== origFreeze || cfg.applyWastage !== origApplyWastage
         || cfg.applyRounding !== origApplyRounding || (cfg.description || "") !== origDescription;
@@ -1217,7 +1315,19 @@ export function SaveAsWizardDialog({
                         <TableCell className="text-[10px] font-medium">{it.unit}</TableCell>
                         <TableCell>
                           <div className="flex justify-center">
-                            <Input type="number" value={cfg?.qty ?? 0} onChange={(e) => updateConfig(it.index, { qty: Number(e.target.value) || 0 })} className="h-8 border-muted text-[11px] px-2 font-bold w-20 text-center" />
+                            <div className="flex flex-col items-center gap-1">
+                              <Input type="number" value={cfg?.qty ?? 0} onChange={(e) => updateConfig(it.index, { qty: Number(e.target.value) || 0 })} className="h-8 border-muted text-[11px] px-2 font-bold w-20 text-center" />
+                              {suggestedQtyByIndex[it.index] !== undefined && (
+                                <button
+                                  type="button"
+                                  title="Use the system-suggested quantity (or type your own above)"
+                                  onClick={() => updateConfig(it.index, { qty: suggestedQtyByIndex[it.index] })}
+                                  className="text-[9px] font-bold text-emerald-700 hover:underline whitespace-nowrap"
+                                >
+                                  Suggested: {suggestedQtyByIndex[it.index]} · Use
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </TableCell>
                         <TableCell className="text-[10px] font-bold">₹{rate.toLocaleString()}</TableCell>
@@ -1227,7 +1337,7 @@ export function SaveAsWizardDialog({
                             <TableCell className="text-center"><Checkbox checked={!!cfg?.applyWastage} onCheckedChange={(checked) => updateConfig(it.index, { applyWastage: !!checked })} /></TableCell>
                             <TableCell className="text-center"><Checkbox checked={!!cfg?.applyRounding} onCheckedChange={(checked) => updateConfig(it.index, { applyRounding: !!checked })} /></TableCell>
                             <TableCell>
-                              <Input type="number" value={cfg?.wastagePct ?? ""} onChange={(e) => updateConfig(it.index, { wastagePct: e.target.value ? Number(e.target.value) : 0 })} placeholder="Global" className="h-8 border-orange-200 text-[10px] px-2 font-bold w-full" />
+                              <Input type="number" value={cfg?.wastagePct ?? ""} onChange={(e) => updateConfig(it.index, { wastagePct: e.target.value ? Number(e.target.value) : (mode === "save" ? undefined : 0) })} placeholder="Global" className="h-8 border-orange-200 text-[10px] px-2 font-bold w-full" />
                             </TableCell>
                             <TableCell className="text-[10px] font-bold text-orange-600">{(line?.wastageQty ?? 0).toFixed(2)}</TableCell>
                             <TableCell className="text-[10px] font-bold">{(line?.roundOffQty ?? cfg?.qty ?? 0).toFixed(2)}</TableCell>

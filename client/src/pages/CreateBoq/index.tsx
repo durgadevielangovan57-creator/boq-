@@ -58,6 +58,7 @@ import { ApprovalsList } from './components/ApprovalsList';
 import { ApprovalPreviewDialog } from './components/ApprovalPreviewDialog';
 import { VersionHistoryModal } from '@/components/ui/VersionHistoryModal';
 import BoqTabBar from "@/components/BoqTabBar";
+import ProjectDocumentsDialog from "@/components/ProjectDocumentsDialog";
 
 
 // ─── Small UI Components ───────────────────────────────────────────────────────
@@ -441,6 +442,7 @@ export default function CreateBom() {
   const [activeTab, setActiveTab] = useState("bom");
   const [approvals, setApprovals] = useState<any[]>([]);
   const [approvalsModalOpen, setApprovalsModalOpen] = useState(false);
+  const [projectDocsOpen, setProjectDocsOpen] = useState(false);
   const [rateChangeRequests, setRateChangeRequests] = useState<any[]>([]);
   const [bomShopRateRequests, setBomShopRateRequests] = useState<any[]>([]);
   const [rateActionLoading, setRateActionLoading] = useState<string | null>(null);
@@ -3696,6 +3698,25 @@ export default function CreateBom() {
                     </Tooltip>
                   )}
                 </h1>
+              </div>
+
+              {/* Project Documents (quotes etc.) — additive */}
+              <div className="flex items-center gap-2 relative z-10 md:ml-auto">
+                <button
+                  type="button"
+                  disabled={!selectedProjectId}
+                  onClick={() => setProjectDocsOpen(true)}
+                  title={selectedProjectId ? "Project documents" : "Select a project first"}
+                  className="flex items-center gap-1.5 h-8 px-3 rounded-full border border-indigo-200 bg-white text-indigo-700 text-xs font-bold hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <FileText className="h-3.5 w-3.5" /> Documents
+                </button>
+                <ProjectDocumentsDialog
+                  projectId={selectedProjectId}
+                  versionLabel={selectedVersion ? `V${selectedVersion.version_number}` : null}
+                  open={projectDocsOpen}
+                  onOpenChange={setProjectDocsOpen}
+                />
               </div>
 
               {(user?.role === 'admin' || user?.role === 'software_team') && (

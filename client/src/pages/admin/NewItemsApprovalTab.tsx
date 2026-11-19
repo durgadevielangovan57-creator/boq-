@@ -165,15 +165,20 @@ export default function NewItemsApprovalTab({ canAct }: { canAct: boolean }) {
         const globalProductItems = globalProductItemsRaw.map((it: any, i: number) => ({
           id: it.material_id || `global-${i}`,
           title: it.material_name,
-          description: it.material_name,
+          description: it.location || it.material_name,
           unit: it.unit,
           qty: it.qty,
-          qtyPerSqf: it.qty,
+          // Saved qty at the product's basis (what Manage Product Step 3 shows),
+          // not the rounded total in `qty`.
+          qtyPerSqf: it.base_qty ?? it.qty,
           supply_rate: it.supply_rate,
           install_rate: it.install_rate,
           location: it.location,
           freezeAndEdit: it.freeze_and_edit,
-          shop_name: ""
+          wastagePct: it.wastage_pct != null ? Number(it.wastage_pct) : undefined,
+          applyWastage: it.apply_wastage !== false,
+          applyRounding: it.apply_rounding !== false,
+          shop_name: it.shop_name || ""
         }));
 
         let mergedItems = [...newItems];
@@ -244,7 +249,7 @@ export default function NewItemsApprovalTab({ canAct }: { canAct: boolean }) {
         const basis = {
           requiredUnitType: (productConfig.requiredUnitType || "Sqft") as any,
           baseRequiredQty: Number(productConfig.baseRequiredQty || 1),
-          wastagePctDefault: 0,
+          wastagePctDefault: r.type === "save" ? Number(productConfig.wastagePctDefault || 0) : 0,
         };
 
         // Build materialLines from submitted items
@@ -257,7 +262,8 @@ export default function NewItemsApprovalTab({ canAct }: { canAct: boolean }) {
           wastagePct: it.wastagePct !== undefined ? Number(it.wastagePct) : undefined,
           supplyRate: Number(it.supply_rate ?? 0),
           installRate: Number(it.install_rate ?? 0),
-          applyWastage: it.wastagePct !== undefined && Number(it.wastagePct) > 0,
+          applyWastage: r.type === "save" ? it.applyWastage !== false : (it.wastagePct !== undefined && Number(it.wastagePct) > 0),
+          ...(r.type === "save" ? { applyRounding: it.applyRounding !== false } : {}),
           freeze_and_edit: it.freezeAndEdit || false,
           shop_name: it.shop_name || "",
         }));
@@ -359,18 +365,41 @@ export default function NewItemsApprovalTab({ canAct }: { canAct: boolean }) {
                         <TableRow>
                           <TableHead className="w-[40px] font-bold">Sl</TableHead>
                           {usingFullProductView && <TableHead className="w-[70px] font-bold">Status</TableHead>}
-                          <TableHead className="font-bold py-4">Item</TableHead>
-                          <TableHead className="w-[120px] font-bold">Description</TableHead>
-                          <TableHead className="w-[60px] font-bold">Unit</TableHead>
-                          <TableHead className="w-[100px] font-bold">Qty</TableHead>
-                          <TableHead className="w-[100px] font-bold">Supply Rate</TableHead>
-                          <TableHead className="w-[100px] font-bold">Install Rate</TableHead>
-                          <TableHead className="w-[110px] font-bold">Base Amount</TableHead>
-                          <TableHead className="w-[80px] font-bold">Wastage %</TableHead>
-                          <TableHead className="w-[80px] font-bold">Wastage Qty</TableHead>
-                          <TableHead className="w-[90px] font-bold">Total Qty</TableHead>
-                          <TableHead className="w-[90px] font-bold">Final Amount</TableHead>
-                          {boqRes && <TableHead className="w-[90px] font-bold">Per {basis.requiredUnitType} Qty</TableHead>}
+                          {usingFullProductView ? (
+                            <>
+                              {/* Save requests: same columns / order as Manage Product Step 3 */}
+                              <TableHead className="font-bold py-4">Item</TableHead>
+                              <TableHead className="w-[100px] font-bold">Shop</TableHead>
+                              <TableHead className="w-[120px] font-bold">Item Description</TableHead>
+                              <TableHead className="w-[60px] font-bold">Unit</TableHead>
+                              <TableHead className="w-[110px] font-bold text-center">Qty / {basis.baseRequiredQty} {basis.requiredUnitType}</TableHead>
+                              <TableHead className="w-[120px] font-bold">Rate / Material Unit</TableHead>
+                              <TableHead className="w-[110px] font-bold">Base Amount</TableHead>
+                              <TableHead className="w-[70px] font-bold text-center">Wastage</TableHead>
+                              <TableHead className="w-[70px] font-bold text-center">Round Off</TableHead>
+                              <TableHead className="w-[80px] font-bold">Wastage %</TableHead>
+                              <TableHead className="w-[80px] font-bold">Wastage Qty</TableHead>
+                              <TableHead className="w-[90px] font-bold">Total Qty</TableHead>
+                              <TableHead className="w-[80px] font-bold text-center">Freeze &amp; Edit</TableHead>
+                              <TableHead className="w-[90px] font-bold">Final Amount</TableHead>
+                              {boqRes && <TableHead className="w-[90px] font-bold">Per {basis.requiredUnitType} Qty</TableHead>}
+                            </>
+                          ) : (
+                            <>
+                              <TableHead className="font-bold py-4">Item</TableHead>
+                              <TableHead className="w-[120px] font-bold">Description</TableHead>
+                              <TableHead className="w-[60px] font-bold">Unit</TableHead>
+                              <TableHead className="w-[100px] font-bold">Qty</TableHead>
+                              <TableHead className="w-[100px] font-bold">Supply Rate</TableHead>
+                              <TableHead className="w-[100px] font-bold">Install Rate</TableHead>
+                              <TableHead className="w-[110px] font-bold">Base Amount</TableHead>
+                              <TableHead className="w-[80px] font-bold">Wastage %</TableHead>
+                              <TableHead className="w-[80px] font-bold">Wastage Qty</TableHead>
+                              <TableHead className="w-[90px] font-bold">Total Qty</TableHead>
+                              <TableHead className="w-[90px] font-bold">Final Amount</TableHead>
+                              {boqRes && <TableHead className="w-[90px] font-bold">Per {basis.requiredUnitType} Qty</TableHead>}
+                            </>
+                          )}
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -422,18 +451,40 @@ export default function NewItemsApprovalTab({ canAct }: { canAct: boolean }) {
                                   )}
                                 </TableCell>
                               )}
-                              <TableCell className="font-semibold">{it.title || it.description}</TableCell>
-                              <TableCell className="text-[10px] text-muted-foreground">{it.description || it.location || "-"}</TableCell>
-                              <TableCell className="text-[10px] font-medium">{it.unit || "-"}</TableCell>
-                              <TableCell className="text-[11px] font-bold text-center">{baseQty}</TableCell>
-                              <TableCell className="text-[10px] font-bold">₹{supplyRate.toLocaleString()}</TableCell>
-                              <TableCell className="text-[10px] font-bold">₹{installRate.toLocaleString()}</TableCell>
-                              <TableCell className="text-[10px] font-bold">₹{baseAmt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
-                              <TableCell className="text-[10px] font-bold text-orange-600">{wastagePct}%</TableCell>
-                              <TableCell className="text-[10px] font-bold text-orange-600">{wastageQty.toFixed(2)}</TableCell>
-                              <TableCell className="text-[10px] font-bold">{totalQty.toFixed(2)}</TableCell>
-                              <TableCell className="text-[10px] font-bold text-blue-600">₹{finalAmt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
-                              {boqRes && <TableCell className="text-[10px] font-bold text-primary">{perUnitQty.toFixed(4)}</TableCell>}
+                              {usingFullProductView ? (
+                                <>
+                                  <TableCell className="font-semibold">{it.title || it.description}</TableCell>
+                                  <TableCell className="text-[10px]">{it.shop_name || "N/A"}</TableCell>
+                                  <TableCell className="text-[10px] text-muted-foreground">{it.description || it.location || "-"}</TableCell>
+                                  <TableCell className="text-[10px] font-medium">{it.unit || "-"}</TableCell>
+                                  <TableCell className="text-[11px] font-bold text-center">{baseQty}</TableCell>
+                                  <TableCell className="text-[10px] font-bold">₹{rate.toLocaleString()}</TableCell>
+                                  <TableCell className="text-[10px] font-bold">₹{baseAmt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
+                                  <TableCell className="text-center"><Checkbox checked={it.applyWastage !== false} disabled /></TableCell>
+                                  <TableCell className="text-center"><Checkbox checked={it.applyRounding !== false} disabled /></TableCell>
+                                  <TableCell className="text-[10px] font-bold text-orange-600">{it.wastagePct === undefined || it.wastagePct === null ? "Global" : `${wastagePct}%`}</TableCell>
+                                  <TableCell className="text-[10px] font-bold text-orange-600">{wastageQty.toFixed(2)}</TableCell>
+                                  <TableCell className="text-[10px] font-bold">{totalQty.toFixed(2)}</TableCell>
+                                  <TableCell className="text-center"><Checkbox checked={!!isFrozen} disabled /></TableCell>
+                                  <TableCell className="text-[10px] font-bold text-blue-600">₹{finalAmt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
+                                  {boqRes && <TableCell className="text-[10px] font-bold text-primary">{perUnitQty.toFixed(4)}</TableCell>}
+                                </>
+                              ) : (
+                                <>
+                                  <TableCell className="font-semibold">{it.title || it.description}</TableCell>
+                                  <TableCell className="text-[10px] text-muted-foreground">{it.description || it.location || "-"}</TableCell>
+                                  <TableCell className="text-[10px] font-medium">{it.unit || "-"}</TableCell>
+                                  <TableCell className="text-[11px] font-bold text-center">{baseQty}</TableCell>
+                                  <TableCell className="text-[10px] font-bold">₹{supplyRate.toLocaleString()}</TableCell>
+                                  <TableCell className="text-[10px] font-bold">₹{installRate.toLocaleString()}</TableCell>
+                                  <TableCell className="text-[10px] font-bold">₹{baseAmt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
+                                  <TableCell className="text-[10px] font-bold text-orange-600">{wastagePct}%</TableCell>
+                                  <TableCell className="text-[10px] font-bold text-orange-600">{wastageQty.toFixed(2)}</TableCell>
+                                  <TableCell className="text-[10px] font-bold">{totalQty.toFixed(2)}</TableCell>
+                                  <TableCell className="text-[10px] font-bold text-blue-600">₹{finalAmt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</TableCell>
+                                  {boqRes && <TableCell className="text-[10px] font-bold text-primary">{perUnitQty.toFixed(4)}</TableCell>}
+                                </>
+                              )}
                             </TableRow>
                           );
                         })}
@@ -447,7 +498,7 @@ export default function NewItemsApprovalTab({ canAct }: { canAct: boolean }) {
                               return sum + Number(it.qtyPerSqf ?? it.qty ?? 0) * rate;
                             }, 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </TableCell>
-                          <TableCell colSpan={3}></TableCell>
+                          <TableCell colSpan={usingFullProductView ? 6 : 3}></TableCell>
                           <TableCell className="text-[11px] font-bold text-primary">
                             ₹{(r.type === "save"
                               ? items.reduce((sum: number, it: any, idx: number) => sum + (boqRes?.computed?.[idx]?.lineTotal ?? (Number(it.qtyPerSqf ?? it.qty ?? 0) * (Number(it.supply_rate ?? 0) + Number(it.install_rate ?? 0)))), 0)

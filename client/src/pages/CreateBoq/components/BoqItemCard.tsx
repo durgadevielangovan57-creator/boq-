@@ -44,7 +44,7 @@ import { parseTableData, parseImages, safeJson, VERSION_LABEL } from '../utils';
 import { EditableHsnSac } from './EditableHsnSac';
 import { BoqItemRow } from './BoqItemRow';
 import { IndicateReasonDialog } from './IndicateReasonDialog';
-import { SaveConfirmDialog, SaveAsWizardDialog, PendingManualItem } from './ManualItemSaveDialogs';
+import { SaveConfirmDialog, SaveAsWizardDialog, SaveUpdateQuantitiesPrompt, PendingManualItem } from './ManualItemSaveDialogs';
 
 /**
  * Icon-only action button (medium size) with a small hover tooltip showing
@@ -252,6 +252,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
   // ── Save / Save As (new manual items → existing product, additive) ─────
   const [showSaveConfirm, setShowSaveConfirm] = useState(false);
   const [showSaveEditWizard, setShowSaveEditWizard] = useState(false);
+  const [showSaveUpdatePrompt, setShowSaveUpdatePrompt] = useState(false);
   const [showSaveAsWizard, setShowSaveAsWizard] = useState(false);
   const [isSubmittingSave, setIsSubmittingSave] = useState(false);
 
@@ -469,6 +470,10 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
         supply_rate: sRate, install_rate: iRate,
         // Include wastagePct from the original materialLine so SaveAs wizard preserves it
         wastagePct: line.wastagePct,
+        // Raw saved Step 3 values (qty at the product's basis, item description) so
+        // the Save screen can show exactly what Manage Product Step 3 shows.
+        _baseQtyAtBasis: line.baseQty,
+        _location: line.location,
         _materialIdx: idx, itemKey,
         freezeAndEdit: line.freezeAndEdit,
         freeze_and_edit: line.freeze_and_edit,
@@ -1028,7 +1033,7 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                         label={pendingManualItems.length > 0 ? `Save (${pendingManualItems.length} new item${pendingManualItems.length === 1 ? "" : "s"})` : "Save changes"}
                         tone="emerald"
                         badge={pendingManualItems.length}
-                        onClick={() => setShowSaveEditWizard(true)}
+                        onClick={() => setShowSaveUpdatePrompt(true)}
                       />
                     )}
                     <IconActionButton
@@ -1344,6 +1349,11 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
         items={pendingManualItems}
         isSubmitting={isSubmittingSave}
         onConfirm={handleConfirmSave}
+      />
+      <SaveUpdateQuantitiesPrompt
+        open={showSaveUpdatePrompt}
+        onOpenChange={setShowSaveUpdatePrompt}
+        onConfirm={() => setShowSaveEditWizard(true)}
       />
       <SaveAsWizardDialog
         mode="save"

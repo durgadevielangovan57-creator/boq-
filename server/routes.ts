@@ -24,8 +24,15 @@ import { sendSketchPlanEmail, sendSiteReportEmail, sendProposalStatusEmail, send
 import { logActivity } from "./audit";
 import { registerSketchRoutes } from "./sketch_routes";
 import { registerPoMergeRoutes } from "./po_merge_routes";
-import { registerPoNotificationRoutes } from "./po_notification_routes";
-import { registerZohoPoAdditionsRoutes } from "./zoho_po_additions_routes";
+import { registerManualPoRoutes } from "./manual_po_routes";
+import { registerZohoBooksRoutes } from "./zoho_routes";
+import { registerProjectDocumentsRoutes } from "./project_documents_routes";
+import {
+  guardManualPoStatusChange,
+  guardManualPoDecision,
+  guardManualPoRevise,
+  guardManualPoRateChange,
+} from "./manual_po_workflow";
 import { convertSketchToBoqItems } from "./lib/sketch_converter";
 import { WebSocketServer } from 'ws';
 import bomSketchSync from "./lib/bom_sketch_sync";
@@ -72,11 +79,12 @@ export async function registerRoutes(
   // PO merge-selected-items routes (additive)
   await registerPoMergeRoutes(app);
 
-  // PO created notifications: e-mail + bell (additive)
-  await registerPoNotificationRoutes(app);
+  // Direct "Create Purchase Order" routes + Zoho Books PO sync (additive modules)
+  await registerManualPoRoutes(app);
+  await registerZohoBooksRoutes(app);
 
-  // Zoho: append newly added items to an already-synced PO (additive)
-  await registerZohoPoAdditionsRoutes(app);
+  // Project documents (quotes etc.) — isolated, additive module
+  registerProjectDocumentsRoutes(app);
 
   // Upload Route for Supabase Storage
   app.post("/api/upload", authMiddleware, upload.single("file"), async (req: Request, res: Response): Promise<any> => {
@@ -14486,6 +14494,10 @@ export async function registerRoutes(
       const { items, reason, deletedItems, delivery_date, shippingAddress, paymentTerms, vendor_id, vendor_name } = req.body;
       const user = (req as any).user;
 
+      // Direct POs are changed via Edit (Draft/Rejected) only; never revised.
+      const wfError = await guardManualPoRevise(id);
+      if (wfError) return res.status(wfError.code).json({ message: wfError.message });
+
       // 1. Get existing PO
       const poRes = await query(`SELECT * FROM purchase_orders WHERE id = $1`, [id]);
       if (poRes.rows.length === 0) {
@@ -14686,6 +14698,9 @@ export async function registerRoutes(
       const { id } = req.params;
       const { rateReductions } = req.body;
       const user = (req as any).user;
+
+      const wfError = await guardManualPoRateChange(id);
+      if (wfError) return res.status(wfError.code).json({ message: wfError.message });
 
       if (!rateReductions || !rateReductions.length) {
         return res.status(400).json({ message: "No rate reductions provided" });
@@ -15025,6 +15040,13 @@ export async function registerRoutes(
       const { id } = req.params;
       const { status, delivery_date, dc_number, dc_date } = req.body;
 
+      // Direct (Create Purchase Order) POs follow Draft -> Pending Approval -> Approved.
+      // No-op for every other kind of PO.
+      if (status !== undefined) {
+        const wfError = await guardManualPoStatusChange(id, status, (req as any).user);
+        if (wfError) return res.status(wfError.code).json({ message: wfError.message });
+      }
+
       const setFields: string[] = [];
       const params: any[] = [];
       let paramCount = 1;
@@ -15357,6 +15379,10 @@ export async function registerRoutes(
     try {
       const { id } = req.params;
       const { approve, comment } = req.body;
+
+      // Direct POs: Admin only, and only while pending approval. No-op for other POs.
+      const wfError = await guardManualPoDecision(id, !!approve, comment, (req as any).user);
+      if (wfError) return res.status(wfError.code).json({ message: wfError.message });
 
       const status = approve ? 'approved' : 'rejected';
 
