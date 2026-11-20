@@ -1453,6 +1453,16 @@ export default function FinalizeBoq() {
   // Tracks which {itemId -> colName} values were filled from Rate History
   const [historyUsedFields, setHistoryUsedFields] = useState<{ [itemId: string]: { [colName: string]: boolean } }>({});
   const [roundOff, setRoundOff] = useState<boolean>(false);
+  // Optional discount (applied on top of the grand total; persisted per BOQ version)
+  const [discountType, setDiscountType] = useState<"percent" | "fixed">("percent");
+  const [discountInput, setDiscountInput] = useState<string>("");
+  const discountHydratedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    // new/other version selected: clear until that version's saved discount is restored
+    discountHydratedForRef.current = null;
+    setDiscountType("percent");
+    setDiscountInput("");
+  }, [selectedBoqVersionId, selectedBomVersionId]);
   const [isColumnManagerOpen, setIsColumnManagerOpen] = useState(false);
   const [isAnalysisDialogOpen, setIsAnalysisDialogOpen] = useState(false);
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
@@ -1814,6 +1824,11 @@ export default function FinalizeBoq() {
   });
   const [hiddenPredefinedCols, setHiddenPredefinedCols] = useState<Record<string, boolean>>({});
   const [includeGrandTotal, setIncludeGrandTotal] = useState<boolean>(true);
+  const [includeDiscountInExport, setIncludeDiscountInExport] = useState<boolean>(true);
+  // checked by default every time a download dialog is opened; user can untick per download
+  useEffect(() => {
+    if (isExportDialogOpen || isPdfExportDialogOpen) setIncludeDiscountInExport(true);
+  }, [isExportDialogOpen, isPdfExportDialogOpen]);
   const [includePdfCompanyAddress, setIncludePdfCompanyAddress] = useState<boolean>(() => {
     try { const saved = localStorage.getItem('finalize_pdf_include_address'); return saved !== null ? saved === 'true' : true; } catch { return true; }
   });
@@ -2657,6 +2672,31 @@ export default function FinalizeBoq() {
 
           setHideSystemTotalFooter(sysTotalHidden);
           setGrandTotalColumn(restoredGrandTotalCol);
+
+          // Restore saved discount (this browser's copy first, else the one stored on the items)
+          try {
+            let dType: "percent" | "fixed" = "percent";
+            let dVal = "";
+            let found = false;
+            try {
+              const raw = localStorage.getItem(`boq-discount-${versionId}`);
+              if (raw) { const o = JSON.parse(raw); dType = o.type === "fixed" ? "fixed" : "percent"; dVal = String(o.value ?? ""); found = true; }
+            } catch { /* ignore */ }
+            if (!found) {
+              for (const it of items) {
+                let t: any = it.table_data || {};
+                if (typeof t === "string") { try { t = JSON.parse(t); } catch { t = {}; } }
+                if (t.finalize_discount_value !== undefined && t.finalize_discount_value !== null) {
+                  dType = t.finalize_discount_type === "fixed" ? "fixed" : "percent";
+                  dVal = String(t.finalize_discount_value);
+                  break;
+                }
+              }
+            }
+            setDiscountType(dType);
+            setDiscountInput(dVal);
+          } catch { /* ignore */ }
+          discountHydratedForRef.current = versionId;
           setHiddenPredefinedCols(restoredHiddenPredefined);
 
           try {
@@ -4615,6 +4655,22 @@ export default function FinalizeBoq() {
           }
         });
         sheetData.push(footerRow);
+
+        if (discountState.active && includeDiscountInExport) {
+          const gtName = grandTotalColumn === "Total Value (₹)" ? "Total Value (₹)" : grandTotalColumn;
+          let gtIdx = selectedExportCols.indexOf(gtName);
+          if (gtIdx === -1) gtIdx = selectedExportCols.length - 1;
+          const pIdx = Math.max(0, selectedExportCols.indexOf("Product / Material"));
+          const dLabel = discountType === "percent" ? `DISCOUNT (${Number(discountInput)}%)` : "DISCOUNT";
+          const discRow: any[] = Array(selectedExportCols.length).fill("");
+          discRow[pIdx] = dLabel;
+          discRow[gtIdx] = -(roundOff ? Math.round(discountAmount) : Number(discountAmount.toFixed(2)));
+          const finalRow: any[] = Array(selectedExportCols.length).fill("");
+          finalRow[pIdx] = "FINAL TOTAL (AFTER DISCOUNT)";
+          finalRow[gtIdx] = roundOff ? Math.round(payableAfterDiscount) : Number(payableAfterDiscount.toFixed(2));
+          sheetData.push(discRow);
+          sheetData.push(finalRow);
+        }
       }
 
       if (termsAndConditions && termsAndConditions.trim()) {
@@ -4952,6 +5008,23 @@ export default function FinalizeBoq() {
         }
       }
 
+      // Optional discount rows (only when a valid discount is applied)
+      const discountPdfRows: any[][] = [];
+      if (includeGrandTotal && grandTotalRow && discountState.active && includeDiscountInExport) {
+        const pIdx = selectedPdfExportCols.indexOf("Product / Material");
+        let gtIdx = grandTotalColumn === "Total Value (₹)" ? selectedPdfExportCols.indexOf("Total")
+          : grandTotalColumn === "Override Total" ? selectedPdfExportCols.indexOf("Override Total")
+            : selectedPdfExportCols.indexOf(grandTotalColumn);
+        if (gtIdx === -1) gtIdx = selectedPdfExportCols.length - 1;
+        const dRow: any[] = Array(selectedPdfExportCols.length).fill("");
+        const fRow: any[] = Array(selectedPdfExportCols.length).fill("");
+        dRow[pIdx === -1 ? 0 : pIdx] = discountType === "percent" ? `DISCOUNT (${Number(discountInput)}%)` : "DISCOUNT";
+        dRow[gtIdx] = `- ${fmtNum(discountAmount)}`;
+        fRow[pIdx === -1 ? 0 : pIdx] = "FINAL TOTAL (AFTER DISCOUNT)";
+        fRow[gtIdx] = fmtNum(payableAfterDiscount);
+        discountPdfRows.push(dRow, fRow);
+      }
+
       // 4. Logo Fetching
       const logoPath = "/image.png";
       let logoDataUrl: string | null = null;
@@ -5139,7 +5212,7 @@ export default function FinalizeBoq() {
         },
         theme: "grid",
         showFoot: 'lastPage',
-        foot: grandTotalRow ? [footerRow, grandTotalRow] : [footerRow],
+        foot: grandTotalRow ? [footerRow, grandTotalRow, ...discountPdfRows] : [footerRow],
         footStyles: {
           fillColor: [220, 220, 220],
           textColor: [0, 0, 0],
@@ -5264,6 +5337,58 @@ export default function FinalizeBoq() {
     return idx >= 0 ? calculatedColumnTotals.totals[idx] : 0;
   })();
   const revenue = currentProjectValue - generatedBudget;
+
+  // ── Optional, temporary discount (display-only layer over currentProjectValue) ──
+  // Lives purely in local state: never saved, never synced, never fed back into
+  // any item rate / qty / tax / total calculation, Save, PO or BOM logic.
+  const discountState = (() => {
+    const raw = discountInput.trim();
+    if (raw === "") return { active: false, amount: 0, error: "" };
+    const val = Number(raw);
+    if (!isFinite(val) || val < 0) return { active: false, amount: 0, error: "Enter a valid positive number" };
+    if (val === 0) return { active: false, amount: 0, error: "" };
+    if (discountType === "percent") {
+      if (val > 100) return { active: false, amount: 0, error: "Cannot exceed 100%" };
+      return { active: true, amount: (currentProjectValue * val) / 100, error: "" };
+    }
+    if (val > currentProjectValue) return { active: false, amount: 0, error: "Exceeds total" };
+    return { active: true, amount: val, error: "" };
+  })();
+  const discountAmount = discountState.amount;
+  const payableAfterDiscount = currentProjectValue - discountAmount;
+  // Persist discount (localStorage immediately + stored on the version's first item in the DB)
+  useEffect(() => {
+    const vId = activeVersionId;
+    if (!vId || discountHydratedForRef.current !== vId) return;
+    const type = discountType;
+    const value = discountInput.trim();
+    try {
+      if (value === "") localStorage.removeItem(`boq-discount-${vId}`);
+      else localStorage.setItem(`boq-discount-${vId}`, JSON.stringify({ type, value }));
+    } catch { /* ignore */ }
+    const first = boqItems[0];
+    if (!first) return;
+    let td: any = first.table_data || {};
+    if (typeof td === "string") { try { td = JSON.parse(td); } catch { td = {}; } }
+    const storedVal = td.finalize_discount_value ?? "";
+    const storedType = td.finalize_discount_type ?? "percent";
+    if (String(storedVal) === value && (value === "" || storedType === type)) return;
+    const timer = setTimeout(async () => {
+      try {
+        const updatedTd = { ...td, finalize_discount_type: type, finalize_discount_value: value };
+        const resp = await apiFetch(`/api/boq-items/${first.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ table_data: updatedTd }),
+        });
+        if (resp.ok) {
+          setBoqItems(prev => prev.map(i => i.id === first.id ? { ...i, table_data: updatedTd } : i));
+        }
+      } catch (e) { console.warn("Discount save to server failed", e); }
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [discountType, discountInput, activeVersionId, boqItems]);
+  const fmtMoney = (n: number) => `₹${(roundOff ? Math.round(n) : n).toLocaleString(undefined, { minimumFractionDigits: roundOff ? 0 : 2, maximumFractionDigits: roundOff ? 0 : 2 })}`;
 
   useEffect(() => {
     const activeId = activeVersionId;
@@ -6140,6 +6265,8 @@ export default function FinalizeBoq() {
 
                 <div className="hidden md:block w-px h-6 bg-slate-100" />
 
+                <div className="hidden md:block w-px h-6 bg-slate-100" />
+
                 <div className="flex items-center gap-2 min-w-fit">
                   <div className={`p-1.5 rounded ${revenue < 0 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}><IndianRupee className="h-3.5 w-3.5" /></div>
                   <div className="flex flex-col">
@@ -6250,6 +6377,21 @@ export default function FinalizeBoq() {
                 Include Grand Total
               </label>
             </div>
+            {discountState.active && (
+              <div className="flex items-center space-x-2 py-2">
+                <Checkbox
+                  id="excel-include-discount"
+                  checked={includeDiscountInExport}
+                  onCheckedChange={(checked) => setIncludeDiscountInExport(!!checked)}
+                />
+                <label
+                  htmlFor="excel-include-discount"
+                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                >
+                  Include Discount &amp; Final Total (after discount)
+                </label>
+              </div>
+            )}
             <DialogFooter>
               <Button variant="outline" onClick={() => setIsExportDialogOpen(false)}>Cancel</Button>
               <Button className="bg-green-600 hover:bg-green-700" onClick={performExcelExport}>Download Excel</Button>
@@ -6330,6 +6472,21 @@ export default function FinalizeBoq() {
                 Include Grand Total
               </label>
             </div>
+            {discountState.active && (
+              <div className="flex items-center space-x-2 py-2">
+                <Checkbox
+                  id="pdf-include-discount"
+                  checked={includeDiscountInExport}
+                  onCheckedChange={(checked) => setIncludeDiscountInExport(!!checked)}
+                />
+                <label
+                  htmlFor="pdf-include-discount"
+                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                >
+                  Include Discount &amp; Final Total (after discount)
+                </label>
+              </div>
+            )}
             <div className="flex items-center space-x-2 py-2">
               <Checkbox
                 id="pdf-include-company-address"
@@ -8448,6 +8605,37 @@ export default function FinalizeBoq() {
 
                 {/* Grand Total Section */}
                 <div className="flex flex-col items-end">
+                  {/* Optional temporary Discount (view-only; not saved) */}
+                  <div className="w-full lg:w-auto min-w-[500px] mb-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 flex flex-wrap items-center gap-3" data-testid="discount-box">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Discount (optional)</span>
+                    <select
+                      value={discountType}
+                      onChange={(e) => { setDiscountType(e.target.value as "percent" | "fixed"); setDiscountInput(""); }}
+                      className="h-8 text-xs border border-amber-200 rounded px-2 bg-white"
+                      data-testid="discount-type"
+                    >
+                      <option value="percent">Percentage (%)</option>
+                      <option value="fixed">Fixed Amount (₹)</option>
+                    </select>
+                    <Input
+                      type="number"
+                      min={0}
+                      value={discountInput}
+                      onChange={(e) => setDiscountInput(e.target.value)}
+                      placeholder={discountType === "percent" ? "0 – 100" : "Amount"}
+                      className={`h-8 w-28 text-xs bg-white ${discountState.error ? "border-red-400" : "border-amber-200"}`}
+                      data-testid="discount-value"
+                    />
+                    {discountInput !== "" && (
+                      <button type="button" onClick={() => setDiscountInput("")} className="text-xs text-amber-700 hover:text-amber-900" title="Clear discount">Clear</button>
+                    )}
+                    {discountState.error && <span className="text-[11px] text-red-600">{discountState.error}</span>}
+                    {discountState.active && (
+                      <span className="ml-auto text-[11px] font-semibold text-amber-700" data-testid="discount-amount">
+                        Discount: − {fmtMoney(discountAmount)}
+                      </span>
+                    )}
+                  </div>
                   <div className="bg-gray-800 text-white rounded-lg px-4 py-3 flex items-center gap-8 shadow-lg group relative border border-gray-700 w-full lg:w-auto min-w-[500px]">
                     <button
                       onClick={() => setShowColumnTotals(false)}
@@ -8479,10 +8667,15 @@ export default function FinalizeBoq() {
                       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-green-400/80 mb-1">
                         {grandTotalColumn === "Total Value (₹)" ? "Base Grand Total" :
                           grandTotalColumn === "Override Total" ? "Override Grand Total" :
-                            `${grandTotalColumn} Total`}
+                            `${grandTotalColumn} Total`}{discountState.active ? " (After Discount)" : ""}
                       </span>
-                      <span className="text-2xl font-black text-green-400 font-mono tracking-tighter">
-                        ₹{currentProjectValue.toLocaleString(undefined, { minimumFractionDigits: roundOff ? 0 : 2, maximumFractionDigits: roundOff ? 0 : 2 })}
+                      {discountState.active && (
+                        <span className="text-[11px] text-gray-400 line-through font-mono" data-testid="pre-discount-total">
+                          {fmtMoney(currentProjectValue)}
+                        </span>
+                      )}
+                      <span className="text-2xl font-black text-green-400 font-mono tracking-tighter" data-testid="payable-total">
+                        ₹{payableAfterDiscount.toLocaleString(undefined, { minimumFractionDigits: roundOff ? 0 : 2, maximumFractionDigits: roundOff ? 0 : 2 })}
                       </span>
                     </div>
                   </div>
