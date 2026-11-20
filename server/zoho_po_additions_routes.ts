@@ -9,6 +9,7 @@ import {
     ZOHO_DEFAULT_TAX_EXEMPTION_ID,
 } from "./zoho/api_client";
 import { getZohoContactGstInfo } from "./zoho/vendor_matching";
+import { vendorNeedsReverseCharge, pickReverseChargeTaxId } from "./zoho/reverse_charge";
 import {
     findZohoItemMatch,
     getZohoItemTax,
@@ -230,6 +231,7 @@ export async function registerZohoPoAdditionsRoutes(app: Express) {
                 let orgTaxes: Awaited<ReturnType<typeof listZohoTaxes>> | null = null;
 
                 const newLines: any[] = [];
+                const newLineGst: number[] = [];
                 for (const row of newRows) {
                     const displayName = row.material_name || row.item;
                     const qty = Number(row.qty);
@@ -335,6 +337,8 @@ export async function registerZohoPoAdditionsRoutes(app: Express) {
                     }
 
                     const line: Record<string, any> = { item_id: zohoItemId, name: displayName, quantity: qty, rate };
+                    const lineDescription = String(row.description ?? "").trim();
+                    if (lineDescription) line.description = lineDescription.slice(0, 2000);
                     if (resolvedTaxId) line.tax_id = resolvedTaxId;
                     else if (defaultTax.taxId) line.tax_id = defaultTax.taxId;
                     else if (defaultTax.taxExemptionId) line.tax_exemption_id = defaultTax.taxExemptionId;
@@ -346,13 +350,14 @@ export async function registerZohoPoAdditionsRoutes(app: Express) {
                         );
                     }
                     newLines.push(line);
+                    newLineGst.push(targetGst);
                 }
 
                 // Existing lines go back exactly as Zoho holds them (with line_item_id),
                 // otherwise Zoho would delete / recreate them.
                 const KEEP = [
                     "line_item_id", "item_id", "name", "description", "item_order", "rate", "quantity",
-                    "unit", "tax_id", "tax_exemption_id", "hsn_or_sac", "discount", "account_id",
+                    "unit", "tax_id", "tax_exemption_id", "reverse_charge_tax_id", "hsn_or_sac", "discount", "account_id",
                 ];
                 const keptLines = existingLines.map((l) => {
                     const o: Record<string, any> = {};
@@ -360,10 +365,52 @@ export async function registerZohoPoAdditionsRoutes(app: Express) {
                     return o;
                 });
 
+                // Reverse charge: if this PO was created with reverse charge (or the
+                // vendor is unregistered / consumer / overseas), the new lines need a
+                // reverse_charge_tax_id too, and the header flag must stay on,
+                // otherwise Zoho rejects the update with the same "Reverse charge
+                // should be applied..." error as on first sync.
+                const reverseChargeOn =
+                    zohoPo.is_reverse_charge_applied === true || vendorNeedsReverseCharge(gstInfo.gstTreatment);
+                if (reverseChargeOn) {
+                    if (!orgTaxes) orgTaxes = await listZohoTaxes();
+                    if (!orgTaxes.ok) {
+                        throw new HttpError(502, "Could not load taxes from Zoho Books to apply reverse charge. Please retry.");
+                    }
+                    // Mirror how Zoho already holds the existing lines: if they carry no
+                    // regular tax alongside the reverse charge tax, new lines shouldn't either.
+                    const dropRegularTax =
+                        existingLines.length > 0 && existingLines.every((l) => l.reverse_charge_tax_id && !l.tax_id);
+                    newLines.forEach((line, i) => {
+                        const rcTaxId = pickReverseChargeTaxId({
+                            taxes: orgTaxes!.taxes,
+                            gstPercentage: newLineGst[i],
+                            isInterState: transactionType ? transactionType.isInterState : null,
+                            lineTaxId: line.tax_id,
+                        });
+                        if (!rcTaxId) {
+                            throw new HttpError(
+                                422,
+                                `No reverse charge tax of ${newLineGst[i]}% was found in Zoho Books for material '${line.name}'. Please add it in Zoho Books (Settings > Taxes).`,
+                                { taxSetupRequired: true, materialName: line.name }
+                            );
+                        }
+                        line.reverse_charge_tax_id = rcTaxId;
+                        if (dropRegularTax) {
+                            delete line.tax_id;
+                            delete line.tax_exemption_id;
+                        }
+                    });
+                }
+
                 const payload: Record<string, any> = {
                     vendor_id: vendorZohoContactId,
                     line_items: [...keptLines, ...newLines],
                 };
+                if (reverseChargeOn) {
+                    payload.is_reverse_charge_applied = true;
+                    if (gstInfo.gstTreatment) payload.gst_treatment = gstInfo.gstTreatment;
+                }
                 if (zohoPo.reference_number) payload.reference_number = zohoPo.reference_number;
                 if (zohoPo.date) payload.date = zohoPo.date;
                 if (zohoPo.source_of_supply) payload.source_of_supply = zohoPo.source_of_supply;

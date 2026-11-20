@@ -6,6 +6,8 @@ import { zohoApiRequest, ZOHO_BOOKS_ORGANIZATION_ID, ZOHO_DEFAULT_TAX_ID, ZOHO_D
 import { findZohoVendorMatch, searchZohoVendorContacts, getZohoContactGstInfo } from "./zoho/vendor_matching";
 import { findZohoItemMatch, searchZohoBooksItems, createZohoBooksItem, getZohoItemTax, getZohoItemUsability, listZohoTaxes, findEquivalentTax, classifyTax, logZohoTaxGroupsDiagnostic } from "./zoho/item_matching";
 import { guardManualPoZohoSync } from "./manual_po_workflow";
+import { registerZohoDescriptionBackfillRoutes } from "./zoho/description_backfill";
+import { vendorNeedsReverseCharge, isReverseChargeRequiredError, pickReverseChargeTaxId } from "./zoho/reverse_charge";
 import {
     ensureZohoSettingsSchema,
     getZohoSetting,
@@ -98,6 +100,8 @@ function safeLog(poId: string, message: string, extra?: Record<string, unknown>)
 export async function registerZohoBooksRoutes(app: Express) {
     await ensureZohoSchema();
     await ensureZohoSettingsSchema();
+    // One-time backfill of line descriptions for POs that were synced before descriptions were sent.
+    registerZohoDescriptionBackfillRoutes(app);
 
     /**
      * Resolves the org-level default tax to fall back on when a material's
@@ -363,7 +367,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                     return res.status(400).json({ message: errorMessage });
                 }
 
-                const lineItems: Array<{ item_id: string; name: string; quantity: number; rate: number; tax_id?: string; tax_exemption_id?: string; reverse_charge_tax_id?: string }> = [];
+                const lineItems: Array<{ item_id: string; name: string; description?: string; quantity: number; rate: number; tax_id?: string; tax_exemption_id?: string; reverse_charge_tax_id?: string }> = [];
                 const lineItemGstPct: number[] = [];
                 const defaultTax = await resolveDefaultTax();
 
@@ -652,12 +656,17 @@ export async function registerZohoBooksRoutes(app: Express) {
                         resolvedTaxType
                     });
 
-                    const lineItem: { item_id: string; name: string; quantity: number; rate: number; tax_id?: string; tax_exemption_id?: string } = {
+                    const lineItem: { item_id: string; name: string; description?: string; quantity: number; rate: number; tax_id?: string; tax_exemption_id?: string } = {
                         item_id: materialZohoItemId!,
                         name: displayName,
                         quantity: qty,
                         rate,
                     };
+                    // Sync the PO line's description to Zoho Books (Zoho limit: 2000 chars).
+                    const lineDescription = String(row.description ?? "").trim();
+                    if (lineDescription) {
+                        lineItem.description = lineDescription.slice(0, 2000);
+                    }
 
                     if (resolvedTaxId) {
                         lineItem.tax_id = resolvedTaxId;
@@ -745,38 +754,104 @@ export async function registerZohoBooksRoutes(app: Express) {
                     payload.destination_of_supply = transactionType.orgStateCode;
                 }
 
-                // Zoho Books (India) rejects POs to unregistered / overseas vendors
-                // unless a reverse-charge tax is set on each line item
-                // (line_items[].reverse_charge_tax_id - the PO create API has no
-                // header-level reverse-charge flag). Only added for those vendors,
-                // matched by an existing org reverse-charge tax of the same GST %.
-                // Nothing else in the payload (items, taxes, amounts) is changed.
-                try {
-                    const vendorGst = await getZohoContactGstInfo(vendorZohoContactId!);
-                    safeLog(id, "vendor GST treatment", { gstTreatment: vendorGst.gstTreatment });
-                    if (vendorGst.gstTreatment && ["business_none", "consumer", "overseas"].includes(vendorGst.gstTreatment)) {
-                        const orgTaxes = await getOrgTaxes();
-                        if (orgTaxes.ok) {
-                            const rcmTaxes = orgTaxes.taxes.filter(t => /reverse|rcm/i.test(`${t.taxName} ${t.taxType || ""} ${t.taxSpecificType || ""}`));
-                            safeLog(id, "reverse charge taxes available", { rcm: rcmTaxes.map(t => ({ id: t.taxId, name: t.taxName, pct: t.taxPercentage })) });
-                            lineItems.forEach((li: any, idx) => {
-                                const pct = lineItemGstPct[idx];
-                                const match = rcmTaxes.find(t => Math.abs(t.taxPercentage - pct) < 0.001)
-                                    || rcmTaxes.find(t => Math.abs(t.taxPercentage - pct / 2) < 0.001);
-                                if (match) li.reverse_charge_tax_id = match.taxId;
-                                else safeLog(id, "no reverse charge tax found for line", { name: li.name, gstRate: pct });
-                            });
-                        }
+                // ---- Reverse charge (RCM) for unregistered / consumer / overseas vendors ----
+                // Zoho Books (India) rejects POs to these vendors with "Reverse charge
+                // should be applied on import of services or purchases from
+                // unregistered vendors" unless reverse charge is declared. Per the
+                // Zoho Books v3 Purchase Order API that means BOTH:
+                //   - header: is_reverse_charge_applied = true
+                //   - every line: reverse_charge_tax_id
+                // Registered (business_gst) vendors are left completely untouched.
+                const vendorGst = await getZohoContactGstInfo(vendorZohoContactId!);
+                safeLog(id, "vendor GST treatment", { gstTreatment: vendorGst.gstTreatment });
+                const rcRequired = vendorNeedsReverseCharge(vendorGst.gstTreatment);
+
+                type PoAttempt = { label: string; payload: Record<string, any> };
+                let rcSetupError: string | null = null;
+
+                // Builds the reverse-charge variants of the payload. Two variants are
+                // prepared because Zoho treats tax and reverse-charge tax on a line as
+                // alternatives in some orgs: first without the regular line tax, then
+                // (only if Zoho rejects that) with it kept alongside.
+                const buildReverseChargeAttempts = async (): Promise<PoAttempt[]> => {
+                    const orgTaxes = await getOrgTaxes();
+                    if (!orgTaxes.ok) {
+                        rcSetupError = "Could not load taxes from Zoho Books to apply reverse charge. Please retry.";
+                        return [];
                     }
-                } catch (rcErr: any) {
-                    safeLog(id, "reverse charge setup failed, continuing without it", { reason: rcErr?.message });
+                    const built: PoAttempt[] = [];
+                    for (const keepRegularTax of [false, true]) {
+                        const rcLines: any[] = [];
+                        for (let i = 0; i < lineItems.length; i++) {
+                            const li: any = lineItems[i];
+                            const rcTaxId = pickReverseChargeTaxId({
+                                taxes: orgTaxes.taxes,
+                                gstPercentage: lineItemGstPct[i],
+                                isInterState: transactionType ? transactionType.isInterState : null,
+                                lineTaxId: li.tax_id,
+                            });
+                            if (!rcTaxId) {
+                                rcSetupError = `No reverse charge tax of ${lineItemGstPct[i]}% was found in Zoho Books for material '${li.name}'. Please add it in Zoho Books (Settings > Taxes).`;
+                                return [];
+                            }
+                            const copy: any = { ...li, reverse_charge_tax_id: rcTaxId };
+                            if (!keepRegularTax) {
+                                delete copy.tax_id;
+                                delete copy.tax_exemption_id;
+                            }
+                            rcLines.push(copy);
+                        }
+                        const rcPayload: Record<string, any> = { ...payload, line_items: rcLines, is_reverse_charge_applied: true };
+                        if (vendorGst.gstTreatment) rcPayload.gst_treatment = vendorGst.gstTreatment;
+                        built.push({ label: keepRegularTax ? "reverse charge + line tax" : "reverse charge", payload: rcPayload });
+                    }
+                    return built;
+                };
+
+                let attempts: PoAttempt[] = [];
+                if (rcRequired) {
+                    attempts = await buildReverseChargeAttempts();
+                    if (attempts.length === 0) {
+                        const errorMessage = rcSetupError || "Could not apply reverse charge for this Purchase Order.";
+                        await query(
+                            `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                            [errorMessage, id]
+                        );
+                        safeLog(id, "reverse charge setup failed", { reason: errorMessage });
+                        return res.status(422).json({ message: errorMessage, taxSetupRequired: true });
+                    }
+                    safeLog(id, "reverse charge applied (unregistered/consumer/overseas vendor)", { gstTreatment: vendorGst.gstTreatment });
+                } else {
+                    attempts = [{ label: "standard", payload }];
                 }
 
-                // 8. Create the Purchase Order in Zoho Books.
-                const createRes = await zohoApiRequest("/purchaseorders", {
-                    method: "POST",
-                    body: payload,
-                });
+                // 8. Create the Purchase Order in Zoho Books. Nothing is created when
+                // Zoho rejects a request, so retrying a different variant is safe.
+                let attemptIdx = 0;
+                let triedReverseChargeFallback = rcRequired;
+                let createRes = await zohoApiRequest("/purchaseorders", { method: "POST", body: attempts[0].payload });
+                while (!(createRes.ok && createRes.data?.purchaseorder?.purchaseorder_id)) {
+                    const failMsg: string = createRes.data?.message || "";
+                    if (attemptIdx + 1 < attempts.length && /tax|reverse/i.test(failMsg)) {
+                        attemptIdx++;
+                        safeLog(id, "retrying Purchase Order create", { variant: attempts[attemptIdx].label, previousError: failMsg });
+                        createRes = await zohoApiRequest("/purchaseorders", { method: "POST", body: attempts[attemptIdx].payload });
+                        continue;
+                    }
+                    // Safety net: Zoho says reverse charge is required but we didn't
+                    // detect it up front (e.g. vendor GST treatment unreadable).
+                    if (!triedReverseChargeFallback && isReverseChargeRequiredError(failMsg)) {
+                        triedReverseChargeFallback = true;
+                        const rcAttempts = await buildReverseChargeAttempts();
+                        if (rcAttempts.length === 0) break;
+                        attempts = rcAttempts;
+                        attemptIdx = 0;
+                        safeLog(id, "Zoho required reverse charge - retrying with it applied", { previousError: failMsg });
+                        createRes = await zohoApiRequest("/purchaseorders", { method: "POST", body: attempts[0].payload });
+                        continue;
+                    }
+                    break;
+                }
 
                 if (!createRes.ok || !createRes.data?.purchaseorder?.purchaseorder_id) {
                     const technicalMessage: string =
@@ -799,7 +874,9 @@ export async function registerZohoBooksRoutes(app: Express) {
                     );
                     const errorMessage = isTaxTypeMismatch
                         ? `Zoho Books rejected the tax on this Purchase Order: "${technicalMessage}". The tax configured on one of the materials' Zoho Books items doesn't match this vendor's state (IGST vs CGST+SGST). Please fix the tax on the item in Zoho Books, then retry.`
-                        : `Failed to create the Purchase Order in Zoho Books: ${technicalMessage}`;
+                        : rcSetupError && isReverseChargeRequiredError(technicalMessage)
+                            ? rcSetupError
+                            : `Failed to create the Purchase Order in Zoho Books: ${technicalMessage}`;
 
                     await query(
                         `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
