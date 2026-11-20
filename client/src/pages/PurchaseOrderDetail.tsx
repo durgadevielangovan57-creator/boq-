@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo, useDeferredValue } from "react";
 import { useParams, useLocation } from "wouter";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -43,9 +43,21 @@ import {
     Building2,
     Truck,
     User,
-    TrendingDown
+    TrendingDown,
+    Check,
+    ChevronsUpDown
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+    Command,
+    CommandEmpty,
+    CommandGroup,
+    CommandInput,
+    CommandItem,
+    CommandList,
+} from "@/components/ui/command";
+import { cn } from "@/lib/utils";
 import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
@@ -108,6 +120,179 @@ interface PurchaseOrderItem {
     gst_percentage?: string | number | null;
     discount_percent?: string | number | null;
     technical_specification?: string;
+}
+
+// Searchable vendor dropdown (opens downward, aligned rows, sorted A-Z)
+function VendorCombobox({ shops, value, onChange }: {
+    shops: any[];
+    value: string;
+    onChange: (id: string) => void;
+}) {
+    const [open, setOpen] = useState(false);
+
+    const sorted = useMemo(
+        () => [...shops].sort((a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" })),
+        [shops]
+    );
+    const selected = shops.find(s => s.id === value);
+
+    return (
+        <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>
+                <Button
+                    type="button"
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={open}
+                    className="w-full justify-between h-9 bg-white font-normal hover:bg-slate-50 border-slate-300 px-3"
+                >
+                    <span className="truncate text-sm">
+                        {selected
+                            ? <span className="font-bold text-slate-800">{selected.name || "Vendor"}</span>
+                            : <span className="text-muted-foreground">Select Vendor</span>}
+                    </span>
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                </Button>
+            </PopoverTrigger>
+            <PopoverContent
+                side="bottom"
+                align="start"
+                sideOffset={4}
+                className="w-[var(--radix-popover-trigger-width)] min-w-[320px] p-0 z-[100] shadow-lg border border-slate-200"
+            >
+                <Command>
+                    <CommandInput placeholder="Search vendor by name, city..." className="h-10 text-sm" />
+                    <CommandList className="max-h-72 overflow-y-auto">
+                        <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">No vendor found.</CommandEmpty>
+                        <CommandGroup className="p-1">
+                            {sorted.map(s => (
+                                <CommandItem
+                                    key={s.id}
+                                    value={`${s.name || ""} ${s.city || ""} ${s.state || ""} ${s.gstNo || ""}`}
+                                    onSelect={() => { onChange(s.id); setOpen(false); }}
+                                    className="cursor-pointer px-3 py-2 rounded-md flex items-center gap-2"
+                                >
+                                    <Check className={cn("h-4 w-4 shrink-0", value === s.id ? "opacity-100 text-primary" : "opacity-0")} />
+                                    <div className="flex flex-col min-w-0 flex-1 leading-tight">
+                                        <span className="text-sm font-medium text-slate-900 truncate">{s.name || "Vendor"}</span>
+                                        {(s.city || s.state) && (
+                                            <span className="text-xs text-muted-foreground truncate mt-0.5">
+                                                {[s.city, s.state].filter(Boolean).join(", ")}
+                                            </span>
+                                        )}
+                                    </div>
+                                </CommandItem>
+                            ))}
+                        </CommandGroup>
+                    </CommandList>
+                </Command>
+            </PopoverContent>
+        </Popover>
+    );
+}
+
+const MAX_VISIBLE_MATERIALS = 100;
+
+// Separate component so typing in the search box only re-renders this dialog,
+// not the whole (very large) Purchase Order page.
+function AddMaterialDialog({ open, onOpenChange, materials, isLoading, onSelect }: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    materials: any[];
+    isLoading: boolean;
+    onSelect: (material: any) => void;
+}) {
+    const [search, setSearch] = useState("");
+    const deferredSearch = useDeferredValue(search);
+
+    // Reset the search each time the dialog is opened
+    useEffect(() => { if (open) setSearch(""); }, [open]);
+
+    // Pre-compute lowercase searchable text once per materials list
+    const searchable = useMemo(() => materials.map((m: any) => ({
+        m,
+        text: [m.name, m.item, m.material_name, m.description, m.code, m.hsn_code, m.sac_code]
+            .filter(Boolean).join(" ").toLowerCase(),
+    })), [materials]);
+
+    const filtered = useMemo(() => {
+        const q = deferredSearch.trim().toLowerCase();
+        if (!q) return materials;
+        return searchable.filter(x => x.text.includes(q)).map(x => x.m);
+    }, [deferredSearch, searchable, materials]);
+
+    const visible = filtered.slice(0, MAX_VISIBLE_MATERIALS);
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-w-4xl">
+                <DialogHeader>
+                    <DialogTitle>Add Material Item</DialogTitle>
+                    <DialogDescription>
+                        Select a material from the catalogue and add it to the PO. You can update the quantity in the PO table afterward.
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 pt-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <Input
+                            placeholder="Search materials by name, code, HSN, SAC..."
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            className="w-full sm:w-80"
+                            autoFocus
+                        />
+                        <div className="text-sm text-slate-500">
+                            {filtered.length > MAX_VISIBLE_MATERIALS
+                                ? `Showing first ${MAX_VISIBLE_MATERIALS} of ${filtered.length} materials`
+                                : `${filtered.length} materials found`}
+                        </div>
+                    </div>
+                    <div className="max-h-[480px] overflow-y-auto border border-slate-200 rounded-lg">
+                        <Table>
+                            <TableHeader>
+                                <TableRow className="bg-slate-100 border-b border-slate-200">
+                                    <TableHead className="text-[10px] text-slate-700 w-8">#</TableHead>
+                                    <TableHead className="text-[10px] text-slate-700">Material</TableHead>
+                                    <TableHead className="text-[10px] text-slate-700 text-center">Unit</TableHead>
+                                    <TableHead className="text-[10px] text-slate-700 text-right">Rate</TableHead>
+                                    <TableHead className="text-[10px] text-slate-700 text-right">Action</TableHead>
+                                </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                                {visible.length > 0 ? visible.map((material: any, idx: number) => (
+                                    <TableRow key={material.id || idx} className="border-b border-slate-200">
+                                        <TableCell className="text-[11px] py-2">{idx + 1}</TableCell>
+                                        <TableCell className="text-[11px] py-2">
+                                            <div className="font-semibold text-slate-800">{material.name || material.item || material.material_name}</div>
+                                            {material.description && <div className="text-[10px] text-slate-500 truncate">{material.description}</div>}
+                                        </TableCell>
+                                        <TableCell className="text-[11px] text-center py-2">{material.unit || "-"}</TableCell>
+                                        <TableCell className="text-[11px] text-right py-2">{parseFloat(material.rate || material.price || "0").toLocaleString('en-IN', { minimumFractionDigits: 2 })}</TableCell>
+                                        <TableCell className="text-[11px] text-right py-2">
+                                            <Button size="sm" variant="outline" onClick={() => onSelect(material)}>
+                                                Add
+                                            </Button>
+                                        </TableCell>
+                                    </TableRow>
+                                )) : (
+                                    <TableRow>
+                                        <TableCell colSpan={5} className="text-center text-slate-500 py-8 text-sm">
+                                            {isLoading ? "Loading materials..." : "No materials match your search."}
+                                        </TableCell>
+                                    </TableRow>
+                                )}
+                            </TableBody>
+                        </Table>
+                    </div>
+                </div>
+                <DialogFooter>
+                    <Button variant="outline" onClick={() => onOpenChange(false)}>
+                        Cancel
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
 }
 
 export default function PurchaseOrderDetail() {
@@ -422,7 +607,6 @@ export default function PurchaseOrderDetail() {
     const [showReviseDialog, setShowReviseDialog] = useState(false);
     const [reviseReason, setReviseReason] = useState("");
     const [showAddItemDialog, setShowAddItemDialog] = useState(false);
-    const [materialSearch, setMaterialSearch] = useState("");
     const [isLoadingMaterials, setIsLoadingMaterials] = useState(false);
 
     // Zoho Books Enhancements UI State
@@ -619,7 +803,6 @@ export default function PurchaseOrderDetail() {
                 setIsLoadingMaterials(false);
             }
         }
-        setMaterialSearch("");
         setShowAddItemDialog(true);
     };
 
@@ -642,14 +825,6 @@ export default function PurchaseOrderDetail() {
         setShowAddItemDialog(false);
         toast({ title: "Item Added", description: `${newItem.item} added to the PO.` });
     };
-
-    const filteredMaterials = materials.filter((material: any) => {
-        const query = materialSearch.trim().toLowerCase();
-        if (!query) return true;
-        return [material.name, material.item, material.material_name, material.description, material.code, material.hsn_code, material.sac_code]
-            .filter(Boolean)
-            .some((value: string) => value.toLowerCase().includes(query));
-    });
 
     const confirmDeleteAndRevise = async () => {
         if (!existingRevisionToDelete) return;
@@ -776,11 +951,6 @@ export default function PurchaseOrderDetail() {
 
         if (!editableDeliveryDate) {
             toast({ title: "Error", description: "Expected Delivery date is mandatory.", variant: "destructive" });
-            return;
-        }
-
-        if (!shippingAddress.trim()) {
-            toast({ title: "Error", description: "Deliver To (Shipping Address) is mandatory.", variant: "destructive" });
             return;
         }
 
@@ -1214,16 +1384,11 @@ export default function PurchaseOrderDetail() {
 
                                         {isReviseMode ? (
                                             <div className="space-y-2 relative z-50">
-                                                <select
-                                                    className="w-full border border-slate-300 rounded p-1.5 text-sm font-bold text-slate-800 focus:ring-1 focus:ring-primary outline-none bg-white"
+                                                <VendorCombobox
+                                                    shops={shops}
                                                     value={editableVendorId}
-                                                    onChange={(e) => handleGlobalVendorChange(e.target.value)}
-                                                >
-                                                    <option disabled value="">Select Vendor</option>
-                                                    {shops.map(s => (
-                                                        <option key={s.id} value={s.id}>{s.name || "Vendor"}</option>
-                                                    ))}
-                                                </select>
+                                                    onChange={handleGlobalVendorChange}
+                                                />
 
                                                 {/* Display address for selected vendor */}
                                                 {shops.find(s => s.id === editableVendorId) && (
@@ -1265,7 +1430,7 @@ export default function PurchaseOrderDetail() {
 
                                 <div className="space-y-1">
                                     <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">
-                                        Deliver To {isReviseMode && <span className="text-red-500">*</span>}
+                                        Deliver To
                                     </p>
                                     {isReviseMode ? (
                                         <Textarea
@@ -1463,8 +1628,11 @@ export default function PurchaseOrderDetail() {
                                                                 value={item.rate}
                                                                 onChange={(e) => {
                                                                     const newVal = parseFloat(e.target.value) || 0;
-                                                                    const originalRate = parseFloat(initialItems.find(i => i.id === item.id)?.rate || '0');
-                                                                    if (newVal > originalRate) {
+                                                                    const originalItem = initialItems.find(i => i.id === item.id);
+                                                                    const originalRate = parseFloat(originalItem?.rate || '0');
+                                                                    // Only cap the rate for items that existed in the original PO.
+                                                                    // Newly added items have no original rate, so any rate is allowed.
+                                                                    if (originalItem && newVal > originalRate) {
                                                                         // Block increase: reset to original
                                                                         handleRateChange(item.id, originalRate.toString());
                                                                     } else {
@@ -1473,9 +1641,9 @@ export default function PurchaseOrderDetail() {
                                                                 }}
                                                                 className={`w-20 text-right ml-auto h-6 text-[10px] p-0.5 border-2 ${parseFloat(item.rate) < parseFloat(initialItems.find(i => i.id === item.id)?.rate || '0') ? 'border-green-500 bg-green-50' : 'border-slate-200'}`}
                                                                 min="0"
-                                                                max={parseFloat(initialItems.find(i => i.id === item.id)?.rate || '0')}
+                                                                max={initialItems.find(i => i.id === item.id) ? parseFloat(initialItems.find(i => i.id === item.id)!.rate || '0') : undefined}
                                                                 step="0.01"
-                                                                title={`Max: ${parseFloat(initialItems.find(i => i.id === item.id)?.rate || '0').toLocaleString('en-IN', { minimumFractionDigits: 2 })} (Original Rate)`}
+                                                                title={initialItems.find(i => i.id === item.id) ? `Max: ${parseFloat(initialItems.find(i => i.id === item.id)!.rate || '0').toLocaleString('en-IN', { minimumFractionDigits: 2 })} (Original Rate)` : undefined}
                                                             />
                                                         ) : (
                                                             <>
@@ -1681,134 +1849,13 @@ export default function PurchaseOrderDetail() {
                 </Dialog>
 
                 {/* Add Item Dialog */}
-                <Dialog open={showAddItemDialog} onOpenChange={setShowAddItemDialog}>
-                    <DialogContent className="max-w-4xl">
-                        <DialogHeader>
-                            <DialogTitle>Add Material Item</DialogTitle>
-                            <DialogDescription>
-                                Select a material from the catalogue and add it to the PO. You can update the quantity in the PO table afterward.
-                            </DialogDescription>
-                        </DialogHeader>
-                        <div className="space-y-4 pt-4">
-                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                <Input
-                                    placeholder="Search materials by name, code, HSN, SAC..."
-                                    value={materialSearch}
-                                    onChange={(e) => setMaterialSearch(e.target.value)}
-                                    className="w-full sm:w-80"
-                                />
-                                <div className="text-sm text-slate-500">{filteredMaterials.length} materials found</div>
-                            </div>
-                            <div className="max-h-[480px] overflow-y-auto border border-slate-200 rounded-lg">
-                                <Table>
-                                    <TableHeader>
-                                        <TableRow className="bg-slate-100 border-b border-slate-200">
-                                            <TableHead className="text-[10px] text-slate-700 w-8">#</TableHead>
-                                            <TableHead className="text-[10px] text-slate-700">Material</TableHead>
-                                            <TableHead className="text-[10px] text-slate-700 text-center">Unit</TableHead>
-                                            <TableHead className="text-[10px] text-slate-700 text-right">Rate</TableHead>
-                                            <TableHead className="text-[10px] text-slate-700 text-right">Action</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {filteredMaterials.length > 0 ? filteredMaterials.map((material: any, idx: number) => (
-                                            <TableRow key={material.id || idx} className="border-b border-slate-200">
-                                                <TableCell className="text-[11px] py-2">{idx + 1}</TableCell>
-                                                <TableCell className="text-[11px] py-2">
-                                                    <div className="font-semibold text-slate-800">{material.name || material.item || material.material_name}</div>
-                                                    {material.description && <div className="text-[10px] text-slate-500 truncate">{material.description}</div>}
-                                                </TableCell>
-                                                <TableCell className="text-[11px] text-center py-2">{material.unit || "-"}</TableCell>
-                                                <TableCell className="text-[11px] text-right py-2">{parseFloat(material.rate || material.price || "0").toLocaleString('en-IN', { minimumFractionDigits: 2 })}</TableCell>
-                                                <TableCell className="text-[11px] text-right py-2">
-                                                    <Button size="sm" variant="outline" onClick={() => handleSelectMaterial(material)}>
-                                                        Add
-                                                    </Button>
-                                                </TableCell>
-                                            </TableRow>
-                                        )) : (
-                                            <TableRow>
-                                                <TableCell colSpan={5} className="text-center text-slate-500 py-8 text-sm">
-                                                    {isLoadingMaterials ? "Loading materials..." : "No materials match your search."}
-                                                </TableCell>
-                                            </TableRow>
-                                        )}
-                                    </TableBody>
-                                </Table>
-                            </div>
-                        </div>
-                        <DialogFooter>
-                            <Button variant="outline" onClick={() => setShowAddItemDialog(false)}>
-                                Cancel
-                            </Button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
-
-                {/* Add Item Dialog */}
-                <Dialog open={showAddItemDialog} onOpenChange={setShowAddItemDialog}>
-                    <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden">
-                        <DialogHeader>
-                            <DialogTitle>Add Material Item</DialogTitle>
-                            <DialogDescription>
-                                Select a material from the catalogue and add it to the PO. You can change quantity afterward.
-                            </DialogDescription>
-                        </DialogHeader>
-                        <div className="space-y-4 pt-4">
-                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                <Input
-                                    placeholder="Search materials by name, code, HSN, SAC..."
-                                    value={materialSearch}
-                                    onChange={(e) => setMaterialSearch(e.target.value)}
-                                    className="w-full sm:w-80"
-                                />
-                                <div className="text-sm text-slate-500">{filteredMaterials.length} materials found</div>
-                            </div>
-                            <div className="max-h-[460px] overflow-y-auto border border-slate-200 rounded-lg">
-                                <Table>
-                                    <TableHeader>
-                                        <TableRow className="bg-slate-100 border-b border-slate-200">
-                                            <TableHead className="text-[10px] text-slate-700 w-8">#</TableHead>
-                                            <TableHead className="text-[10px] text-slate-700">Material</TableHead>
-                                            <TableHead className="text-[10px] text-slate-700 text-center">Unit</TableHead>
-                                            <TableHead className="text-[10px] text-slate-700 text-right">Rate</TableHead>
-                                            <TableHead className="text-[10px] text-slate-700 text-right">Action</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {filteredMaterials.length > 0 ? filteredMaterials.map((material: any, idx: number) => (
-                                            <TableRow key={material.id || idx} className="border-b border-slate-200">
-                                                <TableCell className="text-[11px] py-2">{idx + 1}</TableCell>
-                                                <TableCell className="text-[11px] py-2">
-                                                    <div className="font-semibold text-slate-800">{material.name || material.item || material.material_name}</div>
-                                                    {material.description && <div className="text-[10px] text-slate-500 truncate">{material.description}</div>}
-                                                </TableCell>
-                                                <TableCell className="text-[11px] text-center py-2">{material.unit || "-"}</TableCell>
-                                                <TableCell className="text-[11px] text-right py-2">{parseFloat(material.rate || material.price || "0").toLocaleString('en-IN', { minimumFractionDigits: 2 })}</TableCell>
-                                                <TableCell className="text-[11px] text-right py-2">
-                                                    <Button size="sm" variant="outline" onClick={() => handleSelectMaterial(material)}>
-                                                        Add
-                                                    </Button>
-                                                </TableCell>
-                                            </TableRow>
-                                        )) : (
-                                            <TableRow>
-                                                <TableCell colSpan={5} className="text-center text-slate-500 py-8 text-sm">
-                                                    {isLoadingMaterials ? "Loading materials..." : "No materials match your search."}
-                                                </TableCell>
-                                            </TableRow>
-                                        )}
-                                    </TableBody>
-                                </Table>
-                            </div>
-                        </div>
-                        <DialogFooter>
-                            <Button variant="outline" onClick={() => setShowAddItemDialog(false)}>
-                                Cancel
-                            </Button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
+                <AddMaterialDialog
+                    open={showAddItemDialog}
+                    onOpenChange={setShowAddItemDialog}
+                    materials={materials}
+                    isLoading={isLoadingMaterials}
+                    onSelect={handleSelectMaterial}
+                />
 
                 {/* PDF Export Selection Dialog */}
                 <Dialog open={isPdfExportDialogOpen} onOpenChange={setIsPdfExportDialogOpen}>
