@@ -743,6 +743,20 @@ export async function registerZohoBooksRoutes(app: Express) {
                     payload.destination_of_supply = transactionType.orgStateCode;
                 }
 
+                // Zoho Books (India) rejects POs to unregistered / overseas vendors
+                // unless reverse charge is flagged ("Reverse charge should be applied
+                // on import of services or purchases from unregistered vendors").
+                // Only the flag is added; line items, taxes and amounts are untouched.
+                try {
+                    const vendorGst = await getZohoContactGstInfo(vendorZohoContactId!);
+                    if (vendorGst.gstTreatment && ["business_none", "consumer", "overseas"].includes(vendorGst.gstTreatment)) {
+                        payload.is_reverse_charge_applied = true;
+                        safeLog(id, "reverse charge applied (unregistered/overseas vendor)", { gstTreatment: vendorGst.gstTreatment });
+                    }
+                } catch (rcErr: any) {
+                    safeLog(id, "reverse charge check failed, continuing without it", { reason: rcErr?.message });
+                }
+
                 // 8. Create the Purchase Order in Zoho Books.
                 const createRes = await zohoApiRequest("/purchaseorders", {
                     method: "POST",
