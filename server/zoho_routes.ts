@@ -363,7 +363,8 @@ export async function registerZohoBooksRoutes(app: Express) {
                     return res.status(400).json({ message: errorMessage });
                 }
 
-                const lineItems: Array<{ item_id: string; name: string; quantity: number; rate: number; tax_id?: string; tax_exemption_id?: string }> = [];
+                const lineItems: Array<{ item_id: string; name: string; quantity: number; rate: number; tax_id?: string; tax_exemption_id?: string; reverse_charge_tax_id?: string }> = [];
+                const lineItemGstPct: number[] = [];
                 const defaultTax = await resolveDefaultTax();
 
                 // Determine whether this PO is intra-state or inter-state relative
@@ -679,6 +680,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                     }
 
                     lineItems.push(lineItem);
+                    lineItemGstPct.push(targetGstPercentage);
                 }
 
                 // 6. Idempotency: if a PO with this reference number already exists in
@@ -744,17 +746,30 @@ export async function registerZohoBooksRoutes(app: Express) {
                 }
 
                 // Zoho Books (India) rejects POs to unregistered / overseas vendors
-                // unless reverse charge is flagged ("Reverse charge should be applied
-                // on import of services or purchases from unregistered vendors").
-                // Only the flag is added; line items, taxes and amounts are untouched.
+                // unless a reverse-charge tax is set on each line item
+                // (line_items[].reverse_charge_tax_id - the PO create API has no
+                // header-level reverse-charge flag). Only added for those vendors,
+                // matched by an existing org reverse-charge tax of the same GST %.
+                // Nothing else in the payload (items, taxes, amounts) is changed.
                 try {
                     const vendorGst = await getZohoContactGstInfo(vendorZohoContactId!);
+                    safeLog(id, "vendor GST treatment", { gstTreatment: vendorGst.gstTreatment });
                     if (vendorGst.gstTreatment && ["business_none", "consumer", "overseas"].includes(vendorGst.gstTreatment)) {
-                        payload.is_reverse_charge_applied = true;
-                        safeLog(id, "reverse charge applied (unregistered/overseas vendor)", { gstTreatment: vendorGst.gstTreatment });
+                        const orgTaxes = await getOrgTaxes();
+                        if (orgTaxes.ok) {
+                            const rcmTaxes = orgTaxes.taxes.filter(t => /reverse|rcm/i.test(`${t.taxName} ${t.taxType || ""} ${t.taxSpecificType || ""}`));
+                            safeLog(id, "reverse charge taxes available", { rcm: rcmTaxes.map(t => ({ id: t.taxId, name: t.taxName, pct: t.taxPercentage })) });
+                            lineItems.forEach((li: any, idx) => {
+                                const pct = lineItemGstPct[idx];
+                                const match = rcmTaxes.find(t => Math.abs(t.taxPercentage - pct) < 0.001)
+                                    || rcmTaxes.find(t => Math.abs(t.taxPercentage - pct / 2) < 0.001);
+                                if (match) li.reverse_charge_tax_id = match.taxId;
+                                else safeLog(id, "no reverse charge tax found for line", { name: li.name, gstRate: pct });
+                            });
+                        }
                     }
                 } catch (rcErr: any) {
-                    safeLog(id, "reverse charge check failed, continuing without it", { reason: rcErr?.message });
+                    safeLog(id, "reverse charge setup failed, continuing without it", { reason: rcErr?.message });
                 }
 
                 // 8. Create the Purchase Order in Zoho Books.
