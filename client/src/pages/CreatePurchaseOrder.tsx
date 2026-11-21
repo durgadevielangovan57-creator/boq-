@@ -257,6 +257,10 @@ export default function CreatePurchaseOrder() {
     const [projectId, setProjectId] = useState<string>("");
     const [vendorId, setVendorId] = useState<string>("");
     const [status, setStatus] = useState<string>("draft");
+    // Edit-after-sync: an approved PO that is already in Zoho Books. Changes are saved and then
+    // pushed to the SAME Zoho PO (no new PO is created). Existing materials can only be reduced.
+    const [isSyncedEdit, setIsSyncedEdit] = useState<boolean>(false);
+    const [syncedBaseline, setSyncedBaseline] = useState<Record<string, { name: string; qty: number; amount: number }>>({});
     const [poDate, setPoDate] = useState<string>(
         new Date().toISOString().split("T")[0]
     );
@@ -377,7 +381,9 @@ export default function CreatePurchaseOrder() {
                         }
 
                         const loadedStatus = (po.status || "draft").toLowerCase();
-                        if (loadedStatus !== "draft" && loadedStatus !== "rejected") {
+                        const isSyncedApproved =
+                            (loadedStatus === "approved" || loadedStatus === "ordered") && po.zoho_sync_status === "synced";
+                        if (loadedStatus !== "draft" && loadedStatus !== "rejected" && !isSyncedApproved) {
                             toast({
                                 title: "Editing Not Allowed",
                                 description:
@@ -390,6 +396,19 @@ export default function CreatePurchaseOrder() {
                             return;
                         }
                         setRejectionReason(loadedStatus === "rejected" ? (po.approval_comments || "") : "");
+                        setIsSyncedEdit(isSyncedApproved);
+                        if (isSyncedApproved) {
+                            // Remember what is currently on the PO so the "no increase" rule can be checked before saving.
+                            const base: Record<string, { name: string; qty: number; amount: number }> = {};
+                            for (const itm of existingItems) {
+                                const k = itm.material_id ? `id:${itm.material_id}` : `name:${String(itm.item || "").trim().toLowerCase()}`;
+                                const cur = base[k] || { name: itm.item || "", qty: 0, amount: 0 };
+                                cur.qty += Number(itm.qty) || 0;
+                                cur.amount += Number(itm.amount) || 0;
+                                base[k] = cur;
+                            }
+                            setSyncedBaseline(base);
+                        }
 
                         setPoNumber(po.po_number || "");
                         setReferenceNumber(po.reference_number || "");
@@ -450,6 +469,10 @@ export default function CreatePurchaseOrder() {
 
     // When project changes, update delivery address if currently empty
     const handleProjectSelect = (projId: string) => {
+        if (isSyncedEdit) {
+            toast({ title: "Project is locked", description: "The project cannot be changed after the PO is synced to Zoho Books." });
+            return;
+        }
         setProjectId(projId);
         const selectedProj = projects.find((p) => p.id === projId);
         if (selectedProj && !deliveryAddress) {
@@ -462,6 +485,10 @@ export default function CreatePurchaseOrder() {
 
     // When vendor changes, update default terms if available
     const handleVendorSelect = (vendId: string) => {
+        if (isSyncedEdit) {
+            toast({ title: "Vendor is locked", description: "The vendor cannot be changed after the PO is synced to Zoho Books." });
+            return;
+        }
         setVendorId(vendId);
         const selectedVendor = vendors.find((v) => v.id === vendId);
         if (selectedVendor?.terms_and_conditions) {
@@ -831,6 +858,91 @@ export default function CreatePurchaseOrder() {
             return;
         }
 
+        // Edit-after-sync: save the edit, then update the SAME Zoho PO (never creates a new one).
+        if (isSyncedEdit && editPoId) {
+            // Friendly pre-check of the "no increase" rule (the server enforces it too).
+            const after: Record<string, { qty: number; amount: number }> = {};
+            for (const itm of items) {
+                const k = itm.materialId ? `id:${itm.materialId}` : `name:${itm.item.trim().toLowerCase()}`;
+                const cur = after[k] || { qty: 0, amount: 0 };
+                cur.qty += Number(itm.qty) || 0;
+                cur.amount += (Number(itm.qty) || 0) * (Number(itm.rate) || 0) * (1 - (Number(itm.discountPercent) || 0) / 100);
+                after[k] = cur;
+            }
+            const problems: string[] = [];
+            for (const [k, old] of Object.entries(syncedBaseline)) {
+                const now = after[k];
+                if (!now) continue; // removed items are fine
+                if (now.qty > old.qty + 0.005) {
+                    problems.push(`${old.name}: quantity can only be reduced (currently ${old.qty}, you entered ${now.qty})`);
+                } else if (now.amount > old.amount + 0.005) {
+                    problems.push(`${old.name}: amount can only be reduced (currently ₹${old.amount.toFixed(2)}, you entered ₹${now.amount.toFixed(2)})`);
+                }
+            }
+            if (problems.length > 0) {
+                toast({
+                    title: "Quantity or amount cannot be increased",
+                    description: problems.join(" • "),
+                    variant: "destructive",
+                });
+                return;
+            }
+
+            try {
+                setIsSaving(true);
+                const editRes = await apiFetch(`/api/manual-purchase-orders/${editPoId}/edit-synced`, {
+                    method: "PUT",
+                    body: JSON.stringify({
+                        deliveryDate: deliveryDate || null,
+                        paymentTerms,
+                        deliveryAddress,
+                        notes,
+                        items: items.map((itm) => ({
+                            materialId: itm.materialId || null,
+                            item: itm.item,
+                            description: itm.description || null,
+                            hsnCode: itm.hsnCode || null,
+                            sacCode: itm.sacCode || null,
+                            qty: Number(itm.qty) || 0,
+                            unit: itm.unit || "Nos",
+                            rate: Number(itm.rate) || 0,
+                            discountPercent: Number(itm.discountPercent) || 0,
+                            gstPercentage: Number(itm.gstPercentage) || 0,
+                        })),
+                    }),
+                });
+                if (!editRes.ok) {
+                    const errData = await editRes.json().catch(() => ({}));
+                    toast({
+                        title: "Changes not saved",
+                        description: errData.message || "Failed to save changes to the Purchase Order.",
+                        variant: "destructive",
+                    });
+                    return; // stay on the page so nothing the user typed is lost
+                }
+
+                setIsSyncingZoho(true);
+                const syncRes = await apiFetch(`/api/zoho-books/purchase-orders/${editPoId}/sync`, { method: "POST" });
+                const syncData = await syncRes.json().catch(() => ({}));
+                if (syncRes.ok) {
+                    toast({ title: "Updated in Zoho Books", description: `Changes to ${poNumber} are now in Zoho Books.` });
+                } else {
+                    toast({
+                        title: "Saved, but Zoho Books was not updated yet",
+                        description: (syncData.message || "The Zoho update failed.") + " Use “Retry Zoho Update” on the PO page.",
+                        variant: "destructive",
+                    });
+                }
+                setLocation(`/purchase-orders/${editPoId}`);
+            } catch (err: any) {
+                toast({ title: "Error", description: err?.message || "Failed to save changes.", variant: "destructive" });
+            } finally {
+                setIsSaving(false);
+                setIsSyncingZoho(false);
+            }
+            return;
+        }
+
         const payload = {
             poNumber: poNumber.trim(),
             referenceNumber: referenceNumber.trim() || null,
@@ -1178,27 +1290,53 @@ export default function CreatePurchaseOrder() {
                             <Eye className="h-4 w-4" />
                             Preview PO
                         </Button>
-                        <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => handleSave({ status: "draft" })}
-                            disabled={isSaving || isSyncingZoho || isSubmittingApproval}
-                            className="h-9 gap-1.5"
-                        >
-                            {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                            Save Draft
-                        </Button>
-                        <Button
-                            size="sm"
-                            onClick={() => setSubmitConfirmOpen(true)}
-                            disabled={isSaving || isSyncingZoho || isSubmittingApproval}
-                            className="h-9 gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
-                        >
-                            {isSubmittingApproval ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                            {status === "rejected" ? "Resubmit for Approval" : "Submit for Approval"}
-                        </Button>
+                        {isSyncedEdit ? (
+                            <Button
+                                size="sm"
+                                onClick={() => handleSave()}
+                                disabled={isSaving || isSyncingZoho}
+                                className="h-9 gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
+                            >
+                                {isSaving || isSyncingZoho ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                                Save Changes & Update Zoho
+                            </Button>
+                        ) : (
+                            <>
+                                <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => handleSave({ status: "draft" })}
+                                    disabled={isSaving || isSyncingZoho || isSubmittingApproval}
+                                    className="h-9 gap-1.5"
+                                >
+                                    {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                                    Save Draft
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    onClick={() => setSubmitConfirmOpen(true)}
+                                    disabled={isSaving || isSyncingZoho || isSubmittingApproval}
+                                    className="h-9 gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
+                                >
+                                    {isSubmittingApproval ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                                    {status === "rejected" ? "Resubmit for Approval" : "Submit for Approval"}
+                                </Button>
+                            </>
+                        )}
                     </div>
                 </div>
+
+                {/* Edit-after-sync notice */}
+                {editPoId && isSyncedEdit && (
+                    <div className="bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-md">
+                        <h3 className="text-sm font-semibold text-blue-900">Editing a Purchase Order that is already in Zoho Books</h3>
+                        <p className="mt-1 text-sm text-blue-800">
+                            You can add items, remove items, or change details. For materials already on this PO, the quantity and amount
+                            can be reduced but not increased. When you save, the changes are sent to the same Purchase Order in Zoho Books
+                            (no new PO is created). The PO number, vendor and project cannot be changed.
+                        </p>
+                    </div>
+                )}
 
                 {/* Rejection feedback from the Admin (kept until the PO is resubmitted and decided) */}
                 {editPoId && status === "rejected" && (
@@ -1348,6 +1486,7 @@ export default function CreatePurchaseOrder() {
                                     <Input
                                         value={poNumber}
                                         onChange={(e) => setPoNumber(e.target.value)}
+                                        readOnly={isSyncedEdit}
                                         placeholder="PO-1001"
                                         className="mt-1 h-9 font-mono"
                                     />
@@ -1359,6 +1498,7 @@ export default function CreatePurchaseOrder() {
                                     <Input
                                         value={referenceNumber}
                                         onChange={(e) => setReferenceNumber(e.target.value)}
+                                        readOnly={isSyncedEdit}
                                         placeholder="Optional quotation or ref #"
                                         className="mt-1 h-9"
                                     />
@@ -1793,32 +1933,49 @@ export default function CreatePurchaseOrder() {
                                 </div>
 
                                 <div className="pt-3 space-y-2">
-                                    <Button
-                                        onClick={() => setSubmitConfirmOpen(true)}
-                                        disabled={isSaving || isSyncingZoho || isSubmittingApproval}
-                                        className="w-full h-10 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-sm"
-                                    >
-                                        {isSubmittingApproval ? (
-                                            <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                                        ) : (
-                                            <Send className="h-4 w-4 mr-2" />
-                                        )}
-                                        {status === "rejected" ? "Resubmit for Approval" : "Submit for Approval"}
-                                    </Button>
+                                    {isSyncedEdit ? (
+                                        <Button
+                                            onClick={() => handleSave()}
+                                            disabled={isSaving || isSyncingZoho}
+                                            className="w-full h-10 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-sm"
+                                        >
+                                            {isSaving || isSyncingZoho ? (
+                                                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                            ) : (
+                                                <Save className="h-4 w-4 mr-2" />
+                                            )}
+                                            Save Changes & Update Zoho
+                                        </Button>
+                                    ) : (
+                                        <>
+                                            <Button
+                                                onClick={() => setSubmitConfirmOpen(true)}
+                                                disabled={isSaving || isSyncingZoho || isSubmittingApproval}
+                                                className="w-full h-10 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-sm"
+                                            >
+                                                {isSubmittingApproval ? (
+                                                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                                ) : (
+                                                    <Send className="h-4 w-4 mr-2" />
+                                                )}
+                                                {status === "rejected" ? "Resubmit for Approval" : "Submit for Approval"}
+                                            </Button>
 
-                                    <Button
-                                        variant="secondary"
-                                        onClick={() => handleSave({ status: "draft" })}
-                                        disabled={isSaving || isSyncingZoho || isSubmittingApproval}
-                                        className="w-full h-10 font-semibold"
-                                    >
-                                        {isSaving ? (
-                                            <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                                        ) : (
-                                            <Save className="h-4 w-4 mr-2" />
-                                        )}
-                                        Save Draft
-                                    </Button>
+                                            <Button
+                                                variant="secondary"
+                                                onClick={() => handleSave({ status: "draft" })}
+                                                disabled={isSaving || isSyncingZoho || isSubmittingApproval}
+                                                className="w-full h-10 font-semibold"
+                                            >
+                                                {isSaving ? (
+                                                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                                                ) : (
+                                                    <Save className="h-4 w-4 mr-2" />
+                                                )}
+                                                Save Draft
+                                            </Button>
+                                        </>
+                                    )}
 
                                 </div>
                             </CardContent>

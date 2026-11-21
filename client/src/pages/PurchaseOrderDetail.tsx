@@ -98,6 +98,10 @@ interface PurchaseOrder {
     version_number?: string;
     rateReductions?: any[];
     source?: string;
+    zoho_sync_status?: string | null;
+    zoho_purchase_order_id?: string | null;
+    zoho_update_pending?: boolean | null;
+    zoho_sync_error?: string | null;
 }
 
 interface PurchaseOrderItem {
@@ -670,6 +674,27 @@ export default function PurchaseOrderDetail() {
         }
     };
 
+    // Edit-after-sync: re-sends saved edits to the SAME Zoho PO (never creates a new one).
+    const [isRetryingZohoUpdate, setIsRetryingZohoUpdate] = useState(false);
+    const handleRetryZohoUpdate = async () => {
+        if (!po) return;
+        setIsRetryingZohoUpdate(true);
+        try {
+            const res = await apiFetch(`/api/zoho-books/purchase-orders/${po.id}/sync`, { method: "POST" });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok) {
+                toast({ title: "Zoho Books updated", description: `Changes to ${po.po_number} are now in Zoho Books.` });
+            } else {
+                toast({ title: "Zoho update failed", description: data.message || "Please try again.", variant: "destructive" });
+            }
+            await fetchPODetail();
+        } catch (err: any) {
+            toast({ title: "Zoho update failed", description: err?.message || "Please try again.", variant: "destructive" });
+        } finally {
+            setIsRetryingZohoUpdate(false);
+        }
+    };
+
     const handleStatusUpdate = async (newStatus: string) => {
         try {
             const res = await apiFetch(`/api/purchase-orders/${id}/status`, {
@@ -1001,7 +1026,8 @@ export default function PurchaseOrderDetail() {
                 setShowReviseDialog(false);
                 setLocation(`/purchase-orders/${data.newPo.id}`);
             } else {
-                toast({ title: "Error", description: "Failed to revise PO", variant: "destructive" });
+                const errData = await res.json().catch(() => ({}));
+                toast({ title: "Cannot revise PO", description: errData.message || "Failed to revise PO", variant: "destructive" });
             }
         } catch (error) {
             toast({ title: "Error", description: "Failed to revise PO", variant: "destructive" });
@@ -1207,15 +1233,18 @@ export default function PurchaseOrderDetail() {
                             {isGeneratingExcel ? "Generating..." : "Download Excel"}
                         </Button>
 
-                        {po?.source === "manual" && ["draft", "rejected"].includes(po?.status?.toLowerCase()) && !isReviseMode && (
-                            <Button
-                                variant="outline"
-                                onClick={() => setLocation(`/purchase-orders/edit/${po.id}`)}
-                                className="border-slate-300 hover:bg-slate-50"
-                            >
-                                <Edit className="h-4 w-4 mr-2" /> Edit PO
-                            </Button>
-                        )}
+                        {po?.source === "manual" && !isReviseMode && (
+                            ["draft", "rejected"].includes(po?.status?.toLowerCase()) ||
+                            (["approved", "ordered"].includes(po?.status?.toLowerCase()) && po?.zoho_sync_status === "synced")
+                        ) && (
+                                <Button
+                                    variant="outline"
+                                    onClick={() => setLocation(`/purchase-orders/edit/${po.id}`)}
+                                    className="border-slate-300 hover:bg-slate-50"
+                                >
+                                    <Edit className="h-4 w-4 mr-2" /> Edit PO
+                                </Button>
+                            )}
 
                         {(po.status === "draft" || (po.source === "manual" && po.status === "rejected")) && (
                             <Button onClick={() => handleStatusUpdate("pending_approval")} className="bg-blue-600 hover:bg-blue-700 text-white">
@@ -1267,6 +1296,22 @@ export default function PurchaseOrderDetail() {
 
                     </div>
                 </div>
+
+                {/* Edit-after-sync: changes saved here but not yet in Zoho Books */}
+                {po.source === "manual" && po.zoho_sync_status === "synced" && po.zoho_update_pending && (
+                    <div className="bg-amber-50 border border-amber-300 p-4 rounded-lg flex items-center justify-between gap-4 no-print">
+                        <div className="text-amber-900">
+                            <p className="font-semibold text-sm">Changes saved, but not yet updated in Zoho Books.</p>
+                            <p className="text-xs">
+                                {po.zoho_sync_error ? po.zoho_sync_error : "Click Retry to send your changes to the existing Zoho Books Purchase Order."}
+                            </p>
+                        </div>
+                        <Button size="sm" className="bg-amber-600 hover:bg-amber-700 text-white shrink-0" onClick={handleRetryZohoUpdate} disabled={isRetryingZohoUpdate}>
+                            {isRetryingZohoUpdate ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                            Retry Zoho Update
+                        </Button>
+                    </div>
+                )}
 
                 {/* Revision Notice */}
                 {po.status === "revised" && (

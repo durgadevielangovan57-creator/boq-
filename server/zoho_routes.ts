@@ -7,6 +7,7 @@ import { findZohoVendorMatch, searchZohoVendorContacts, getZohoContactGstInfo } 
 import { findZohoItemMatch, searchZohoBooksItems, createZohoBooksItem, getZohoItemTax, getZohoItemUsability, listZohoTaxes, findEquivalentTax, classifyTax, logZohoTaxGroupsDiagnostic } from "./zoho/item_matching";
 import { guardManualPoZohoSync } from "./manual_po_workflow";
 import { registerZohoDescriptionBackfillRoutes } from "./zoho/description_backfill";
+import { registerSyncedPoEditRoutes, ZOHO_EDITABLE_PO_STATUSES } from "./zoho/synced_po_edit";
 import { vendorNeedsReverseCharge, isReverseChargeRequiredError, pickReverseChargeTaxId } from "./zoho/reverse_charge";
 import {
     ensureZohoSettingsSchema,
@@ -62,6 +63,9 @@ async function ensureZohoSchema() {
             `ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS zoho_synced_at TIMESTAMPTZ`
         );
         await query(
+            `ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS zoho_update_pending BOOLEAN DEFAULT false`
+        );
+        await query(
             `ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS zoho_sync_error TEXT`
         );
         // Vendor -> Zoho Books Contact mapping. Reused if it already exists.
@@ -102,6 +106,9 @@ export async function registerZohoBooksRoutes(app: Express) {
     await ensureZohoSettingsSchema();
     // One-time backfill of line descriptions for POs that were synced before descriptions were sent.
     registerZohoDescriptionBackfillRoutes(app);
+    // Edit-after-sync for direct POs (changes are pushed to the SAME Zoho PO, never a new one).
+    registerSyncedPoEditRoutes(app);
+    const updateInFlight = new Set<string>();
 
     /**
      * Resolves the org-level default tax to fall back on when a material's
@@ -191,6 +198,7 @@ export async function registerZohoBooksRoutes(app: Express) {
         requireRole("admin", "software_team", "purchase_team"),
         async (req: Request, res: Response) => {
             const { id } = req.params;
+            let ownsUpdateLock = false;
 
             try {
                 if (!isZohoConfigured()) {
@@ -228,7 +236,50 @@ export async function registerZohoBooksRoutes(app: Express) {
 
                 // 2. Duplicate protection: already synced -> return existing info, do
                 // not create a second Zoho PO and do not re-send anything.
-                if (po.zoho_sync_status === "synced" && po.zoho_purchase_order_id) {
+                // EXCEPTION - edit after sync: a synced PO whose items were edited
+                // (zoho_update_pending) is UPDATED IN PLACE on its existing Zoho PO below.
+                // That path only ever sends a PUT to the existing Zoho PO id; it never creates.
+                const alreadySynced = po.zoho_sync_status === "synced" && !!po.zoho_purchase_order_id;
+                const updateMode = alreadySynced && po.zoho_update_pending === true;
+
+                // REVISIONS: "Anx-1234-R1" is a new local PO row that revises "Anx-1234". If an
+                // earlier version of it is already in Zoho Books, this sync UPDATES that Zoho PO
+                // instead of creating a second one. From here on a revision can only ever PUT to
+                // the earlier version's Zoho PO; if that is not possible it fails, it never creates.
+                let revisionParentZohoId: string | null = null;
+                if (!alreadySynced) {
+                    const revMatch = String(po.po_number || "").match(/^(.*)-R(\d+)$/);
+                    if (revMatch) {
+                        const baseNumber = revMatch[1];
+                        const thisRev = parseInt(revMatch[2], 10);
+                        const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                        const escapeLike = (t: string) => t.replace(/[\\%_]/g, (c) => "\\" + c);
+                        const chain = await query(
+                            `SELECT po_number, zoho_purchase_order_id FROM purchase_orders
+                              WHERE id::text <> $1 AND zoho_purchase_order_id IS NOT NULL
+                                AND zoho_sync_status = 'synced'
+                                AND (po_number = $2 OR po_number LIKE $3)`,
+                            [String(id), baseNumber, escapeLike(baseNumber) + "-R%"]
+                        );
+                        const revRe = new RegExp("^" + escapeRe(baseNumber) + "-R(\\d+)$");
+                        let bestRev = -1;
+                        for (const row of chain.rows) {
+                            const m = String(row.po_number).match(revRe);
+                            const rev = row.po_number === baseNumber ? 0 : m ? parseInt(m[1], 10) : -1;
+                            if (rev >= 0 && rev < thisRev && rev > bestRev) {
+                                bestRev = rev;
+                                revisionParentZohoId = String(row.zoho_purchase_order_id);
+                            }
+                        }
+                    }
+                }
+                const updateTargetZohoId: string | null = updateMode ? String(po.zoho_purchase_order_id) : revisionParentZohoId;
+                const isUpdate = !!updateTargetZohoId;
+                if (revisionParentZohoId) {
+                    safeLog(id, "revision of a synced PO: will update the existing Zoho PO (no new PO)", { zohoPurchaseOrderId: revisionParentZohoId });
+                }
+
+                if (alreadySynced && !updateMode) {
                     return res.json({
                         zohoPurchaseOrderId: po.zoho_purchase_order_id,
                         zohoSyncStatus: "synced",
@@ -246,25 +297,35 @@ export async function registerZohoBooksRoutes(app: Express) {
 
                 // Prevent duplicate concurrent clicks: atomically claim the PO by
                 // moving it into 'syncing' only if it isn't already syncing/synced.
-                const claim = await query(
-                    `UPDATE purchase_orders
+                if (updateMode) {
+                    // In-memory lock instead of the 'syncing' status: the PO must stay
+                    // 'synced' so a failed update can never fall into the create path.
+                    if (updateInFlight.has(String(id))) {
+                        return res.status(409).json({ message: "This Purchase Order is already being updated in Zoho Books." });
+                    }
+                    updateInFlight.add(String(id));
+                    ownsUpdateLock = true;
+                } else {
+                    const claim = await query(
+                        `UPDATE purchase_orders
            SET zoho_sync_status = 'syncing', zoho_sync_error = NULL, updated_at = NOW()
            WHERE id = $1 AND (zoho_sync_status IS NULL OR zoho_sync_status NOT IN ('syncing', 'synced'))
            RETURNING id`,
-                    [id]
-                );
-                if (claim.rows.length === 0) {
-                    return res.status(409).json({
-                        message:
-                            "This Purchase Order is already being synced or has already been synced to Zoho Books.",
-                    });
+                        [id]
+                    );
+                    if (claim.rows.length === 0) {
+                        return res.status(409).json({
+                            message:
+                                "This Purchase Order is already being synced or has already been synced to Zoho Books.",
+                        });
+                    }
                 }
 
                 // 3. Validate PO status is appropriate for sending.
                 if (!ALLOW_SYNC_FROM_ANY_STATUS && !SYNCABLE_STATUSES.includes(String(po.status || "").toLowerCase())) {
                     const errorMessage = `Purchase Order must be Approved (or later) before it can be sent to Zoho Books. Current status: ${po.status}.`;
                     await query(
-                        `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                        `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                         [errorMessage, id]
                     );
                     return res.status(400).json({ message: errorMessage });
@@ -316,7 +377,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                     } else if (match.status === "ambiguous") {
                         const errorMessage = `Multiple Zoho Books vendors matched "${vendorName}". Please map the vendor manually.`;
                         await query(
-                            `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                            `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                             [errorMessage, id]
                         );
                         safeLog(id, "vendor match ambiguous", { vendorName, candidateCount: match.candidates.length });
@@ -332,7 +393,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                             ? "Zoho Books authentication failed. Please contact the administrator."
                             : "Something went wrong while searching Zoho Books for this vendor. Please retry.";
                         await query(
-                            `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                            `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                             [errorMessage, id]
                         );
                         return res.status(isAuthError ? 502 : 500).json({ message: errorMessage });
@@ -340,7 +401,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                         // not_found
                         const errorMessage = `Vendor "${vendorName}" was not found in Zoho Books. Please create/map the vendor before syncing this Purchase Order.`;
                         await query(
-                            `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                            `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                             [errorMessage, id]
                         );
                         safeLog(id, "vendor not found in Zoho Books", { vendorName });
@@ -361,13 +422,13 @@ export async function registerZohoBooksRoutes(app: Express) {
                 if (itemsRes.rows.length === 0) {
                     const errorMessage = "Purchase Order has no items to send.";
                     await query(
-                        `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                        `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                         [errorMessage, id]
                     );
                     return res.status(400).json({ message: errorMessage });
                 }
 
-                const lineItems: Array<{ item_id: string; name: string; description?: string; quantity: number; rate: number; tax_id?: string; tax_exemption_id?: string; reverse_charge_tax_id?: string }> = [];
+                const lineItems: Array<{ line_item_id?: string; item_id: string; name: string; description?: string; quantity: number; rate: number; tax_id?: string; tax_exemption_id?: string; reverse_charge_tax_id?: string }> = [];
                 const lineItemGstPct: number[] = [];
                 const defaultTax = await resolveDefaultTax();
 
@@ -402,7 +463,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                     const errorMessage =
                         "Organization GST state is not configured. Please configure the organization GST state before syncing Purchase Orders.";
                     await query(
-                        `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                        `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                         [errorMessage, id]
                     );
                     safeLog(id, "organization GST state not configured", {});
@@ -411,7 +472,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                     const errorMessage =
                         "Unable to determine the vendor GST state. Please complete the vendor GST details before syncing this Purchase Order.";
                     await query(
-                        `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                        `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                         [errorMessage, id]
                     );
                     safeLog(id, "vendor GST state not determinable", { vendorZohoContactId });
@@ -436,7 +497,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                     if (!qty || qty <= 0) {
                         const errorMessage = `Material "${displayName}" has an invalid quantity.`;
                         await query(
-                            `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                            `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                             [errorMessage, id]
                         );
                         return res.status(422).json({ message: errorMessage });
@@ -444,7 +505,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                     if (rate === null || rate === undefined || isNaN(rate) || rate < 0) {
                         const errorMessage = `Material "${displayName}" has an invalid Purchase Rate.`;
                         await query(
-                            `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                            `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                             [errorMessage, id]
                         );
                         return res.status(422).json({ message: errorMessage });
@@ -516,7 +577,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                                 ? "Zoho Books authentication failed. Please contact the administrator."
                                 : `Something went wrong while searching Zoho Books for material "${displayName}". Please retry.`;
                             await query(
-                                `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                                `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                                 [errorMessage, id]
                             );
                             safeLog(id, "item mapping search error", { material: displayName });
@@ -531,7 +592,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                                     ? `Multiple Zoho Books items matched material "${displayName}". Please map the material manually.`
                                     : `A Zoho Books item could not be found for material "${displayName}".`;
                             await query(
-                                `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                                `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                                 [errorMessage, id]
                             );
                             safeLog(id, "item mapping unresolved", { material: displayName, status: itemMatch.status });
@@ -582,7 +643,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                     if (targetGstPercentage === null || targetGstPercentage === undefined || isNaN(targetGstPercentage)) {
                         const errorMessage = `GST rate is not configured for material '${displayName}'. Set the GST rate before syncing this Purchase Order.`;
                         await query(
-                            `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                            `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                             [errorMessage, id]
                         );
                         safeLog(id, "GST rate missing", { material: displayName });
@@ -619,7 +680,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                             const requiredType = transactionType.isInterState ? "inter-state (IGST)" : "intra-state (CGST+SGST)";
                             const errorMessage = `No matching ${targetGstPercentage}% ${requiredType} tax was found in Zoho Books for material '${displayName}'. Please add the matching tax rate in Zoho Books.`;
                             await query(
-                                `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                                `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                                 [errorMessage, id]
                             );
                             safeLog(id, "tax type mismatch, no equivalent available", {
@@ -677,7 +738,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                     } else {
                         const errorMessage = `Material "${displayName}" has no tax configured in Zoho Books, and no default tax is set up for this integration.`;
                         await query(
-                            `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                            `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                             [errorMessage, id]
                         );
                         safeLog(id, "no tax available for line item", { material: displayName, zohoItemId: materialZohoItemId });
@@ -692,10 +753,65 @@ export async function registerZohoBooksRoutes(app: Express) {
                     lineItemGstPct.push(targetGstPercentage);
                 }
 
+                // 6a. UPDATE MODE (edit after sync): read the existing Zoho PO and attach each
+                // of its line_item_ids to the matching new line, so Zoho UPDATES those lines
+                // instead of adding new ones. Lines omitted from the update are removed by
+                // Zoho (deleted items); lines with no match are added (new items).
+                if (isUpdate) {
+                    const zres = await zohoApiRequest(`/purchaseorders/${encodeURIComponent(updateTargetZohoId!)}`);
+                    if (!zres.ok || !zres.data?.purchaseorder) {
+                        const errorMessage = `Could not read the Purchase Order from Zoho Books: ${zres.data?.message || `HTTP ${zres.status}`}. Your changes are saved here; retry the Zoho update.`;
+                        await query(
+                            `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                            [errorMessage, id]
+                        );
+                        return res.status(502).json({ message: errorMessage });
+                    }
+                    const zohoStatus = String(zres.data.purchaseorder.status || "").toLowerCase();
+                    if (zohoStatus && !ZOHO_EDITABLE_PO_STATUSES.includes(zohoStatus)) {
+                        const errorMessage = `The Purchase Order in Zoho Books is "${zres.data.purchaseorder.status}" and can no longer be edited there, so these changes could not be synced. No new Purchase Order was created.`;
+                        await query(
+                            `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                            [errorMessage, id]
+                        );
+                        return res.status(409).json({ message: errorMessage });
+                    }
+                    const zohoLines: any[] = Array.isArray(zres.data.purchaseorder.line_items) ? zres.data.purchaseorder.line_items : [];
+                    const usedZohoLines = new Set<number>();
+                    const sameText = (a: unknown, b: unknown) => String(a ?? "").trim() === String(b ?? "").trim();
+                    // Pass 1: same Zoho item AND same description. Pass 2: same Zoho item.
+                    for (const requireSameDescription of [true, false]) {
+                        lineItems.forEach((li) => {
+                            if (li.line_item_id) return;
+                            const zi = zohoLines.findIndex(
+                                (zl, idx) =>
+                                    !usedZohoLines.has(idx) &&
+                                    String(zl.item_id) === String(li.item_id) &&
+                                    (!requireSameDescription || sameText(zl.description, li.description))
+                            );
+                            if (zi >= 0) {
+                                usedZohoLines.add(zi);
+                                li.line_item_id = String(zohoLines[zi].line_item_id);
+                            }
+                        });
+                    }
+                    // The PO's own text is the source of truth after an edit, so send the
+                    // description on every line (an emptied description clears it in Zoho).
+                    lineItems.forEach((li) => {
+                        li.description = String(li.description ?? "");
+                    });
+                    safeLog(id, "update mode: syncing edits into existing Zoho PO", {
+                        zohoPurchaseOrderId: po.zoho_purchase_order_id,
+                        keptLines: usedZohoLines.size,
+                        newLines: lineItems.filter((li) => !li.line_item_id).length,
+                        removedLines: zohoLines.length - usedZohoLines.size,
+                    });
+                }
+
                 // 6. Idempotency: if a PO with this reference number already exists in
                 // Zoho (e.g. a prior request succeeded but the response was lost),
                 // reuse it instead of creating a duplicate.
-                try {
+                if (!isUpdate) try {
                     const search = await zohoApiRequest(
                         `/purchaseorders?reference_number=${encodeURIComponent(po.po_number)}`
                     );
@@ -814,7 +930,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                     if (attempts.length === 0) {
                         const errorMessage = rcSetupError || "Could not apply reverse charge for this Purchase Order.";
                         await query(
-                            `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                            `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                             [errorMessage, id]
                         );
                         safeLog(id, "reverse charge setup failed", { reason: errorMessage });
@@ -827,15 +943,21 @@ export async function registerZohoBooksRoutes(app: Express) {
 
                 // 8. Create the Purchase Order in Zoho Books. Nothing is created when
                 // Zoho rejects a request, so retrying a different variant is safe.
+                // Update mode PUTs to the EXISTING Zoho PO; otherwise create. There is no
+                // path from update mode to a create call.
+                const sendToZoho = (body: Record<string, any>) =>
+                    isUpdate
+                        ? zohoApiRequest(`/purchaseorders/${encodeURIComponent(updateTargetZohoId!)}`, { method: "PUT", body })
+                        : zohoApiRequest("/purchaseorders", { method: "POST", body });
                 let attemptIdx = 0;
                 let triedReverseChargeFallback = rcRequired;
-                let createRes = await zohoApiRequest("/purchaseorders", { method: "POST", body: attempts[0].payload });
+                let createRes = await sendToZoho(attempts[0].payload);
                 while (!(createRes.ok && createRes.data?.purchaseorder?.purchaseorder_id)) {
                     const failMsg: string = createRes.data?.message || "";
                     if (attemptIdx + 1 < attempts.length && /tax|reverse/i.test(failMsg)) {
                         attemptIdx++;
                         safeLog(id, "retrying Purchase Order create", { variant: attempts[attemptIdx].label, previousError: failMsg });
-                        createRes = await zohoApiRequest("/purchaseorders", { method: "POST", body: attempts[attemptIdx].payload });
+                        createRes = await sendToZoho(attempts[attemptIdx].payload);
                         continue;
                     }
                     // Safety net: Zoho says reverse charge is required but we didn't
@@ -847,7 +969,7 @@ export async function registerZohoBooksRoutes(app: Express) {
                         attempts = rcAttempts;
                         attemptIdx = 0;
                         safeLog(id, "Zoho required reverse charge - retrying with it applied", { previousError: failMsg });
-                        createRes = await zohoApiRequest("/purchaseorders", { method: "POST", body: attempts[0].payload });
+                        createRes = await sendToZoho(attempts[0].payload);
                         continue;
                     }
                     break;
@@ -876,16 +998,34 @@ export async function registerZohoBooksRoutes(app: Express) {
                         ? `Zoho Books rejected the tax on this Purchase Order: "${technicalMessage}". The tax configured on one of the materials' Zoho Books items doesn't match this vendor's state (IGST vs CGST+SGST). Please fix the tax on the item in Zoho Books, then retry.`
                         : rcSetupError && isReverseChargeRequiredError(technicalMessage)
                             ? rcSetupError
-                            : `Failed to create the Purchase Order in Zoho Books: ${technicalMessage}`;
+                            : isUpdate
+                                ? `Failed to update the existing Purchase Order in Zoho Books: ${technicalMessage}. No new Purchase Order was created; fix the issue and retry.`
+                                : `Failed to create the Purchase Order in Zoho Books: ${technicalMessage}`;
 
                     await query(
-                        `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                        `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                         [errorMessage, id]
                     );
                     return res.status(502).json({ message: errorMessage, taxTypeMismatch: isTaxTypeMismatch });
                 }
 
                 const zohoPurchaseOrderId = createRes.data.purchaseorder.purchaseorder_id;
+
+                if (updateMode) {
+                    await query(
+                        `UPDATE purchase_orders
+           SET zoho_update_pending = false, zoho_sync_error = NULL, zoho_synced_at = NOW(), updated_at = NOW()
+           WHERE id = $1`,
+                        [id]
+                    );
+                    safeLog(id, "edits synced to existing Zoho PO", { zohoPurchaseOrderId });
+                    return res.json({
+                        zohoPurchaseOrderId,
+                        zohoSyncStatus: "synced",
+                        zohoSyncedAt: new Date().toISOString(),
+                        updated: true,
+                    });
+                }
 
                 await query(
                     `UPDATE purchase_orders
@@ -911,7 +1051,7 @@ export async function registerZohoBooksRoutes(app: Express) {
 
                 try {
                     await query(
-                        `UPDATE purchase_orders SET zoho_sync_status = 'failed', zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
+                        `UPDATE purchase_orders SET zoho_sync_status = CASE WHEN COALESCE(zoho_update_pending, false) THEN zoho_sync_status ELSE 'failed' END, zoho_sync_error = $1, updated_at = NOW() WHERE id = $2`,
                         [errorMessage, id]
                     );
                 } catch {
@@ -919,6 +1059,8 @@ export async function registerZohoBooksRoutes(app: Express) {
                 }
 
                 return res.status(isAuthError ? 502 : 500).json({ message: errorMessage });
+            } finally {
+                if (ownsUpdateLock) updateInFlight.delete(String(id));
             }
         }
     );
