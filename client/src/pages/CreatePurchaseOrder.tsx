@@ -54,6 +54,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import apiFetch from "@/lib/api";
+import { usePoChangeReasons } from "@/components/PoChangeReasonDialog";
+import { diffPoLines, keyLines, PoLine } from "@/lib/poChanges";
 import {
     Plus,
     Trash2,
@@ -260,6 +262,8 @@ export default function CreatePurchaseOrder() {
     // Edit-after-sync: an approved PO that is already in Zoho Books. Changes are saved and then
     // pushed to the SAME Zoho PO (no new PO is created). Existing materials can only be reduced.
     const [isSyncedEdit, setIsSyncedEdit] = useState<boolean>(false);
+    const [syncedOriginalLines, setSyncedOriginalLines] = useState<PoLine[]>([]);
+    const { askReasons, reasonDialog } = usePoChangeReasons();
     const [syncedBaseline, setSyncedBaseline] = useState<Record<string, { name: string; qty: number; amount: number }>>({});
     const [poDate, setPoDate] = useState<string>(
         new Date().toISOString().split("T")[0]
@@ -408,6 +412,9 @@ export default function CreatePurchaseOrder() {
                                 base[k] = cur;
                             }
                             setSyncedBaseline(base);
+                            setSyncedOriginalLines(
+                                keyLines(existingItems, (i: any) => ({ materialId: i.material_id, name: i.item || "", qty: Number(i.qty) || 0, rate: Number(i.rate) || 0 }))
+                            );
                         }
 
                         setPoNumber(po.po_number || "");
@@ -888,11 +895,20 @@ export default function CreatePurchaseOrder() {
                 return;
             }
 
+            // Ask for a reason only for a new item, a removed item or a quantity increase.
+            const changes = diffPoLines(
+                syncedOriginalLines,
+                keyLines(items, (i) => ({ materialId: i.materialId, name: i.item, qty: Number(i.qty) || 0, rate: Number(i.rate) || 0 }))
+            );
+            const changeReasons = await askReasons(changes);
+            if (changeReasons === null) return; // cancelled - nothing is lost, the form stays as it is
+
             try {
                 setIsSaving(true);
                 const editRes = await apiFetch(`/api/manual-purchase-orders/${editPoId}/edit-synced`, {
                     method: "PUT",
                     body: JSON.stringify({
+                        changeReasons,
                         deliveryDate: deliveryDate || null,
                         paymentTerms,
                         deliveryAddress,
@@ -1238,6 +1254,7 @@ export default function CreatePurchaseOrder() {
 
     return (
         <Layout>
+            {reasonDialog}
             <div className="space-y-6 pb-20">
                 <ProcurementTabBar active="purchase-orders" />
 

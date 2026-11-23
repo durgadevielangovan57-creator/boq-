@@ -73,6 +73,7 @@ import {
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import apiFetch from "@/lib/api";
+import { PoHistoryDialog } from "@/components/PoHistoryDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
 import ProcurementTabBar from "@/components/ProcurementTabBar";
@@ -132,6 +133,23 @@ export default function PurchaseOrders() {
 
     // Merge selected items into one vendor PO
     const [showMergeDialog, setShowMergeDialog] = useState(false);
+
+    // Project-wise PO change history (items added / removed / qty / rate changes with reasons)
+    const [showProjectHistory, setShowProjectHistory] = useState(false);
+
+    // Edit icon for POs that are already synced to Zoho Books (edit + sync only the changes).
+    // Direct POs open the PO editor; generated POs open their page straight in edit mode.
+    // Only POs that are already in Zoho Books (direct or generated).
+    const isSyncedEditable = (p: PurchaseOrder) =>
+        ["approved", "ordered", "revised"].includes(p.status?.toLowerCase()) && p.zoho_sync_status === "synced";
+    const openSyncedEdit = (p: PurchaseOrder) => {
+        const returnProj = (selectedProjectId && selectedProjectId !== "all") ? selectedProjectId : p.project_id;
+        if (p.source === "manual") {
+            setLocation(returnProj ? `/purchase-orders/edit/${p.id}?returnProjectId=${returnProj}` : `/purchase-orders/edit/${p.id}`);
+        } else {
+            setLocation(`/purchase-orders/${p.id}?editSynced=1`);
+        }
+    };
 
     // Bulk Move to Delivery Tracker State
     const [showBulkMoveDialog, setShowBulkMoveDialog] = useState(false);
@@ -1132,6 +1150,11 @@ export default function PurchaseOrders() {
                                 Rate Reduction History
                             </Button>
                         )}
+                        {selectedProjectId !== "" && selectedProjectId !== "all" && (
+                            <Button variant="outline" size="sm" onClick={() => setShowProjectHistory(true)} className="h-9">
+                                PO History
+                            </Button>
+                        )}
                         {selectedProjectId !== "" && (
                             <Button variant="ghost" size="sm" onClick={handleBackToProjects} className="h-9">
                                 <ChevronRight className="h-4 w-4 rotate-180" />
@@ -1422,6 +1445,17 @@ export default function PurchaseOrders() {
                                                                             <Edit className="h-4 w-4" />
                                                                         </Button>
                                                                     )}
+                                                                    {isSyncedEditable(mainPo!) && (
+                                                                        <Button
+                                                                            variant="ghost"
+                                                                            size="sm"
+                                                                            className="h-8 w-8 p-0 text-amber-600 hover:text-amber-800 hover:bg-amber-50"
+                                                                            onClick={(e) => { e.stopPropagation(); openSyncedEdit(mainPo!); }}
+                                                                            title="Edit Purchase Order"
+                                                                        >
+                                                                            <Edit className="h-4 w-4" />
+                                                                        </Button>
+                                                                    )}
                                                                     <Button
                                                                         variant="ghost"
                                                                         size="sm"
@@ -1569,6 +1603,17 @@ export default function PurchaseOrders() {
                                                                                 const returnProj = (selectedProjectId && selectedProjectId !== "all") ? selectedProjectId : subPo.project_id;
                                                                                 setLocation(returnProj ? `/purchase-orders/edit/${subPo.id}?returnProjectId=${returnProj}` : `/purchase-orders/edit/${subPo.id}`);
                                                                             }}
+                                                                            title="Edit Purchase Order"
+                                                                        >
+                                                                            <Edit className="h-3.5 w-3.5" />
+                                                                        </Button>
+                                                                    )}
+                                                                    {isSyncedEditable(subPo) && (
+                                                                        <Button
+                                                                            variant="ghost"
+                                                                            size="sm"
+                                                                            className="h-7 w-7 p-0 text-amber-600 hover:text-amber-800 hover:bg-amber-50"
+                                                                            onClick={(e) => { e.stopPropagation(); openSyncedEdit(subPo); }}
                                                                             title="Edit Purchase Order"
                                                                         >
                                                                             <Edit className="h-3.5 w-3.5" />
@@ -2121,6 +2166,13 @@ export default function PurchaseOrders() {
             </Dialog>
 
             {/* PDF Export Selection Dialog */}
+            <PoHistoryDialog
+                open={showProjectHistory}
+                onOpenChange={setShowProjectHistory}
+                projectId={selectedProjectId && selectedProjectId !== "all" ? selectedProjectId : null}
+                title={`PO History - ${selectedProject?.name || "Project"}`}
+            />
+
             <Dialog open={isPdfExportDialogOpen} onOpenChange={setIsPdfExportDialogOpen}>
                 <DialogContent className="sm:max-w-md">
                     <DialogHeader>

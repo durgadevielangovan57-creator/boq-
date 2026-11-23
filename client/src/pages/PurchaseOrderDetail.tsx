@@ -45,7 +45,14 @@ import {
     User,
     TrendingDown,
     Check,
-    ChevronsUpDown
+    ChevronsUpDown,
+    FileText,
+    Send,
+    XCircle,
+    CheckCircle2,
+    PackageCheck,
+    RefreshCw,
+    History
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -62,6 +69,9 @@ import apiFetch from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
 import html2pdf from "html2pdf.js";
+import { usePoChangeReasons } from "@/components/PoChangeReasonDialog";
+import { PoHistoryDialog } from "@/components/PoHistoryDialog";
+import { diffPoLines } from "@/lib/poChanges";
 
 interface PurchaseOrder {
     id: string;
@@ -610,6 +620,10 @@ export default function PurchaseOrderDetail() {
     const [deletedItems, setDeletedItems] = useState<PurchaseOrderItem[]>([]);
     const [showReviseDialog, setShowReviseDialog] = useState(false);
     const [reviseReason, setReviseReason] = useState("");
+    // "Edit & Sync Changes": edit an already-synced PO in place and push only the changes to Zoho Books.
+    const [isSyncEditMode, setIsSyncEditMode] = useState(false);
+    const [showHistory, setShowHistory] = useState(false);
+    const { askReasons, reasonDialog } = usePoChangeReasons();
     const [showAddItemDialog, setShowAddItemDialog] = useState(false);
     const [isLoadingMaterials, setIsLoadingMaterials] = useState(false);
 
@@ -643,6 +657,16 @@ export default function PurchaseOrderDetail() {
     useEffect(() => {
         if (id) fetchPODetail();
     }, [id]);
+
+    // Opened from the PO list's edit icon: go straight into Edit & Sync Changes.
+    useEffect(() => {
+        if (new URLSearchParams(window.location.search).get("editSynced") !== "1") return;
+        if (!po || loading || isReviseMode || po.source === "manual") return;
+        if (["approved", "ordered", "revised"].includes(po.status?.toLowerCase()) && po.zoho_sync_status === "synced") {
+            window.history.replaceState({}, "", window.location.pathname);
+            startRevision(true); // already in Zoho Books: edit and sync only the changes
+        }
+    }, [po, loading]);
 
     const fetchPODetail = async () => {
         try {
@@ -769,17 +793,18 @@ export default function PurchaseOrderDetail() {
             setExistingRevisionToDelete(existingRevision);
             setShowDeleteExistingDialog(true);
         } else {
-            startRevision();
+            startRevision(false);
         }
     };
 
-    const startRevision = async () => {
+    const startRevision = async (syncMode: boolean = false) => {
         if (!po) return;
 
+        setIsSyncEditMode(syncMode);
         setIsSubmitting(true);
         try {
             const [shopsRes, materialsRes] = await Promise.all([
-                apiFetch('/api/shops'),
+                syncMode ? Promise.resolve({ ok: false } as any) : apiFetch('/api/shops'),
                 apiFetch('/api/materials')
             ]);
             if (shopsRes.ok) {
@@ -835,6 +860,7 @@ export default function PurchaseOrderDetail() {
         const rateValue = parseFloat(material.rate || material.price || material.supplyRate || "0") || 0;
         const newItem: PurchaseOrderItem = {
             id: `new-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            material_id: material.id || null,
             item: material.name || material.item || material.material_name || "Material",
             item_name: material.name || material.item || material.material_name || "Material",
             description: material.description || material.technicalSpecification || material.technicalspecification || null,
@@ -870,7 +896,7 @@ export default function PurchaseOrderDetail() {
                 setIsSubmitting(false); // Make sure it's false before async call finishes
 
                 // Now start our revision
-                startRevision();
+                startRevision(false);
             } else {
                 toast({
                     title: "Error",
@@ -968,7 +994,14 @@ export default function PurchaseOrderDetail() {
         setEditedItems(prev => prev.filter(i => i.id !== itemId));
     };
 
-    const handleSaveRevisionClick = () => {
+    // What changed compared with the PO as it was when editing started.
+    const computeChanges = () =>
+        diffPoLines(
+            initialItems.map((i) => ({ key: i.id, name: i.item || i.item_name || "", qty: parseFloat(i.qty) || 0, rate: parseFloat(i.rate) || 0 })),
+            editedItems.map((i) => ({ key: i.id, name: i.item || i.item_name || "", qty: parseFloat(i.qty) || 0, rate: parseFloat(i.rate) || 0 }))
+        );
+
+    const handleSaveRevisionClick = async () => {
         if (editedItems.length === 0) {
             toast({ title: "Error", description: "PO must have at least one item.", variant: "destructive" });
             return;
@@ -984,24 +1017,78 @@ export default function PurchaseOrderDetail() {
             return;
         }
 
-        // Only ask for a reason when something actually needs justification:
-        // a quantity increase on an existing item, or a newly added item.
-        const needsReason = editedItems.some(item => {
-            const original = initialItems.find(o => o.id === item.id);
-            if (!original) return true;
-            return (parseFloat(item.qty) || 0) > (parseFloat(original.qty) || 0);
-        });
-
-        if (!needsReason) {
-            submitRevision("");
+        const changes = computeChanges();
+        if (changes.length === 0 && isSyncEditMode) {
+            toast({ title: "No changes", description: "Nothing was changed on this PO." });
             return;
         }
 
-        setShowReviseDialog(true);
-        setReviseReason("");
+        // A reason is asked ONLY for a quantity increase, a newly added item or a removed item.
+        // The dialog is skipped completely when none of these happened.
+        const reasons = await askReasons(changes);
+        if (reasons === null) return; // user cancelled
+
+        if (isSyncEditMode) {
+            await submitSyncEdit(reasons);
+        } else {
+            await submitRevision(Object.values(reasons).join("\n"), reasons);
+        }
     };
 
-    const submitRevision = async (reason: string) => {
+    // Edit & Sync Changes: save in place, then push ONLY the changes to the same Zoho Books PO.
+    const submitSyncEdit = async (reasons: Record<string, string>) => {
+        if (!po) return;
+        setIsSubmitting(true);
+        try {
+            const res = await apiFetch(`/api/purchase-orders/${po.id}/edit-synced`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    deliveryDate: editableDeliveryDate || null,
+                    paymentTerms,
+                    deliveryAddress: shippingAddress || null,
+                    changeReasons: reasons,
+                    items: editedItems.map((it) => ({
+                        materialId: it.material_id || null,
+                        item: it.item || it.item_name,
+                        description: it.description || null,
+                        hsnCode: it.hsn_code || null,
+                        sacCode: it.sac_code || null,
+                        unit: it.unit || "Nos",
+                        qty: parseFloat(it.qty) || 0,
+                        rate: parseFloat(it.rate) || 0,
+                        discountPercent: parseFloat(String(it.discount_percent ?? 0)) || 0,
+                        gstPercentage: it.tax_rate ?? 18,
+                    })),
+                }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                toast({ title: "Changes not saved", description: data.message || "Failed to save changes.", variant: "destructive" });
+                return;
+            }
+            const syncRes = await apiFetch(`/api/zoho-books/purchase-orders/${po.id}/sync`, { method: "POST" });
+            const syncData = await syncRes.json().catch(() => ({}));
+            if (syncRes.ok) {
+                toast({ title: "Updated in Zoho Books", description: `Changes to ${po.po_number} are now in Zoho Books.` });
+            } else {
+                toast({
+                    title: "Saved, but Zoho Books was not updated yet",
+                    description: (syncData.message || "The Zoho update failed.") + " Use \u201cRetry Zoho Update\u201d below.",
+                    variant: "destructive",
+                });
+            }
+            setIsReviseMode(false);
+            setIsSyncEditMode(false);
+            await fetchPODetail();
+        } catch (err: any) {
+            toast({ title: "Error", description: err?.message || "Failed to save changes.", variant: "destructive" });
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
+    const submitRevision = async (reason: string, changeReasons: Record<string, string> = {}) => {
         setIsSubmitting(true);
         try {
             const selectedShop = shops.find(s => s.id === editableVendorId);
@@ -1011,6 +1098,7 @@ export default function PurchaseOrderDetail() {
                 body: JSON.stringify({
                     items: editedItems,
                     reason,
+                    changeReasons,
                     deletedItems,
                     delivery_date: editableDeliveryDate,
                     shippingAddress,
@@ -1191,8 +1279,8 @@ export default function PurchaseOrderDetail() {
 
             <div className="space-y-6 pb-20 relative main-layout">
                 {/* Actions Header */}
-                <div className="flex justify-between items-start no-print">
-                    <div className="space-y-1">
+                <div className="flex justify-between items-start gap-4 no-print max-w-[1000px] mx-auto w-full">
+                    <div className="space-y-1 shrink-0">
                         <Button variant="ghost" size="sm" className="-ml-2 text-muted-foreground" onClick={() => {
                             if (mode === "approval") setLocation(returnTo || "/po-approvals");
                             else if (mode === "delivery") setLocation(`/delivery-tracker?projectId=${po?.project_id}`);
@@ -1205,32 +1293,37 @@ export default function PurchaseOrderDetail() {
                             {getStatusBadge(po.status)}
                         </h1>
                     </div>
-                    <div className="flex gap-2">
-                        <Button variant="outline" onClick={() => window.print()}>
-                            <Printer className="h-4 w-4 mr-2" /> Print PO
+                    <div className="flex flex-wrap justify-end items-center gap-1.5 min-w-0">
+                        {/* All actions are icon buttons (hover for the name) to keep the header compact */}
+                        <Button variant="outline" size="icon" className="h-9 w-9" title="Print PO" aria-label="Print PO" onClick={() => window.print()}>
+                            <Printer className="h-4 w-4" />
                         </Button>
 
                         {po?.rateReductions?.some(r => r.status === 'pending') && (
-                            <Badge variant="outline" className="bg-orange-50 text-orange-600 border-orange-200 ml-2">Rate Reduction Pending</Badge>
+                            <Badge variant="outline" className="bg-orange-50 text-orange-600 border-orange-200">Rate Reduction Pending</Badge>
                         )}
                         <Button
                             variant="outline"
-                            className="bg-slate-800 text-white hover:bg-slate-900 border-slate-800"
+                            size="icon"
+                            className="h-9 w-9 bg-slate-800 text-white hover:bg-slate-900 hover:text-white border-slate-800"
+                            title={(isDownloading || isGeneratingPdf) ? "Generating PDF..." : "Download PDF"}
+                            aria-label="Download PDF"
                             onClick={handleDownloadPdfOpenDialog}
                             disabled={(user?.role !== 'admin' && !['approved', 'ordered', 'delivered'].includes(po?.status?.toLowerCase() || '')) || isDownloading || isGeneratingPdf}
                         >
-                            {(isDownloading || isGeneratingPdf) ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
-                            {(isDownloading || isGeneratingPdf) ? "Generating..." : "Download PDF"}
+                            {(isDownloading || isGeneratingPdf) ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                         </Button>
 
                         <Button
                             variant="outline"
-                            className="bg-green-600 text-white hover:bg-green-700 border-green-600"
+                            size="icon"
+                            className="h-9 w-9 bg-green-600 text-white hover:bg-green-700 hover:text-white border-green-600"
+                            title={isGeneratingExcel ? "Generating Excel..." : "Download Excel"}
+                            aria-label="Download Excel"
                             onClick={handleDownloadExcel}
                             disabled={(user?.role !== 'admin' && !['approved', 'ordered', 'delivered'].includes(po?.status?.toLowerCase() || '')) || isGeneratingExcel}
                         >
-                            {isGeneratingExcel ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileSpreadsheet className="h-4 w-4 mr-2" />}
-                            {isGeneratingExcel ? "Generating..." : "Download Excel"}
+                            {isGeneratingExcel ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
                         </Button>
 
                         {po?.source === "manual" && !isReviseMode && (
@@ -1239,66 +1332,84 @@ export default function PurchaseOrderDetail() {
                         ) && (
                                 <Button
                                     variant="outline"
+                                    size="icon"
                                     onClick={() => setLocation(`/purchase-orders/edit/${po.id}`)}
-                                    className="border-slate-300 hover:bg-slate-50"
+                                    className="h-9 w-9 border-slate-300 hover:bg-slate-50"
+                                    title="Edit PO"
+                                    aria-label="Edit PO"
                                 >
-                                    <Edit className="h-4 w-4 mr-2" /> Edit PO
+                                    <Edit className="h-4 w-4" />
                                 </Button>
                             )}
 
                         {(po.status === "draft" || (po.source === "manual" && po.status === "rejected")) && (
-                            <Button onClick={() => handleStatusUpdate("pending_approval")} className="bg-blue-600 hover:bg-blue-700 text-white">
-                                {po.status === "rejected" ? "Resubmit for Approval" : "Submit for Approval"}
+                            <Button
+                                size="icon"
+                                onClick={() => handleStatusUpdate("pending_approval")}
+                                className="h-9 w-9 bg-blue-600 hover:bg-blue-700 text-white"
+                                title={po.status === "rejected" ? "Resubmit for Approval" : "Submit for Approval"}
+                                aria-label="Submit for Approval"
+                            >
+                                <Send className="h-4 w-4" />
                             </Button>
                         )}
 
                         {po.status === "pending_approval" && mode === "approval" && (po.source !== "manual" || user?.role === "admin") && (
                             <>
-                                <Button variant="outline" className="border-red-600 text-red-600 hover:bg-red-50" onClick={() => { setApprovalAction("reject"); setShowApprovalDialog(true); }}>
-                                    Reject
+                                <Button variant="outline" size="icon" className="h-9 w-9 border-red-600 text-red-600 hover:bg-red-50" title="Reject" aria-label="Reject" onClick={() => { setApprovalAction("reject"); setShowApprovalDialog(true); }}>
+                                    <XCircle className="h-4 w-4" />
                                 </Button>
-                                <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={() => { setApprovalAction("approve"); setShowApprovalDialog(true); }}>
-                                    Approve
+                                <Button size="icon" className="h-9 w-9 bg-green-600 hover:bg-green-700 text-white" title="Approve" aria-label="Approve" onClick={() => { setApprovalAction("approve"); setShowApprovalDialog(true); }}>
+                                    <CheckCircle2 className="h-4 w-4" />
                                 </Button>
                             </>
                         )}
 
                         {po.status === "approved" && (
-                            <Button onClick={() => handleStatusUpdate("ordered")} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold">
-                                Confirm Order Sent
+                            <Button size="icon" onClick={() => handleStatusUpdate("ordered")} className="h-9 w-9 bg-indigo-600 hover:bg-indigo-700 text-white" title="Confirm Order Sent" aria-label="Confirm Order Sent">
+                                <Truck className="h-4 w-4" />
                             </Button>
                         )}
 
                         {po.status === "ordered" && !isReviseMode && (
-                            <Button onClick={() => handleStatusUpdate("delivered")} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold">
-                                Mark Delivered
+                            <Button size="icon" onClick={() => handleStatusUpdate("delivered")} className="h-9 w-9 bg-emerald-600 hover:bg-emerald-700 text-white" title="Mark Delivered" aria-label="Mark Delivered">
+                                <PackageCheck className="h-4 w-4" />
                             </Button>
                         )}
 
                         {po.source !== "manual" && po.status !== "revised" && po.status !== "delivered" && po.status !== "rejected" && !isReviseMode && (
-                            <Button variant="outline" onClick={handleReviseClick}>
-                                <Edit className="h-4 w-4 mr-2" /> Revise PO
+                            <Button variant="outline" size="icon" className="h-9 w-9" title="Revise PO" aria-label="Revise PO" onClick={handleReviseClick}>
+                                <Edit className="h-4 w-4" />
                             </Button>
                         )}
 
+                        {/* Edit & Sync Changes - generated POs that are already in Zoho Books (direct POs use "Edit PO" above) */}
+                        {po.source !== "manual" && !isReviseMode &&
+                            ["approved", "ordered", "revised"].includes(po.status?.toLowerCase()) && po.zoho_sync_status === "synced" && (
+                                <Button variant="outline" size="icon" className="h-9 w-9 border-amber-300 text-amber-800 hover:bg-amber-50" title="Edit & Sync Changes" aria-label="Edit & Sync Changes" onClick={() => startRevision(true)} disabled={isSubmitting}>
+                                    <RefreshCw className="h-4 w-4" />
+                                </Button>
+                            )}
+
+                        <Button variant="outline" size="icon" className="h-9 w-9" title="PO History" aria-label="PO History" onClick={() => setShowHistory(true)}>
+                            <History className="h-4 w-4" />
+                        </Button>
+
                         {isReviseMode && (
                             <>
-                                <Button variant="outline" onClick={() => setIsReviseMode(false)}>
-                                    <X className="h-4 w-4 mr-2" /> Cancel
+                                <Button variant="outline" size="icon" className="h-9 w-9" title="Cancel" aria-label="Cancel" onClick={() => { setIsReviseMode(false); setIsSyncEditMode(false); }}>
+                                    <X className="h-4 w-4" />
                                 </Button>
-                                <Button className="bg-blue-600 hover:bg-blue-700 text-white" onClick={handleSaveRevisionClick} disabled={isSubmitting}>
-                                    {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
-                                    Save Revision
+                                <Button size="icon" className="h-9 w-9 bg-blue-600 hover:bg-blue-700 text-white" title={isSyncEditMode ? "Save & Sync Changes" : "Save Revision"} aria-label="Save" onClick={handleSaveRevisionClick} disabled={isSubmitting}>
+                                    {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                                 </Button>
                             </>
                         )}
-
-
                     </div>
                 </div>
 
                 {/* Edit-after-sync: changes saved here but not yet in Zoho Books */}
-                {po.source === "manual" && po.zoho_sync_status === "synced" && po.zoho_update_pending && (
+                {po.zoho_sync_status === "synced" && po.zoho_update_pending && (
                     <div className="bg-amber-50 border border-amber-300 p-4 rounded-lg flex items-center justify-between gap-4 no-print">
                         <div className="text-amber-900">
                             <p className="font-semibold text-sm">Changes saved, but not yet updated in Zoho Books.</p>
@@ -1427,7 +1538,7 @@ export default function PurchaseOrderDetail() {
                                     <div className="space-y-2">
                                         <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Bill From</p>
 
-                                        {isReviseMode ? (
+                                        {isReviseMode && !isSyncEditMode ? (
                                             <div className="space-y-2 relative z-50">
                                                 <VendorCombobox
                                                     shops={shops}
@@ -1974,37 +2085,15 @@ export default function PurchaseOrderDetail() {
                     </DialogContent>
                 </Dialog>
 
-                {/* Revise Reason Dialog */}
-                <Dialog open={showReviseDialog} onOpenChange={setShowReviseDialog}>
-                    <DialogContent>
-                        <DialogHeader>
-                            <DialogTitle>Reason for Quantity Increase</DialogTitle>
-                            <DialogDescription>
-                                You have increased the quantity of one or more items.
-                                This revision will require Admin approval. Please provide a reason.
-                            </DialogDescription>
-                        </DialogHeader>
-                        <div className="py-4">
-                            <Textarea
-                                placeholder="Enter reason for quantity increase..."
-                                value={reviseReason}
-                                onChange={(e) => setReviseReason(e.target.value)}
-                                className="min-h-[100px]"
-                            />
-                        </div>
-                        <DialogFooter>
-                            <Button variant="outline" onClick={() => setShowReviseDialog(false)} disabled={isSubmitting}>Cancel</Button>
-                            <Button
-                                className="bg-blue-600 hover:bg-blue-700 text-white"
-                                onClick={() => submitRevision(reviseReason)}
-                                disabled={isSubmitting || !reviseReason.trim()}
-                            >
-                                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                                Submit Revision
-                            </Button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
+                {/* Reason dialog (only for new item / removed item / quantity increase) */}
+                {reasonDialog}
+
+                <PoHistoryDialog
+                    open={showHistory}
+                    onOpenChange={setShowHistory}
+                    poId={po?.id}
+                    title={`PO History - ${po?.po_number || ""}`}
+                />
 
                 {/* Delete Existing Revision Dialog */}
                 <Dialog open={showDeleteExistingDialog} onOpenChange={setShowDeleteExistingDialog}>

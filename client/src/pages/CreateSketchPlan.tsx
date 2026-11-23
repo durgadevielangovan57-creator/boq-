@@ -1535,24 +1535,216 @@ export default function CreateSketchPlan() {
   }, [loadPdfJs, performSmartMapping, toast]);
 
   const normalizeDimensionUnit = useCallback((uStr: string): string => {
-    const u = uStr.toLowerCase().trim();
-    if (u.includes("feet") || u === "ft" || u === "'") return "feet";
-    if (u === "mm") return "mm";
-    if (u.includes("inch") || u === "in" || u === '"') return "inch";
-    if (u === "cm") return "cm";
-    if (u.includes("meter") || u === "m") return "meter";
-    if (u === "sqft" || u === "sft") return "sqft";
-    if (u === "sqmt" || u === "sqm") return "sqmt";
-    if (u === "rft") return "rft";
-    if (u === "rmt") return "rmt";
-    if (u === "cmt") return "cmt";
-    if (u === "cft") return "cft";
-    if (u === "nos" || u === "no") return "nos";
-    if (u === "pcs" || u === "pc" || u === "piece") return "pcs";
-    if (u === "kg" || u === "kilo") return "kg";
-    if (u.includes("litre") || u === "ltr" || u === "l") return "litre";
-    if (u === "set") return "set";
-    if (u === "ls") return "ls";
+    if (!uStr) return "feet";
+    const raw = uStr.toLowerCase().trim();
+    const u = raw.replace(/\./g, "");
+
+    // 1. Square feet
+    if (
+      u === "sqft" ||
+      u === "sft" ||
+      u === "sq feet" ||
+      u === "sq foot" ||
+      u === "sq ft" ||
+      u === "square feet" ||
+      u === "square foot" ||
+      u === "sqfeet" ||
+      u === "sqfoot" ||
+      ((u.includes("square") || u.startsWith("sq")) && (u.includes("feet") || u.includes("foot") || u.includes("ft")))
+    ) {
+      return "sqft";
+    }
+
+    // 2. Square meter
+    if (
+      u === "sqmt" ||
+      u === "sqm" ||
+      u === "sq mt" ||
+      u === "sq m" ||
+      u === "sq meter" ||
+      u === "sq metre" ||
+      u === "square meter" ||
+      u === "square metre" ||
+      u === "sqmeter" ||
+      u === "sqmetre" ||
+      ((u.includes("square") || u.startsWith("sq")) && (u.includes("meter") || u.includes("metre") || u.includes("mt") || u.endsWith("m")))
+    ) {
+      return "sqmt";
+    }
+
+    // 3. Running feet
+    if (
+      u === "rft" ||
+      u === "r ft" ||
+      u === "run ft" ||
+      u === "run feet" ||
+      u === "run foot" ||
+      u === "running ft" ||
+      u === "running feet" ||
+      u === "running foot" ||
+      ((u.includes("running") || u.startsWith("run")) && (u.includes("feet") || u.includes("foot") || u.includes("ft")))
+    ) {
+      return "rft";
+    }
+
+    // 4. Running meter
+    if (
+      u === "rmt" ||
+      u === "r mt" ||
+      u === "run mt" ||
+      u === "run m" ||
+      u === "run meter" ||
+      u === "run metre" ||
+      u === "running mt" ||
+      u === "running m" ||
+      u === "running meter" ||
+      u === "running metre" ||
+      ((u.includes("running") || u.startsWith("run")) && (u.includes("meter") || u.includes("metre") || u.includes("mt") || u.endsWith("m")))
+    ) {
+      return "rmt";
+    }
+
+    // 5. Cubic feet
+    if (
+      u === "cft" ||
+      u === "cuft" ||
+      u === "cu ft" ||
+      u === "cu feet" ||
+      u === "cu foot" ||
+      u === "cubic feet" ||
+      u === "cubic foot" ||
+      ((u.includes("cubic") || u.startsWith("cu")) && (u.includes("feet") || u.includes("foot") || u.includes("ft")))
+    ) {
+      return "cft";
+    }
+
+    // 6. Cubic meter
+    if (
+      u === "cmt" ||
+      u === "cum" ||
+      u === "cumt" ||
+      u === "cu mt" ||
+      u === "cu m" ||
+      u === "cu meter" ||
+      u === "cu metre" ||
+      u === "cubic meter" ||
+      u === "cubic metre" ||
+      ((u.includes("cubic") || u.startsWith("cu")) && (u.includes("meter") || u.includes("metre") || u.includes("mt") || u.endsWith("m")))
+    ) {
+      return "cmt";
+    }
+
+    // 7. Numbers
+    if (
+      u === "nos" ||
+      u === "no" ||
+      u === "num" ||
+      u === "nums" ||
+      u.includes("number")
+    ) {
+      return "nos";
+    }
+
+    // 8. Pieces
+    if (
+      u === "pcs" ||
+      u === "pc" ||
+      u.includes("piece")
+    ) {
+      return "pcs";
+    }
+
+    // 9. Kilogram
+    if (
+      u === "kg" ||
+      u === "kgs" ||
+      u.includes("kilo")
+    ) {
+      return "kg";
+    }
+
+    // 10. Litre
+    if (
+      u === "ltr" ||
+      u === "ltrs" ||
+      u === "l" ||
+      u.includes("litre") ||
+      u.includes("liter")
+    ) {
+      return "litre";
+    }
+
+    // 11. Set
+    if (
+      u === "set" ||
+      u === "sets"
+    ) {
+      return "set";
+    }
+
+    // 12. Lumpsum
+    if (
+      u === "ls" ||
+      u.includes("lump")
+    ) {
+      return "ls";
+    }
+
+    // 13. Millimeter
+    if (
+      u === "mm" ||
+      u.includes("millimeter") ||
+      u.includes("millimetre")
+    ) {
+      return "mm";
+    }
+
+    // 14. Centimeter
+    if (
+      u === "cm" ||
+      u.includes("centimeter") ||
+      u.includes("centimetre")
+    ) {
+      return "cm";
+    }
+
+    // 15. Inch
+    if (
+      u === "inch" ||
+      u === "inches" ||
+      u === "in" ||
+      u === '"'
+    ) {
+      return "inch";
+    }
+
+    // 16. Feet (linear)
+    if (
+      u === "feet" ||
+      u === "foot" ||
+      u === "ft" ||
+      u === "'" ||
+      u.includes("feet") ||
+      u.includes("foot")
+    ) {
+      return "feet";
+    }
+
+    // 17. Meter (linear)
+    if (
+      u === "meter" ||
+      u === "metre" ||
+      u === "meters" ||
+      u === "metres" ||
+      u === "mtr" ||
+      u === "mtrs" ||
+      u === "m" ||
+      u.includes("meter") ||
+      u.includes("metre")
+    ) {
+      return "meter";
+    }
+
     return "feet"; // Default
   }, []);
 
@@ -2906,20 +3098,31 @@ export default function CreateSketchPlan() {
     }
     newItems[idx].rate = parseFloat(material.rate) || 0;
     if (updateCategory && material.category) newItems[idx].category = material.category;
-    if (material.unit) {
-      newItems[idx].unit = material.unit;
+    const itemUnit = material.unit || material.required_unit_type;
+    if (itemUnit) {
+      newItems[idx].unit = itemUnit;
       // Also update the visible Unit column (dimension_unit) to the new item's unit, so a
       // unit synced earlier from the mobile app doesn't stay behind. Only applied when the
       // item's unit is a recognised one; otherwise the existing unit is left as it is.
       {
-        const rawUnit = String(material.unit).toLowerCase().trim();
-        const isFeetForm = rawUnit.includes("feet") || rawUnit === "ft" || rawUnit === "'";
-        const mappedUnit = normalizeDimensionUnit(String(material.unit));
+        const rawUnit = String(itemUnit).toLowerCase().trim().replace(/\./g, "");
+        const isFeetForm =
+          rawUnit === "feet" ||
+          rawUnit === "foot" ||
+          rawUnit === "ft" ||
+          rawUnit === "'" ||
+          ((rawUnit.includes("feet") || rawUnit.includes("foot")) &&
+            !rawUnit.includes("sq") &&
+            !rawUnit.includes("square") &&
+            !rawUnit.includes("run") &&
+            !rawUnit.includes("cu") &&
+            !rawUnit.includes("cubic"));
+        const mappedUnit = normalizeDimensionUnit(String(itemUnit));
         if (mappedUnit !== "feet" || isFeetForm) {
           newItems[idx].dimension_unit = mappedUnit as any;
         }
       }
-      if (material.unit.toLowerCase() === "ls") {
+      if (String(itemUnit).toLowerCase() === "ls" || normalizeDimensionUnit(String(itemUnit)) === "ls") {
         newItems[idx].dimension_unit = "ls";
         newItems[idx].qty = "1";
       }

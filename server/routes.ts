@@ -25,6 +25,7 @@ import { logActivity } from "./audit";
 import { registerSketchRoutes } from "./sketch_routes";
 import { registerPoMergeRoutes } from "./po_merge_routes";
 import { registerManualPoRoutes } from "./manual_po_routes";
+import { registerPoChangeHistoryRoutes, ensurePoChangeHistoryTable, pairChanges, recordPoChanges } from "./po_change_history";
 import { registerZohoBooksRoutes } from "./zoho_routes";
 import { registerProjectDocumentsRoutes } from "./project_documents_routes";
 import {
@@ -81,6 +82,7 @@ export async function registerRoutes(
 
   // Direct "Create Purchase Order" routes + Zoho Books PO sync (additive modules)
   await registerManualPoRoutes(app);
+  await registerPoChangeHistoryRoutes(app);
   await registerZohoBooksRoutes(app);
 
   // Project documents (quotes etc.) — isolated, additive module
@@ -2726,7 +2728,13 @@ export async function registerRoutes(
         // JOIN with material_subcategories and material_categories to get the parent category
         const productsRes = hasQuery
           ? await query(`
-              SELECT DISTINCT ON (p.name) p.id::text, p.name, null as code, null as rate, null as unit, COALESCE(c.name, p.subcategory, '') as category, null as image, 'Product' as type,
+              SELECT DISTINCT ON (p.name) p.id::text, p.name, null as code, null as rate,
+              COALESCE(
+                (SELECT sp.required_unit_type FROM step11_products sp WHERE (sp.product_id::text = p.id::text OR sp.product_name = p.name) AND sp.required_unit_type IS NOT NULL AND sp.required_unit_type != '' ORDER BY sp.updated_at DESC LIMIT 1),
+                (SELECT sc.required_unit_type FROM product_step3_config sc WHERE (sc.product_id::text = p.id::text OR sc.product_name = p.name) AND sc.required_unit_type IS NOT NULL AND sc.required_unit_type != '' ORDER BY sc.updated_at DESC LIMIT 1),
+                (SELECT pa.required_unit_type FROM product_approvals pa WHERE (pa.product_id::text = p.id::text OR pa.product_name = p.name) AND pa.required_unit_type IS NOT NULL AND pa.required_unit_type != '' AND pa.status = 'approved' ORDER BY pa.created_at DESC LIMIT 1)
+              ) as unit,
+              COALESCE(c.name, p.subcategory, '') as category, null as image, 'Product' as type,
               (SELECT pa.description FROM product_approvals pa WHERE pa.product_id = p.id AND pa.status = 'approved' ORDER BY pa.created_at DESC LIMIT 1) as description
               FROM products p 
               LEFT JOIN (
@@ -2741,7 +2749,13 @@ export async function registerRoutes(
                 )
               ORDER BY p.name ASC LIMIT 100`, [searchPattern, compactPattern])
           : await query(`
-              SELECT DISTINCT ON (p.name) p.id::text, p.name, null as code, null as rate, null as unit, COALESCE(c.name, p.subcategory, '') as category, null as image, 'Product' as type,
+              SELECT DISTINCT ON (p.name) p.id::text, p.name, null as code, null as rate,
+              COALESCE(
+                (SELECT sp.required_unit_type FROM step11_products sp WHERE (sp.product_id::text = p.id::text OR sp.product_name = p.name) AND sp.required_unit_type IS NOT NULL AND sp.required_unit_type != '' ORDER BY sp.updated_at DESC LIMIT 1),
+                (SELECT sc.required_unit_type FROM product_step3_config sc WHERE (sc.product_id::text = p.id::text OR sc.product_name = p.name) AND sc.required_unit_type IS NOT NULL AND sc.required_unit_type != '' ORDER BY sc.updated_at DESC LIMIT 1),
+                (SELECT pa.required_unit_type FROM product_approvals pa WHERE (pa.product_id::text = p.id::text OR pa.product_name = p.name) AND pa.required_unit_type IS NOT NULL AND pa.required_unit_type != '' AND pa.status = 'approved' ORDER BY pa.created_at DESC LIMIT 1)
+              ) as unit,
+              COALESCE(c.name, p.subcategory, '') as category, null as image, 'Product' as type,
               (SELECT pa.description FROM product_approvals pa WHERE pa.product_id = p.id AND pa.status = 'approved' ORDER BY pa.created_at DESC LIMIT 1) as description
               FROM products p 
               LEFT JOIN (
@@ -14491,7 +14505,7 @@ export async function registerRoutes(
   app.post("/api/purchase-orders/:id/revise", authMiddleware, async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const { items, reason, deletedItems, delivery_date, shippingAddress, paymentTerms, vendor_id, vendor_name } = req.body;
+      const { items, reason, deletedItems, delivery_date, shippingAddress, paymentTerms, vendor_id, vendor_name, changeReasons } = req.body;
       const user = (req as any).user;
 
       // Direct POs are changed via Edit (Draft/Rejected) only; never revised.
@@ -14664,6 +14678,39 @@ export async function registerRoutes(
             [defPo.id, ditem.material_id || ditem.id || null, ditem.item || ditem.item_name, ditem.description || null, ditem.unit || null, ditem.qty, originalQty, ditem.rate, ditem.amount, ditem.hsn_code || null, ditem.sac_code || null, qtyModified, ditem.tax_rate ?? ditem.gst_percentage ?? 18]
           );
         }
+      }
+
+      // 5.9 Record what changed (added / removed / qty / rate) with reasons in the PO history.
+      // History is best-effort: a failure here must never undo the revision itself.
+      try {
+        await ensurePoChangeHistoryTable();
+        const num = (v: any) => parseFloat(v) || 0;
+        const pairs: Parameters<typeof pairChanges>[0] = [];
+        const matchedOldIds = new Set<string>();
+        for (const item of items) {
+          const name = item.item || item.item_name;
+          const orig = existingItems.find((ei: any) => ei.id === item.id) ||
+            existingItems.find((ei: any) => !matchedOldIds.has(ei.id) && (ei.item || ei.item_name) === name && (ei.description || "") === (item.description || ""));
+          if (orig) matchedOldIds.add(orig.id);
+          pairs.push({
+            before: orig ? { name: orig.item || orig.item_name, qty: num(orig.qty), rate: num(orig.rate), amount: num(orig.amount) } : null,
+            after: { name, qty: num(item.qty), rate: num(item.rate), amount: num(item.amount) || num(item.qty) * num(item.rate) },
+          });
+        }
+        for (const d of deletedItems || []) {
+          pairs.push({ before: { name: d.item || d.item_name, qty: num(d.qty), rate: num(d.rate), amount: num(d.amount) || num(d.qty) * num(d.rate) }, after: null });
+        }
+        await recordPoChanges(
+          { query },
+          { id: newPo.id, po_number: newPoNumber, project_id: existingPo.project_id, project_name: existingPo.project_name, vendor_name: finalVendorName },
+          pairChanges(pairs),
+          changeReasons && typeof changeReasons === "object" ? changeReasons : {},
+          reason || "",
+          "revise",
+          user
+        );
+      } catch (histErr) {
+        console.error("[revise-po] failed to write PO change history:", histErr);
       }
 
       // 6. Update old PO status
