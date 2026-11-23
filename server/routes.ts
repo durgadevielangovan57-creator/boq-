@@ -7321,10 +7321,21 @@ export async function registerRoutes(
             const itemIdx = parseInt(itemIdxStr, 10);
             if (tableData.step11_items && tableData.step11_items[itemIdx]) {
               console.log(`Applying MANUAL edits to sub-item index ${itemIdx} of BOQ Item ${boqItemId}`);
-              tableData.step11_items[itemIdx] = {
-                ...tableData.step11_items[itemIdx],
-                ...fields as any
-              };
+              {
+                const incoming: any = { ...(fields as any) };
+                const curStatus = tableData.step11_items[itemIdx].rate_amendment_status;
+                const alreadyResolved = curStatus === 'approved' || curStatus === 'rejected';
+                const staleUnresolved = incoming.rate_amendment_status === 'pending' || incoming.rate_amendment_status === 'draft';
+                if (alreadyResolved && staleUnresolved) {
+                  // A stale client-side draft/pending flag must never overwrite an admin decision.
+                  incoming.rate_amendment_status = curStatus;
+                  delete incoming.original_rate;
+                }
+                tableData.step11_items[itemIdx] = {
+                  ...tableData.step11_items[itemIdx],
+                  ...incoming
+                };
+              }
               if (isBoqVersion) {
                 const AMOUNT_KEYS = ["qty", "qtyPerSqf", "supply_rate", "install_rate", "rate", "unit", "amount"];
                 markBoqEdited(tableData.step11_items[itemIdx], Object.keys(fields as any).filter(k => AMOUNT_KEYS.indexOf(k) !== -1));
@@ -9038,7 +9049,7 @@ export async function registerRoutes(
           const tableData = typeof itemRows[0].table_data === 'string' ? JSON.parse(itemRows[0].table_data) : itemRows[0].table_data;
           let updated = false;
           const matchLine = (line: any) => (
-            (line.id === reqData.material_id || line.materialId === reqData.material_id || line.name === reqData.material_name) && line.rate_amendment_status === 'pending'
+            (line.id === reqData.material_id || line.materialId === reqData.material_id || line.name === reqData.material_name || line.title === reqData.material_name) && (line.rate_amendment_status === 'pending' || line.rate_amendment_status === 'draft')
           );
           // Update materialLines
           if (tableData && Array.isArray(tableData.materialLines)) {
@@ -9113,7 +9124,7 @@ export async function registerRoutes(
           const tableData = typeof itemRows[0].table_data === 'string' ? JSON.parse(itemRows[0].table_data) : itemRows[0].table_data;
           let updated = false;
           const matchLine = (line: any) => (
-            (line.id === reqData.material_id || line.materialId === reqData.material_id || line.name === reqData.material_name) && line.rate_amendment_status === 'pending'
+            (line.id === reqData.material_id || line.materialId === reqData.material_id || line.name === reqData.material_name || line.title === reqData.material_name) && (line.rate_amendment_status === 'pending' || line.rate_amendment_status === 'draft')
           );
           const revertLine = (line: any) => {
             line.rate_amendment_status = 'rejected';

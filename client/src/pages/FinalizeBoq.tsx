@@ -51,6 +51,7 @@ import {
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { DeleteConfirmationDialog } from "@/components/ui/DeleteConfirmationDialog";
+import SyncToPmsButton from "@/components/SyncToPmsButton";
 import {
   Trash2,
   Copy,
@@ -6073,6 +6074,12 @@ export default function FinalizeBoq() {
                           </Button>
                         ) : null;
                       })()}
+                      <SyncToPmsButton
+                        type="boq"
+                        versionId={selectedBoqVersionId}
+                        boqProjectId={selectedProjectId}
+                        isFinal={!!filteredBoqVersions.find(v => v.id === selectedBoqVersionId)?.is_last_final}
+                      />
                       <Button
                         variant="ghost"
                         size="icon"

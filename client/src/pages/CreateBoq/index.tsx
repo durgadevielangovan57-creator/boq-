@@ -26,6 +26,7 @@ import { DeleteConfirmationDialog } from "../../components/ui/DeleteConfirmation
 import { ProductAnalysisDialog } from "@/components/ProductAnalysisDialog";
 import { GenerateQuoteDialog } from "./components/GenerateQuoteDialog";
 import { AddReasonDialog } from "./components/AddReasonDialog";
+import SyncToPmsButton from "@/components/SyncToPmsButton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
 import {
   Table,
@@ -2048,6 +2049,11 @@ export default function CreateBom() {
           const rawOriginal = prefix === 'engine' ? (rawSupply + rawInstall) : (line.original_rate ?? line.original_engine_rate);
           const requestedRate = editedFields[itemKey]?.rate ?? line.rate ?? line.rateSqft ?? (rawSupply + rawInstall);
           const originalRate = editedFields[itemKey]?.original_rate ?? line.original_rate ?? line.original_engine_rate ?? rawOriginal;
+          // A "draft" whose amended rate isn't higher than the original has nothing to
+          // submit (typically a stale flag left after the amendment was approved).
+          // Don't treat it as an unsent amendment, otherwise the "Submit rate amend
+          // request" button sticks and then says "Nothing to submit".
+          if (!(Number(requestedRate) > 0 && Number(requestedRate) > (Number(originalRate) || 0))) return;
           draftItems.push({
             boqItemId: boqItem.id,
             itemKey,
@@ -3993,6 +3999,12 @@ export default function CreateBom() {
                                             <Star className="h-4 w-4" />
                                           </Button>
                                         )}
+                                        <SyncToPmsButton
+                                          type="bom"
+                                          versionId={selectedVersionId}
+                                          boqProjectId={selectedProjectId}
+                                          isFinal={!!(currentV as any)?.is_last_final}
+                                        />
                                       </div>
                                     );
 
