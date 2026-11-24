@@ -26,6 +26,7 @@ import { registerSketchRoutes } from "./sketch_routes";
 import { registerPoMergeRoutes } from "./po_merge_routes";
 import { registerManualPoRoutes } from "./manual_po_routes";
 import { registerPoChangeHistoryRoutes, ensurePoChangeHistoryTable, pairChanges, recordPoChanges } from "./po_change_history";
+import { registerMaterialPriceHistoryRoutes } from "./material_price_history";
 import { registerZohoBooksRoutes } from "./zoho_routes";
 import { registerProjectDocumentsRoutes } from "./project_documents_routes";
 import {
@@ -83,6 +84,7 @@ export async function registerRoutes(
   // Direct "Create Purchase Order" routes + Zoho Books PO sync (additive modules)
   await registerManualPoRoutes(app);
   await registerPoChangeHistoryRoutes(app);
+  await registerMaterialPriceHistoryRoutes(app);
   await registerZohoBooksRoutes(app);
 
   // Project documents (quotes etc.) — isolated, additive module

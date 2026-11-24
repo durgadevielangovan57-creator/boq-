@@ -45,6 +45,7 @@ import { EditableHsnSac } from './EditableHsnSac';
 import { BoqItemRow } from './BoqItemRow';
 import { IndicateReasonDialog } from './IndicateReasonDialog';
 import { SaveConfirmDialog, SaveAsWizardDialog, SaveUpdateQuantitiesPrompt, PendingManualItem } from './ManualItemSaveDialogs';
+import { RichDescriptionEditor } from '@/components/RichDescription';
 
 /**
  * Icon-only action button (medium size) with a small hover tooltip showing
@@ -1186,15 +1187,15 @@ export const BoqItemCard = React.memo(function BoqItemCard({ boqItem, boqIdx, is
                 }}
                 onMouseLeave={() => setShowDescTooltip(false)}
               >
-                <textarea
-                  rows={1}
+                {/* Bold / colour capable description (formatting is for on-screen only; PDF/Excel use the plain text) */}
+                <RichDescriptionEditor
                   placeholder="Enter product description..."
-                  className="min-h-[32px] py-1.5 px-3 rounded-md border text-xs w-full font-bold text-slate-700 bg-slate-50 border-slate-200 hover:bg-white focus:bg-white focus:ring-1 ring-blue-100 resize-y"
-                  defaultValue={tableData.finalize_description || ""}
+                  className="w-full hover:bg-white"
+                  textClassName="text-xs font-normal text-slate-700"
+                  value={tableData.finalize_description || ""}
                   disabled={isVersionSubmitted}
-                  onFocus={checkBudgetEarly}
-                  onBlur={async e => {
-                    const newDesc = e.target.value;
+                  onFocus={() => { void checkBudgetEarly(); }}
+                  onCommit={async (newDesc) => {
                     if (newDesc === (tableData.finalize_description || "")) return;
                     try {
                       const updatedTd = { ...tableData, finalize_description: newDesc };

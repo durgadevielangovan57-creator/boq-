@@ -28,6 +28,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { DeleteConfirmationDialog } from "@/components/ui/DeleteConfirmationDialog";
 import ProductApprovalsPanel from "@/components/ProductApprovalsPanel";
+import { RichDescriptionEditor } from "@/components/RichDescription";
 
 type Product = { id: string; name: string; subcategory: string; created_at: string; created_by?: string; image?: string; has_price_updates?: boolean; is_approved?: boolean };
 type Material = { id: string; name: string; unit: string; rate: number; category: string; subcategory: string; description?: string; shop_name?: string; shop_id?: string; shopId?: string; code?: string; hsn_code?: string; sac_code?: string; technicalspecification?: string; technicalSpecification?: string; created_at?: string; brandName?: string; brand_name?: string; modelNumber?: string; model_number?: string; is_project_pricing?: boolean };
@@ -2189,7 +2190,7 @@ export default function ManageProduct() {
                                         </LabeledField>
                                         <div className="md:col-span-5 space-y-2">
                                             <label className="text-xs font-bold uppercase text-muted-foreground">Product Description</label>
-                                            <Textarea placeholder="Enter a description..." value={productDescription} onChange={e => setProductDescription(e.target.value)} disabled={isReadOnly} className="min-h-[80px] font-medium" />
+                                            <RichDescriptionEditor placeholder="Enter a description..." value={productDescription} onChange={setProductDescription} disabled={isReadOnly} minHeight={80} className="bg-background" textClassName="text-sm font-normal" />
                                         </div>
                                         {([["Dim A", dimA, setDimA], ["Dim B", dimB, setDimB], ["Dim C", dimC, setDimC]] as const).map(([label, val, setter]: any) => (
                                             <LabeledField key={label} label={label}>

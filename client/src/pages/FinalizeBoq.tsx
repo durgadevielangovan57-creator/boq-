@@ -251,12 +251,39 @@ const computeLsAwareItemTotal = (td: any): number => {
   }
 };
 
+// LS-aware replacement for computeBoq() when computing item totals in Finalize BOQ.
+// computeBoq() scales every line by target/base (so an "LS" line with baseQty 4
+// on a 22-nos item becomes 8 units), but the BOM (Generate BOM page + BOM export)
+// prices every non-frozen "LS" line at exactly 1. This wrapper makes Finalize BOQ
+// totals agree with the BOM. Frozen (freeze_and_edit) lines and items where every
+// line is LS keep the existing computeBoq behaviour.
+const computeBoqLsAware = (basis: any, lines: any[], target: number) => {
+  const all: any[] = Array.isArray(lines) ? lines : [];
+  const isLs = (l: any) => String(l?.unit || "").trim().toLowerCase() === "ls";
+  const isFrozen = (l: any) => l?.freezeAndEdit === true || l?.freeze_and_edit === true
+    || l?.freezeAndEdit === "true" || l?.freeze_and_edit === "true"
+    || l?.freezeAndEdit === 1 || l?.freeze_and_edit === 1;
+  const flatLs = all.filter((l) => isLs(l) && !isFrozen(l));
+  if (flatLs.length === 0 || all.every(isLs)) return computeBoq(basis, all, target);
+  const rest = all.filter((l) => !(isLs(l) && !isFrozen(l)));
+  const res = computeBoq(basis, rest, target);
+  const lsTotal = flatLs.reduce((sum: number, l: any) => {
+    let rate = (Number(l.supplyRate) || 0) + (Number(l.installRate) || 0);
+    if (l.original_rate !== undefined && l.original_rate !== null && l.rate_amendment_status !== "approved") {
+      rate = Number(l.original_rate) || rate;
+    }
+    return sum + rate;
+  }, 0);
+  const grandTotal = res.grandTotal + lsTotal;
+  return { ...res, grandTotal, ratePerUnit: Number(target) > 0 ? grandTotal / Number(target) : 0 };
+};
+
 const getItemMetrics = (td: any) => {
   const step11 = Array.isArray(td.step11_items) ? td.step11_items : [];
   let itemTotal = 0, itemQty = 0;
   if (td.targetRequiredQty !== undefined && td.targetRequiredQty !== null) {
     if (td.materialLines) {
-      const res = computeBoq(td.configBasis, td.materialLines, td.targetRequiredQty);
+      const res = computeBoqLsAware(td.configBasis, td.materialLines, td.targetRequiredQty);
       const manualTotal = step11.filter((it: any) => it.manual).reduce((s: number, it: any) =>
         s + (Number(it.qty) || 0) * (Number(it.supply_rate || 0) + Number(it.install_rate || 0)), 0);
       itemTotal = res.grandTotal + manualTotal;
@@ -2280,7 +2307,7 @@ export default function FinalizeBoq() {
     if (typeof td === 'string') try { td = JSON.parse(td); } catch { td = {}; }
     let total = 0;
     if (td.materialLines && td.targetRequiredQty !== undefined) {
-      total = computeBoq(td.configBasis, td.materialLines, td.targetRequiredQty).grandTotal;
+      total = computeBoqLsAware(td.configBasis, td.materialLines, td.targetRequiredQty).grandTotal;
     } else {
       const items = Array.isArray(td.step11_items) ? td.step11_items : [];
       total = items.reduce((s: number, it: any) =>
@@ -4490,7 +4517,7 @@ export default function FinalizeBoq() {
         // isLumpSum guard note below.
         if (tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
           if (tableData.materialLines) {
-            const _res = computeBoq(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
+            const _res = computeBoqLsAware(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
             const _manTot = currentStep11Items.filter((it: any) => it.manual).reduce((s: number, it: any) =>
               s + (Number(it.qty) || 0) * (Number(it.supply_rate || 0) + Number(it.install_rate || 0)), 0);
             _exTotal = _res.grandTotal + _manTot;
@@ -4844,7 +4871,7 @@ export default function FinalizeBoq() {
         // leftover targetRequiredQty/materialLines from before the conversion.
         if (tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
           if (tableData.materialLines) {
-            const _result = computeBoq(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
+            const _result = computeBoqLsAware(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
             const _manualTotal = currentStep11Items.filter((it: any) => it.manual).reduce((s: number, it: any) =>
               s + (Number(it.qty) || 0) * (Number(it.supply_rate || 0) + Number(it.install_rate || 0)), 0);
             _total = _result.grandTotal + _manualTotal;
@@ -5297,13 +5324,7 @@ export default function FinalizeBoq() {
 
       if (td.materialLines && td.targetRequiredQty !== undefined) {
         try {
-          const res = computeBoq(td.configBasis, td.materialLines, td.targetRequiredQty);
-          if (Array.isArray(res.computed)) {
-            res.computed.forEach((l: any) => {
-              const lineAmount = Number(l.lineTotal ?? ((Number(l.scaledQty) || 0) * (Number(l.supplyRate) + Number(l.installRate)))) || 0;
-              total += lineAmount;
-            });
-          }
+          total += computeBoqLsAware(td.configBasis, td.materialLines, td.targetRequiredQty).grandTotal;
         } catch { }
         // include manual step11 items (user-added)
         step11.filter((i: any) => i.manual).forEach((i: any, idx: number) => {
@@ -7720,7 +7741,7 @@ export default function FinalizeBoq() {
                         let rateSqft = 0;
                         if (tableData.targetRequiredQty !== undefined && tableData.targetRequiredQty !== null) {
                           if (tableData.materialLines) {
-                            const result = computeBoq(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
+                            const result = computeBoqLsAware(tableData.configBasis, tableData.materialLines, tableData.targetRequiredQty);
                             const manualTotal = currentStep11Items.filter((it: any) => it.manual).reduce((s: number, it: any) =>
                               s + (Number(it.qty) || 0) * (Number(it.supply_rate || 0) + Number(it.install_rate || 0)), 0);
                             total = result.grandTotal + manualTotal;

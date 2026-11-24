@@ -81,6 +81,7 @@ import { Link, useLocation } from "wouter";
 import * as XLSX from "xlsx";
 import { AllMaterialsSplitView } from "@/components/admin/AllMaterialsSplitView";
 import { AllProductsSplitView } from "@/components/admin/AllProductsSplitView";
+import { MaterialPriceValidityPanel } from "@/components/admin/MaterialPriceValidityPanel";
 import OverviewTabBar from "@/components/OverviewTabBar";
 import CreationsTabBar from "@/components/CreationsTabBar";
 
@@ -1051,43 +1052,44 @@ export default function AdminDashboard() {
   // materials catalog on every keystroke/render was the actual cause of
   // materials feeling slower to show than shops even though both loaded
   // from the store at the same time.
-  const filteredMaterials = useMemo(() => { const list = localMaterials.filter((m: any) => {
-    // text search
-    if (deferredMaterialSearch) {
-      // Only the material's own name / code, so typing "gypsum" lists materials
-      // that are gypsum - not everything sold by a shop that has "Gypsum" in its name.
-      if (!smartSearch(deferredMaterialSearch, [
-        m.name || "",
-        m.code || "",
-      ])) return false;
-    }
-
-    // category filter (supports comma-separated stored categories)
-    if (materialCategoryFilter && materialCategoryFilter !== 'all') {
-      const catField = (m.category || "").toString().trim();
-      if (materialCategoryFilter === 'uncategorized') {
-        if (catField !== "") return false;
-      } else {
-        const catMatches = catField
-          .split(",")
-          .map((s: string) => s.trim().toLowerCase())
-          .includes(materialCategoryFilter.toLowerCase());
-        if (!catMatches) return false;
+  const filteredMaterials = useMemo(() => {
+    const list = localMaterials.filter((m: any) => {
+      // text search
+      if (deferredMaterialSearch) {
+        // Only the material's own name / code, so typing "gypsum" lists materials
+        // that are gypsum - not everything sold by a shop that has "Gypsum" in its name.
+        if (!smartSearch(deferredMaterialSearch, [
+          m.name || "",
+          m.code || "",
+        ])) return false;
       }
-    }
 
-    // subcategory filter
-    if (materialSubcategoryFilter && materialSubcategoryFilter !== 'all') {
-      const subCatField = (m.subcategory || m.sub_category || m.subCategory || "").toString().trim();
-      if (materialSubcategoryFilter === 'uncategorized') {
-        if (subCatField !== "") return false;
-      } else {
-        if (subCatField.toLowerCase() !== materialSubcategoryFilter.toLowerCase()) return false;
+      // category filter (supports comma-separated stored categories)
+      if (materialCategoryFilter && materialCategoryFilter !== 'all') {
+        const catField = (m.category || "").toString().trim();
+        if (materialCategoryFilter === 'uncategorized') {
+          if (catField !== "") return false;
+        } else {
+          const catMatches = catField
+            .split(",")
+            .map((s: string) => s.trim().toLowerCase())
+            .includes(materialCategoryFilter.toLowerCase());
+          if (!catMatches) return false;
+        }
       }
-    }
 
-    return true;
-  });
+      // subcategory filter
+      if (materialSubcategoryFilter && materialSubcategoryFilter !== 'all') {
+        const subCatField = (m.subcategory || m.sub_category || m.subCategory || "").toString().trim();
+        if (materialSubcategoryFilter === 'uncategorized') {
+          if (subCatField !== "") return false;
+        } else {
+          if (subCatField.toLowerCase() !== materialSubcategoryFilter.toLowerCase()) return false;
+        }
+      }
+
+      return true;
+    });
     // While searching, show the best matches first (stable for equal scores).
     if (!deferredMaterialSearch) return list;
     return list
@@ -2693,6 +2695,8 @@ export default function AdminDashboard() {
                     </div>
                   </div>
                 </div>
+
+                <MaterialPriceValidityPanel canEdit={user?.role === "admin" || user?.role === "software_team" || user?.role === "purchase_team"} />
 
                 {showShopsList && (
                   <Card id="shops-list-section" className="p-4 scroll-mt-24">
