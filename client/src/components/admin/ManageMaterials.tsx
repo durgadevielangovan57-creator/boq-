@@ -95,7 +95,7 @@ export default function ManageMaterials() {
   const loadMaterialTemplates = async () => {
     try {
       const token = localStorage.getItem("authToken");
-      const response = await fetch("/api/material-templates", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      const response = await fetch("/api/material-templates?lite=1", { headers: token ? { Authorization: `Bearer ${token}` } : {} });
       setTemplates((await response.json()).templates || []);
     } catch { toast({ title: "Error", description: "Failed to load material templates", variant: "destructive" }); }
     finally { setLoadingTemplates(false); }

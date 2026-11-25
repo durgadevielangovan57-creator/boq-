@@ -2007,6 +2007,10 @@ export async function registerRoutes(
       { name: "idx_product_step3_config_product_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_step3_config_product_id ON product_step3_config (product_id)` },
       { name: "idx_product_step3_config_items_step3_config_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_step3_config_items_step3_config_id ON product_step3_config_items (step3_config_id)` },
       { name: "idx_product_step3_config_items_material_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_step3_config_items_material_id ON product_step3_config_items (material_id)` },
+      { name: "idx_product_approvals_latest", sql: `CREATE INDEX IF NOT EXISTS idx_product_approvals_latest ON product_approvals (product_id, config_name, created_at DESC)` },
+      { name: "idx_product_approvals_status", sql: `CREATE INDEX IF NOT EXISTS idx_product_approvals_status ON product_approvals (status)` },
+      { name: "idx_step11_products_product_name", sql: `CREATE INDEX IF NOT EXISTS idx_step11_products_product_name ON step11_products (product_name)` },
+      { name: "idx_product_step3_config_product_name", sql: `CREATE INDEX IF NOT EXISTS idx_product_step3_config_product_name ON product_step3_config (product_name)` },
       { name: "idx_product_approvals_product_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_approvals_product_id ON product_approvals (product_id)` },
       { name: "idx_product_approval_items_approval_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_approval_items_approval_id ON product_approval_items (approval_id)` },
       { name: "idx_product_approval_items_material_id", sql: `CREATE INDEX IF NOT EXISTS idx_product_approval_items_material_id ON product_approval_items (material_id)` },
@@ -3638,10 +3642,24 @@ export async function registerRoutes(
   // ====== MATERIAL TEMPLATES ROUTES (Admin/Software Team only) ======
 
   // GET /api/material-templates - List all material templates
-  app.get("/api/material-templates", async (_req, res) => {
+  app.get("/api/material-templates", async (req, res) => {
     try {
+      // ?lite=1 skips the heavy "image" column (often a base64 data URL per row).
+      // Pages that only list templates use it so the response stays small and fast.
+      let cols = "*";
+      if (String(req.query.lite || "") === "1") {
+        if (!(globalThis as any).__tplLiteCols) {
+          const c = await query(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'material_templates' AND column_name <> 'image' ORDER BY ordinal_position",
+          );
+          (globalThis as any).__tplLiteCols = c.rows.length
+            ? c.rows.map((r: any) => `"${r.column_name}"`).join(", ")
+            : "*";
+        }
+        cols = (globalThis as any).__tplLiteCols;
+      }
       const result = await query(
-        "SELECT * FROM material_templates ORDER BY created_at DESC",
+        `SELECT ${cols} FROM material_templates ORDER BY created_at DESC`,
       );
       res.json({ templates: result.rows });
     } catch (err) {
@@ -12795,8 +12813,6 @@ export async function registerRoutes(
     "/api/step11-products/:productId",
     async (req: Request, res: Response) => {
       const { productId } = req.params;
-      const logMsg = `[${new Date().toISOString()}] GET /api/step11-products/${productId}\n`;
-      fs.appendFileSync('server_api_log.txt', logMsg);
 
       try {
         // Helper function to check if a string is a valid UUID
@@ -12859,8 +12875,6 @@ export async function registerRoutes(
         }
         const step3Result = await query(step3Query, step3Params);
 
-        const resLog = `  -> Found ${step11Result.rows.length} approved and ${step3Result.rows.length} draft configurations\n`;
-        fs.appendFileSync('server_api_log.txt', resLog);
 
         // Fetch latest Step 3 config for this product to use as smart fallback for legacy records
         let step3LatestQuery = "";
@@ -12880,33 +12894,39 @@ export async function registerRoutes(
         const step3LatestResult = await query(step3LatestQuery, step3LatestParams);
         const step3Fallback = step3LatestResult.rows[0] || { required_unit_type: 'Sqft', base_required_qty: 100, wastage_pct_default: 0, description: null };
 
-        // 3. Process Step 11 configurations
-        const enhancedStep11 = await Promise.all(step11Result.rows.map(async (p: any) => {
+        // 3 & 4. Load ALL items for ALL configs in two queries (was one query per config).
+        const step11Ids = step11Result.rows.map((p: any) => p.id);
+        const step3Ids = step3Result.rows.map((p: any) => p.id);
+        const [step11ItemsRes, step3ItemsRes] = await Promise.all([
+          step11Ids.length
+            ? query("SELECT * FROM step11_product_items WHERE step11_product_id = ANY($1)", [step11Ids])
+            : Promise.resolve({ rows: [] as any[] }),
+          step3Ids.length
+            ? query("SELECT * FROM product_step3_config_items WHERE step3_config_id = ANY($1)", [step3Ids])
+            : Promise.resolve({ rows: [] as any[] }),
+        ]);
+        const groupBy = (rows: any[], key: string) => {
+          const m = new Map<string, any[]>();
+          for (const r of rows) {
+            const k = String(r[key]);
+            const arr = m.get(k);
+            if (arr) arr.push(r); else m.set(k, [r]);
+          }
+          return m;
+        };
+        const step11Items = groupBy(step11ItemsRes.rows, "step11_product_id");
+        const step3Items = groupBy(step3ItemsRes.rows, "step3_config_id");
+
+        const enhancedStep11 = step11Result.rows.map((p: any) => {
           p.required_unit_type = p.required_unit_type || step3Fallback.required_unit_type || 'Sqft';
           p.base_required_qty = p.base_required_qty || step3Fallback.base_required_qty || 100;
           p.wastage_pct_default = p.wastage_pct_default || step3Fallback.wastage_pct_default || 0;
           p.description = p.description || step3Fallback.description;
-
-          const itemsResult = await query(
-            "SELECT * FROM step11_product_items WHERE step11_product_id = $1",
-            [p.id],
-          );
-          return {
-            product: p,
-            items: itemsResult.rows,
-          };
-        }));
-
-        // 4. Process Step 3 configurations
-        const enhancedStep3 = await Promise.all(step3Result.rows.map(async (p: any) => {
-          const itemsResult = await query(
-            "SELECT * FROM product_step3_config_items WHERE step3_config_id = $1",
-            [p.id],
-          );
-          return {
-            product: p,
-            items: itemsResult.rows,
-          };
+          return { product: p, items: step11Items.get(String(p.id)) || [] };
+        });
+        const enhancedStep3 = step3Result.rows.map((p: any) => ({
+          product: p,
+          items: step3Items.get(String(p.id)) || [],
         }));
 
         // 5. Merge, Sort, and Deduplicate by config_name
@@ -13169,60 +13189,45 @@ export async function registerRoutes(
     requireRoleOrPermission(["admin", "software_team", "purchase_team", "product_manager", "pre_sales"], "manage_product_edit_locked"),
     async (req: Request, res: Response) => {
       try {
-        const { status } = req.query;
-        let queryStr = "";
+        const { status, productId } = req.query as { status?: string; productId?: string };
+        // Optional filters are applied INSIDE the CTE so Postgres only sorts the rows it needs.
+        const where: string[] = [];
+        const params: any[] = [];
+        if (status === "approved") where.push(`pa.status = 'approved'`);
+        if (productId) { params.push(String(productId)); where.push(`pa.product_id::text = $${params.length}`); }
+        const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-        if (status === "approved") {
-          // De-dupe to the latest approved row per (product_id, config_name).
-          // The CTE collapses multiple approval rows; the outer DISTINCT ON
-          // prevents fan-out from the LEFT JOINs on subcategory/category tables
-          // (which can match multiple rows when names collide across categories).
-          queryStr = `
-            WITH latest_approved AS (
-              SELECT DISTINCT ON (pa.product_id, pa.config_name) pa.*
-              FROM product_approvals pa
-              WHERE pa.status = 'approved'
-              ORDER BY pa.product_id, pa.config_name, pa.created_at DESC
-            )
-           SELECT DISTINCT ON (p.product_id, p.config_name)
-              p.*, pr.name as live_product_name,
-              COALESCE(pr.name, p.product_name) as product_name,
-              COALESCE(vc.name, f_vc.name, p.category_id) as category_name,
-              COALESCE(vsc.name, pr.subcategory, p.subcategory_id) as subcategory_name,
-              (SELECT COUNT(*) FROM product_approvals p2 
-               WHERE p2.product_id = p.product_id 
-               AND p2.config_name = p.config_name) as submission_count
-           FROM latest_approved p
-           LEFT JOIN products pr ON p.product_id = pr.id
-           LEFT JOIN vendor_categories vc ON p.category_id = vc.name
-           LEFT JOIN material_subcategories vsc ON p.subcategory_id = vsc.name AND (p.category_id = vsc.category OR p.category_id IS NULL)
-           LEFT JOIN material_subcategories f_vsc ON pr.subcategory = f_vsc.name
-           LEFT JOIN material_categories f_vc ON f_vsc.category = f_vc.name
-           ORDER BY p.product_id, p.config_name, p.created_at DESC`;
-        } else {
-          queryStr = `WITH latest_submissions AS (
-              SELECT DISTINCT ON (pa.product_id, pa.config_name) pa.*
-              FROM product_approvals pa
-              ORDER BY pa.product_id, pa.config_name, pa.created_at DESC
-            )
-           SELECT DISTINCT ON (p.product_id, p.config_name)
-              p.*, pr.name as live_product_name,
-              COALESCE(pr.name, p.product_name) as product_name,
-              COALESCE(vc.name, f_vc.name, p.category_id) as category_name,
-              COALESCE(vsc.name, pr.subcategory, p.subcategory_id) as subcategory_name,
-              (SELECT COUNT(*) FROM product_approvals p2 
-               WHERE p2.product_id = p.product_id 
-               AND p2.config_name = p.config_name) as submission_count
-           FROM latest_submissions p
-           LEFT JOIN products pr ON p.product_id = pr.id
-           LEFT JOIN vendor_categories vc ON p.category_id = vc.name
-           LEFT JOIN material_subcategories vsc ON p.subcategory_id = vsc.name AND (p.category_id = vsc.category OR p.category_id IS NULL)
-           LEFT JOIN material_subcategories f_vsc ON pr.subcategory = f_vsc.name
-           LEFT JOIN material_categories f_vc ON f_vsc.category = f_vc.name
-           ORDER BY p.product_id, p.config_name, p.created_at DESC`;
-        }
+        // submission_count is computed once with a GROUP BY (was a correlated COUNT(*)
+        // subquery executed for every row, which got slower as approvals grew).
+        const queryStr = `
+          WITH latest AS (
+            SELECT DISTINCT ON (pa.product_id, pa.config_name) pa.*
+            FROM product_approvals pa
+            ${whereSql}
+            ORDER BY pa.product_id, pa.config_name, pa.created_at DESC
+          ),
+          counts AS (
+            SELECT product_id, config_name, COUNT(*) AS submission_count
+            FROM product_approvals
+            ${productId ? "WHERE product_id::text = $1" : ""}
+            GROUP BY product_id, config_name
+          )
+          SELECT DISTINCT ON (p.product_id, p.config_name)
+            p.*, pr.name as live_product_name,
+            COALESCE(pr.name, p.product_name) as product_name,
+            COALESCE(vc.name, f_vc.name, p.category_id) as category_name,
+            COALESCE(vsc.name, pr.subcategory, p.subcategory_id) as subcategory_name,
+            c.submission_count
+          FROM latest p
+          LEFT JOIN counts c ON c.product_id = p.product_id AND c.config_name = p.config_name
+          LEFT JOIN products pr ON p.product_id = pr.id
+          LEFT JOIN vendor_categories vc ON p.category_id = vc.name
+          LEFT JOIN material_subcategories vsc ON p.subcategory_id = vsc.name AND (p.category_id = vsc.category OR p.category_id IS NULL)
+          LEFT JOIN material_subcategories f_vsc ON pr.subcategory = f_vsc.name
+          LEFT JOIN material_categories f_vc ON f_vsc.category = f_vc.name
+          ORDER BY p.product_id, p.config_name, p.created_at DESC`;
 
-        const result = await query(queryStr);
+        const result = await query(queryStr, params);
         res.json({ approvals: result.rows });
       } catch (err) {
         console.error("GET /api/product-approvals error:", err);

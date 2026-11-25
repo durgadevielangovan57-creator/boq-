@@ -76,30 +76,8 @@ export default function ManageProduct() {
     // /admin/product-approvals; this block only owns the icon's badge count
     // and the dialog open state, and doesn't read or write any of the
     // existing Manage Product state.
-    const [productApprovalsQuickCount, setProductApprovalsQuickCount] = useState(0);
     const [productApprovalsQuickOpen, setProductApprovalsQuickOpen] = useState(false);
     const canSeeProductApprovalsQuickList = user?.role === 'admin' || user?.role === 'software_team' || user?.role === 'product_manager';
-
-    const fetchProductApprovalsQuickCount = useCallback(async () => {
-        if (!canSeeProductApprovalsQuickList) return;
-        try {
-            const res = await apiFetch("/api/product-approvals");
-            if (res.ok) {
-                const data = await res.json();
-                const count = (data.approvals || []).filter((a: any) => a.status === "pending" || a.status === "edit_requested").length;
-                setProductApprovalsQuickCount(count);
-            }
-        } catch (err) {
-            console.error("Failed to load Manage Product approvals count:", err);
-        }
-    }, [canSeeProductApprovalsQuickList]);
-
-    useEffect(() => {
-        if (!canSeeProductApprovalsQuickList) return;
-        fetchProductApprovalsQuickCount();
-        const interval = setInterval(fetchProductApprovalsQuickCount, 30000);
-        return () => clearInterval(interval);
-    }, [canSeeProductApprovalsQuickList, fetchProductApprovalsQuickCount]);
 
     const [shopName, setShopName] = useState("");
     const [shopLocation, setShopLocation] = useState("");
@@ -138,6 +116,10 @@ export default function ManageProduct() {
     const [isLoadingConfigs, setIsLoadingConfigs] = useState(false);
     const [productSearch, setProductSearch] = useState("");
     const [materialSearch, setMaterialSearch] = useState("");
+    // Render the materials list in chunks: thousands of rich rows in the DOM is what makes
+    // step 2 (and every click inside it) crawl, especially on Safari/macOS.
+    const MATERIAL_PAGE = 100;
+    const [materialVisibleCount, setMaterialVisibleCount] = useState(MATERIAL_PAGE);
     const [projectPricingFilter, setProjectPricingFilter] = useState(false);
     const [requiredUnitType, setRequiredUnitType] = useState<UnitType>("Sqft");
     const [baseRequiredQty, setBaseRequiredQty] = useState(100);
@@ -232,7 +214,7 @@ export default function ManageProduct() {
     const fetchPreviousConfigs = async (productId: string) => {
         setIsLoadingConfigs(true);
         try {
-            const [pRes, aRes] = await Promise.all([apiFetch(`/api/step11-products/${productId}`), apiFetch(`/api/product-approvals`)]);
+            const [pRes, aRes] = await Promise.all([apiFetch(`/api/step11-products/${productId}`), apiFetch(`/api/product-approvals?productId=${encodeURIComponent(productId)}`)]);
             if (pRes.ok) { const d = await pRes.json(); setPreviousConfigs(d.configurations || []); }
             if (aRes.ok) {
                 const d = await aRes.json();
@@ -339,15 +321,25 @@ export default function ManageProduct() {
         }
     };
 
-    const { data: allApprovals } = useQuery({
+    // Single shared fetch of the approvals list. The header badge count is derived from it
+    // (previously a separate 30s setInterval fetched the same heavy endpoint again).
+    const { data: allApprovals, refetch: refetchAllApprovals } = useQuery({
         queryKey: ["/api/product-approvals-all"],
         queryFn: async () => {
             const res = await apiFetch("/api/product-approvals");
             if (!res.ok) return [];
             const d = await res.json();
             return d.approvals || [];
-        }
+        },
+        refetchInterval: canSeeProductApprovalsQuickList ? 60000 : false,
     });
+    const productApprovalsQuickCount = useMemo(
+        () => canSeeProductApprovalsQuickList
+            ? ((allApprovals as any[]) || []).filter(a => a.status === "pending" || a.status === "edit_requested").length
+            : 0,
+        [allApprovals, canSeeProductApprovalsQuickList]
+    );
+    const fetchProductApprovalsQuickCount = useCallback(() => { refetchAllApprovals(); }, [refetchAllApprovals]);
 
     const { data: approvedConfigsData } = useQuery({
         queryKey: ["/api/product-approvals-approved"],
@@ -509,6 +501,10 @@ export default function ManageProduct() {
 
         return true;
     }), [uniqueMaterials, materialSearch, selectedCategory, selectedSubcategory, projectPricingFilter]);
+
+    const selectedMaterialIds = useMemo(() => new Set(selectedMaterials.map(m => m.id)), [selectedMaterials]);
+    const visibleMaterials = useMemo(() => filteredMaterials.slice(0, materialVisibleCount), [filteredMaterials, materialVisibleCount]);
+    useEffect(() => { setMaterialVisibleCount(MATERIAL_PAGE); }, [materialSearch, selectedCategory, selectedSubcategory, projectPricingFilter]);
 
     // Note: the configMaterials rebuild that used to run synchronously here (duplicating
     // the useEffect below that does the same mapping whenever step === 2) has been
@@ -1109,7 +1105,7 @@ export default function ManageProduct() {
                 <div
                     role="status"
                     aria-live="polite"
-                    className="fixed inset-0 z-[60] flex items-center justify-center bg-white/70 backdrop-blur-[1px] animate-in fade-in duration-150"
+                    className="fixed inset-0 z-[60] flex items-center justify-center bg-white/70"
                 >
                     <div className="flex items-center gap-3 bg-white px-6 py-4 rounded-xl shadow-xl border">
                         <Loader2 className="h-5 w-5 animate-spin text-primary" />
@@ -1946,8 +1942,8 @@ export default function ManageProduct() {
                                                 <EmptyState icon={Search} title="No matching materials found" subtitle="Try adjusting your filters or search term." className="h-[400px]" />
                                             ) : (
                                                 <div className="divide-y divide-slate-50">
-                                                    {filteredMaterials.map(material => {
-                                                        const isSelected = selectedMaterials.some(m => m.id === material.id);
+                                                    {visibleMaterials.map(material => {
+                                                        const isSelected = selectedMaterialIds.has(material.id);
                                                         return (
                                                             <div key={material.id} onClick={() => toggleMaterial(material)}
                                                                 className={`p-4 flex items-center justify-between cursor-pointer transition-all hover:bg-slate-50 relative overflow-hidden group ${isSelected ? "opacity-40 grayscale-[0.5]" : ""}`}>
@@ -1992,6 +1988,13 @@ export default function ManageProduct() {
                                                             </div>
                                                         );
                                                     })}
+                                                    {filteredMaterials.length > visibleMaterials.length && (
+                                                        <div className="p-4 text-center">
+                                                            <Button variant="outline" size="sm" onClick={() => setMaterialVisibleCount(c => c + MATERIAL_PAGE)}>
+                                                                Show more ({filteredMaterials.length - visibleMaterials.length} remaining)
+                                                            </Button>
+                                                        </div>
+                                                    )}
                                                 </div>
                                             )}
                                         </div>

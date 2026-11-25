@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { DebouncedInput } from '@/components/ui/DebouncedInput';
 import { Search, Edit, Trash2, ShieldCheck, History, Clock, FileText, CheckCircle2, AlertTriangle, Layers, Maximize2, X, Activity } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -28,6 +29,16 @@ export function AllMaterialsSplitView({ materials, localShops, categories, getSu
   const [selectedMaterialId, setSelectedMaterialId] = useState<number | string | null>(null);
   const [activeTab, setActiveTab] = useState('overview');
   const [isFullScreen, setIsFullScreen] = useState(false);
+  // Only draw a page of rows at a time; drawing thousands of rows is what froze the page.
+  const PAGE = 100;
+  const [visibleCount, setVisibleCount] = useState(PAGE);
+  useEffect(() => { setVisibleCount(PAGE); }, [materialSearch, materialCategoryFilter, materialSubcategoryFilter]);
+  const visibleMaterials = useMemo(() => materials.slice(0, visibleCount), [materials, visibleCount]);
+  const shopNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of localShops || []) m.set(String(s.id), s.name);
+    return m;
+  }, [localShops]);
   const selectedMaterial = useMemo(() => materials.find(m => m.id === selectedMaterialId) || null, [materials, selectedMaterialId]);
   const mockBOMUsage = useMemo(() => [
     { id: 1, bomName: "BOM-HQ-Phase1", project: "Headquarters Build", qty: 450, unit: selectedMaterial?.unit || 'pcs', date: "2026-03-15", status: "Approved", section: "Civil" },
@@ -50,7 +61,7 @@ export function AllMaterialsSplitView({ materials, localShops, categories, getSu
           </div>
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
-            <Input value={materialSearch} onChange={(e) => setMaterialSearch(e.target.value)} placeholder="Search materials..." className="pl-9 h-9 bg-slate-50/50 border-slate-200 focus-visible:ring-blue-500" />
+            <DebouncedInput value={materialSearch} onValueChange={setMaterialSearch} placeholder="Search materials..." className="pl-9 h-9 bg-slate-50/50 border-slate-200 focus-visible:ring-blue-500" />
           </div>
           <div className="grid grid-cols-2 gap-2">
             <Select value={materialCategoryFilter} onValueChange={(val) => { setMaterialCategoryFilter(val); setMaterialSubcategoryFilter('all'); }}>
@@ -90,7 +101,7 @@ export function AllMaterialsSplitView({ materials, localShops, categories, getSu
                   </div>
                 </div>
               )}
-              {materials.map((mat) => (
+              {visibleMaterials.map((mat) => (
                 <div key={mat.id} onClick={() => { setSelectedMaterialId(mat.id); if (editingMaterialId !== mat.id) { setEditingMaterialId(null); } }} className={`cursor-pointer transition-all hover:bg-blue-50/50 border-l-4 ${selectedMaterialId === mat.id ? 'bg-blue-50 border-blue-500' : 'border-transparent bg-white'} ${!selectedMaterial ? 'p-3 hover:shadow-sm' : 'p-4'}`}>
                   {!selectedMaterial ? (
                     <div className="flex items-center justify-between w-full">
@@ -98,7 +109,7 @@ export function AllMaterialsSplitView({ materials, localShops, categories, getSu
                         <Badge variant="outline" className="text-[10px] font-medium uppercase px-1.5 py-0.5 bg-slate-50 w-20 justify-center shrink-0 border-slate-200">{mat.code || 'N/A'}</Badge>
                         <h4 className="font-semibold text-sm text-slate-800 line-clamp-1 flex-1">{mat.name}</h4>
                         <span className="text-xs text-slate-500 w-48 truncate hidden md:block">{mat.category || 'No Category'}</span>
-                        <span className="text-xs text-slate-500 w-48 truncate hidden lg:block">{localShops.find(s => s.id === (mat.shopId || mat.shop_id))?.name || 'Unassigned'}</span>
+                        <span className="text-xs text-slate-500 w-48 truncate hidden lg:block">{shopNameById.get(String(mat.shopId || mat.shop_id)) || 'Unassigned'}</span>
                       </div>
                       <div className="flex items-center gap-4 shrink-0">
                         <span className="text-xs text-slate-500 w-16 text-right font-medium hidden sm:block">{mat.unit || '-'}</span>
@@ -116,13 +127,20 @@ export function AllMaterialsSplitView({ materials, localShops, categories, getSu
                         <span className="truncate">{mat.category || 'No Category'}</span>
                       </div>
                       <div className="text-[10px] text-slate-400 flex items-center justify-between">
-                        <span>{localShops.find(s => s.id === (mat.shopId || mat.shop_id))?.name || 'Unassigned'}</span>
+                        <span>{shopNameById.get(String(mat.shopId || mat.shop_id)) || 'Unassigned'}</span>
                         <span>{mat.unit || '-'}</span>
                       </div>
                     </div>
                   )}
                 </div>
               ))}
+              {materials.length > visibleMaterials.length && (
+                <div className="p-3 text-center">
+                  <Button variant="outline" size="sm" onClick={() => setVisibleCount(c => c + PAGE)}>
+                    Show more ({materials.length - visibleMaterials.length} remaining)
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </ScrollArea>

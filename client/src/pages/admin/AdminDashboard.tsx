@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useDeferredValue } from "react";
+import { DebouncedInput } from "@/components/ui/DebouncedInput";
+import { SearchableSelect } from "@/components/ui/SearchableSelect";
 import { differenceInDays, format } from "date-fns";
 import { fuzzySearch, smartSearch, smartSearchScore } from "@/lib/utils";
 import { Layout } from "@/components/layout/Layout";
@@ -162,6 +164,48 @@ const COUNTRY_CODES = [
   { code: "+81", country: "Japan" },
   { code: "+49", country: "Germany" },
 ];
+
+// Description box for the Create Material form. It keeps what you type in its
+// own local state, so each keystroke re-renders only this small textarea and
+// not the whole (6000+ line) AdminDashboard page. The text is pushed up to the
+// page state only when you leave the field (blur), so there is no heavy
+// page re-render while you are typing or pausing between words.
+const DebouncedDescription = ({ value, onCommit, placeholder, className }: { value: string; onCommit: (v: string) => void; placeholder?: string; className?: string }) => {
+  const [local, setLocal] = useState(value ?? "");
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCommitted = useRef(value ?? "");
+
+  // pick up external changes (e.g. the Clear button resetting the form)
+  useEffect(() => {
+    if ((value ?? "") !== lastCommitted.current) {
+      lastCommitted.current = value ?? "";
+      setLocal(value ?? "");
+    }
+  }, [value]);
+
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  const commit = (v: string) => {
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+    if (v !== lastCommitted.current) {
+      lastCommitted.current = v;
+      onCommit(v);
+    }
+  };
+
+  return (
+    <Textarea
+      value={local}
+      onChange={(e) => {
+        const v = e.target.value;
+        setLocal(v);
+      }}
+      onBlur={() => commit(local)}
+      placeholder={placeholder}
+      className={className}
+    />
+  );
+};
 
 export default function AdminDashboard() {
   const { toast } = useToast();
@@ -563,6 +607,59 @@ export default function AdminDashboard() {
   const [filterSubCategoryByCategory, setFilterSubCategoryByCategory] = useState("all");
   const [filterProductByCategory, setFilterProductByCategory] = useState("all");
   const [filterProductBySubCategory, setFilterProductBySubCategory] = useState("all");
+
+  // ---- Create Category / Subcategory / Product lists -------------------------
+  // The three lists used to filter AND draw every row on every render (and each
+  // product row also looked its subcategory up with a linear search), which made
+  // switching between the sub-tabs slow. They are now memoized and drawn in pages.
+  const LIST_PAGE = 60;
+  const [catLimit, setCatLimit] = useState(LIST_PAGE);
+  const [subLimit, setSubLimit] = useState(LIST_PAGE);
+  const [prodLimit, setProdLimit] = useState(LIST_PAGE);
+  useEffect(() => { setCatLimit(LIST_PAGE); }, [searchCategories]);
+  useEffect(() => { setSubLimit(LIST_PAGE); }, [searchSubCategories, filterSubCategoryByCategory]);
+  useEffect(() => { setProdLimit(LIST_PAGE); }, [searchProducts, filterProductByCategory, filterProductBySubCategory]);
+
+  const filteredCategoriesList = useMemo(
+    () => categories.filter((cat: string) => smartSearch(searchCategories, cat)),
+    [categories, searchCategories]
+  );
+  const filteredSubCategoriesList = useMemo(
+    () => subCategories.filter((sub: any) => {
+      const matchesSearch = smartSearch(searchSubCategories, sub.name);
+      const matchesCategory = filterSubCategoryByCategory === "all" ||
+        (filterSubCategoryByCategory === "uncategorized" ? !sub.category : sub.category === filterSubCategoryByCategory);
+      return matchesSearch && matchesCategory;
+    }),
+    [subCategories, searchSubCategories, filterSubCategoryByCategory]
+  );
+  const filteredProductsList = useMemo(() => {
+    const subByName = new Map<string, any>();
+    for (const sc of subCategories) if (!subByName.has(sc.name)) subByName.set(sc.name, sc);
+    return products.filter((prod: any) => {
+      const matchesSearch = smartSearch(searchProducts, prod.name);
+
+      let matchesSubCategory = filterProductBySubCategory === "all";
+      if (filterProductBySubCategory === "uncategorized") {
+        matchesSubCategory = !prod.subcategory;
+      } else if (filterProductBySubCategory !== "all") {
+        matchesSubCategory = prod.subcategory === filterProductBySubCategory;
+      }
+
+      const prodSub = subByName.get(prod.subcategory);
+      let matchesCategory = filterProductByCategory === "all";
+      if (filterProductByCategory === "uncategorized") {
+        matchesCategory = !prod.subcategory || (prodSub && !prodSub.category);
+      } else if (filterProductByCategory !== "all") {
+        matchesCategory = !!(prodSub && prodSub.category === filterProductByCategory);
+      }
+
+      return matchesSearch && matchesSubCategory && matchesCategory;
+    });
+  }, [products, subCategories, searchProducts, filterProductByCategory, filterProductBySubCategory]);
+  const visibleCategoriesList = useMemo(() => filteredCategoriesList.slice(0, catLimit), [filteredCategoriesList, catLimit]);
+  const visibleSubCategoriesList = useMemo(() => filteredSubCategoriesList.slice(0, subLimit), [filteredSubCategoriesList, subLimit]);
+  const visibleProductsList = useMemo(() => filteredProductsList.slice(0, prodLimit), [filteredProductsList, prodLimit]);
 
   const [showAddProductDialog, setShowAddProductDialog] = useState(false);
 
@@ -1009,6 +1106,24 @@ export default function AdminDashboard() {
   // deferred copy of what was typed, so the input itself never lags.
   const deferredShopSearch = useDeferredValue(shopSearch);
   const deferredMaterialSearch = useDeferredValue(materialSearch);
+
+  // Typing in the Create Material form re-renders this whole page, so the
+  // Created Material Templates list must not be rebuilt on each keystroke.
+  // Filter it once per real change, and parse each template's (large, base64)
+  // image JSON once instead of on every render.
+  const filteredMasterMaterials = useMemo(
+    () =>
+      masterMaterials.filter((t: any) => {
+        const matchesSearch = smartSearch(masterSearch, [t.name || "", t.code || "", t.category || ""]);
+        return showOnlyUnlinked ? matchesSearch && !usedTemplateIds.has(t.id) : matchesSearch;
+      }),
+    [masterMaterials, masterSearch, showOnlyUnlinked, usedTemplateIds]
+  );
+  const masterFirstImage = useMemo(() => {
+    const map = new Map<any, string | undefined>();
+    for (const t of masterMaterials as any[]) map.set(t.id, t.image ? parseImages(t.image)[0] : undefined);
+    return map;
+  }, [masterMaterials]);
 
   // shop id -> searchable text of every material that shop sells, so typing
   // "gypsum" in the Shops search also lists the shops that have gypsum.
@@ -2712,9 +2827,9 @@ export default function AdminDashboard() {
                       <div className="flex flex-col md:flex-row items-center gap-3">
                         <div className="relative flex-1">
                           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                          <Input
+                          <DebouncedInput
                             value={shopSearch}
-                            onChange={(e) => setShopSearch(e.target.value)}
+                            onValueChange={setShopSearch}
                             placeholder="Search shops by name, city, location or material..."
                             className="h-10 pl-9"
                           />
@@ -2954,7 +3069,7 @@ export default function AdminDashboard() {
                   <CardContent>
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-2">
-                        <Input value={(typeof masterSearch !== 'undefined') ? masterSearch : ''} onChange={(e) => setMasterSearch(e.target.value)} placeholder="Search templates..." />
+                        <DebouncedInput value={masterSearch} onValueChange={setMasterSearch} placeholder="Search templates..." />
                         <div className="inline-flex rounded-md shadow-sm" role="group">
                           <Button size="sm" variant={masterView === 'grid' ? undefined : 'ghost'} onClick={() => setMasterView('grid')}>Grid</Button>
                           <Button size="sm" variant={masterView === 'list' ? undefined : 'ghost'} onClick={() => setMasterView('list')}>List</Button>
@@ -3120,23 +3235,7 @@ export default function AdminDashboard() {
                         {showAddSubInline && (
                           <div className="space-y-2 p-3 border rounded mb-4 bg-white">
                             <Label>Select Category <Required /></Label>
-                            <Select
-                              value={selectedCategoryForSubCategory}
-                              onValueChange={setSelectedCategoryForSubCategory}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Choose a category..." />
-                              </SelectTrigger>
-                              <SelectContent className="max-h-44">
-                                {categories.length === 0 ? (
-                                  <div className="p-2 text-sm text-muted-foreground">No categories available</div>
-                                ) : (
-                                  categories.map((cat: string) => (
-                                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                                  ))
-                                )}
-                              </SelectContent>
-                            </Select>
+                            <SearchableSelect value={selectedCategoryForSubCategory} onValueChange={setSelectedCategoryForSubCategory} placeholder="Choose a category..." searchPlaceholder="Search categories..." emptyText="No categories found" options={categories.map((cat: string) => ({ value: cat, label: cat }))} />
                             <div className="space-y-2">
                               <Label>Subcategory Name <Required /></Label>
                               <Input value={newSubCategory} onChange={(e) => setNewSubCategory(e.target.value)} placeholder="e.g. Commercial, Residential" />
@@ -3145,9 +3244,9 @@ export default function AdminDashboard() {
                           </div>
                         )}
                         <div className="mb-4">
-                          <Input
+                          <DebouncedInput
                             value={searchCategories}
-                            onChange={(e) => setSearchCategories(e.target.value)}
+                            onValueChange={setSearchCategories}
                             placeholder="Search categories..."
                           />
                         </div>
@@ -3155,83 +3254,88 @@ export default function AdminDashboard() {
                           {categories.length === 0 ? (
                             <p className="text-center text-muted-foreground py-6">No categories created yet</p>
                           ) : (
-                            categories
-                              .filter(cat => smartSearch(searchCategories, cat))
-                              .map((cat: string, idx: number) => {
-                                const subCats = getSubCategoriesForCategory(cat);
-                                return (
-                                  <div key={idx} className="p-4 border rounded-lg bg-white hover:border-purple-400 transition">
-                                    <div className="flex items-center justify-between">
-                                      <div className="flex items-center gap-3">
-                                        <Package className="h-5 w-5 text-purple-600" />
-                                        <div>
-                                          <span className="font-medium">{cat}</span>
-                                          {subCats.length > 0 && (
-                                            <span className="text-sm text-muted-foreground ml-2">
-                                              ({subCats.length} subcategories)
-                                            </span>
-                                          )}
-                                        </div>
+                            visibleCategoriesList.map((cat: string, idx: number) => {
+                              const subCats = getSubCategoriesForCategory(cat);
+                              return (
+                                <div key={idx} className="p-4 border rounded-lg bg-white hover:border-purple-400 transition">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                      <Package className="h-5 w-5 text-purple-600" />
+                                      <div>
+                                        <span className="font-medium">{cat}</span>
+                                        {subCats.length > 0 && (
+                                          <span className="text-sm text-muted-foreground ml-2">
+                                            ({subCats.length} subcategories)
+                                          </span>
+                                        )}
                                       </div>
-                                      {(canEditCategories || canDeleteCategories) && (
-                                        <div className="flex gap-2">
-                                          {canEditCategories && (
-                                            <Button size="sm" variant="outline" onClick={() => {
-                                              setEditingCategory(cat);
-                                              setEditingCategoryValue(cat);
-                                            }}>
-                                              Edit
-                                            </Button>
-                                          )}
-                                          {canDeleteCategories && (
-                                            <Button size="sm" variant="destructive" onClick={() => requestDeleteCategory(cat)}>
-                                              <Trash2 className="h-4 w-4" />
-                                            </Button>
-                                          )}
-                                        </div>
-                                      )}
                                     </div>
-                                    {editingCategory === cat && (
-                                      <div className="mt-3 p-3 bg-gray-100 rounded border col-span-full">
-                                        <div className="flex gap-2">
-                                          <Input
-                                            value={editingCategoryValue}
-                                            onChange={(e) => setEditingCategoryValue(e.target.value)}
-                                            placeholder="Category name"
-                                            className="text-sm"
-                                          />
-                                          <Button size="sm" onClick={async () => {
-                                            const oldName = editingCategory;
-                                            const newName = editingCategoryValue.trim();
-                                            if (!newName) {
-                                              toast({ title: 'Error', description: 'Category name cannot be empty', variant: 'destructive' });
-                                              return;
-                                            }
-                                            try {
-                                              await apiFetch(`/categories/${encodeURIComponent(oldName)}`, {
-                                                method: 'PUT',
-                                                body: JSON.stringify({ name: newName }),
-                                              });
-                                              setCategories((prev: string[]) => prev.map((c: string) => c === oldName ? newName : c));
-                                              setSubCategories((prev: any[]) => prev.map((s: any) => s.category === oldName ? { ...s, category: newName } : s));
-                                              setEditingCategory(null);
-                                              setEditingCategoryValue("");
-                                              toast({ title: 'Success', description: `Category updated to ${newName}` });
-                                            } catch (err) {
-                                              console.error('update category error', err);
-                                              toast({ title: 'Error', description: 'Failed to update category', variant: 'destructive' });
-                                            }
-                                          }}>Save</Button>
-                                          <Button size="sm" variant="ghost" onClick={() => {
-                                            setEditingCategory(null);
-                                            setEditingCategoryValue("");
-                                          }}>Cancel</Button>
-                                        </div>
+                                    {(canEditCategories || canDeleteCategories) && (
+                                      <div className="flex gap-2">
+                                        {canEditCategories && (
+                                          <Button size="sm" variant="outline" onClick={() => {
+                                            setEditingCategory(cat);
+                                            setEditingCategoryValue(cat);
+                                          }}>
+                                            Edit
+                                          </Button>
+                                        )}
+                                        {canDeleteCategories && (
+                                          <Button size="sm" variant="destructive" onClick={() => requestDeleteCategory(cat)}>
+                                            <Trash2 className="h-4 w-4" />
+                                          </Button>
+                                        )}
                                       </div>
                                     )}
                                   </div>
-                                );
-                              })
+                                  {editingCategory === cat && (
+                                    <div className="mt-3 p-3 bg-gray-100 rounded border col-span-full">
+                                      <div className="flex gap-2">
+                                        <Input
+                                          value={editingCategoryValue}
+                                          onChange={(e) => setEditingCategoryValue(e.target.value)}
+                                          placeholder="Category name"
+                                          className="text-sm"
+                                        />
+                                        <Button size="sm" onClick={async () => {
+                                          const oldName = editingCategory;
+                                          const newName = editingCategoryValue.trim();
+                                          if (!newName) {
+                                            toast({ title: 'Error', description: 'Category name cannot be empty', variant: 'destructive' });
+                                            return;
+                                          }
+                                          try {
+                                            await apiFetch(`/categories/${encodeURIComponent(oldName)}`, {
+                                              method: 'PUT',
+                                              body: JSON.stringify({ name: newName }),
+                                            });
+                                            setCategories((prev: string[]) => prev.map((c: string) => c === oldName ? newName : c));
+                                            setSubCategories((prev: any[]) => prev.map((s: any) => s.category === oldName ? { ...s, category: newName } : s));
+                                            setEditingCategory(null);
+                                            setEditingCategoryValue("");
+                                            toast({ title: 'Success', description: `Category updated to ${newName}` });
+                                          } catch (err) {
+                                            console.error('update category error', err);
+                                            toast({ title: 'Error', description: 'Failed to update category', variant: 'destructive' });
+                                          }
+                                        }}>Save</Button>
+                                        <Button size="sm" variant="ghost" onClick={() => {
+                                          setEditingCategory(null);
+                                          setEditingCategoryValue("");
+                                        }}>Cancel</Button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })
+                          )}
+                          {filteredCategoriesList.length > catLimit && (
+                            <div className="pt-2 text-center">
+                              <Button type="button" variant="outline" size="sm" onClick={() => setCatLimit((c: number) => c + LIST_PAGE)}>
+                                Show more ({filteredCategoriesList.length - catLimit} remaining)
+                              </Button>
+                            </div>
                           )}
                         </div>
                       </CardContent>
@@ -3263,25 +3367,7 @@ export default function AdminDashboard() {
                                 <div className="space-y-4">
                                   <div className="space-y-2">
                                     <Label>Select Category <Required /></Label>
-                                    <Select
-                                      value={selectedCategoryForSubCategory}
-                                      onValueChange={setSelectedCategoryForSubCategory}
-                                    >
-                                      <SelectTrigger>
-                                        <SelectValue placeholder="Choose a category..." />
-                                      </SelectTrigger>
-                                      <SelectContent className="max-h-64">
-                                        {categories.length === 0 ? (
-                                          <div className="p-2 text-sm text-muted-foreground">No categories available</div>
-                                        ) : (
-                                          categories.map((cat: string) => (
-                                            <SelectItem key={cat} value={cat}>
-                                              {cat}
-                                            </SelectItem>
-                                          ))
-                                        )}
-                                      </SelectContent>
-                                    </Select>
+                                    <SearchableSelect value={selectedCategoryForSubCategory} onValueChange={setSelectedCategoryForSubCategory} placeholder="Choose a category..." searchPlaceholder="Search categories..." emptyText="No categories found" options={categories.map((cat: string) => ({ value: cat, label: cat }))} />
                                   </div>
                                   <div className="space-y-2">
                                     <Label>Subcategory Name <Required /></Label>
@@ -3307,139 +3393,111 @@ export default function AdminDashboard() {
                       <CardContent>
                         <div className="mb-4 flex flex-col md:flex-row gap-4">
                           <div className="flex-1">
-                            <Input
+                            <DebouncedInput
                               value={searchSubCategories}
-                              onChange={(e) => setSearchSubCategories(e.target.value)}
+                              onValueChange={setSearchSubCategories}
                               placeholder="Search subcategories..."
                             />
                           </div>
                           <div className="w-full md:w-64">
-                            <Select
-                              value={filterSubCategoryByCategory}
-                              onValueChange={setFilterSubCategoryByCategory}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Filter by Category" />
-                              </SelectTrigger>
-                              <SelectContent className="max-h-64">
-                                <SelectItem value="all">All Categories</SelectItem>
-                                <SelectItem value="uncategorized" className="text-destructive font-medium italic">Uncategorized</SelectItem>
-                                {categories.map((cat: string) => (
-                                  <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                            <SearchableSelect value={filterSubCategoryByCategory} onValueChange={setFilterSubCategoryByCategory} placeholder="Filter by Category" searchPlaceholder="Search categories..." options={[{ value: "all", label: "All Categories" }, { value: "uncategorized", label: "Uncategorized", className: "text-destructive font-medium italic" }, ...categories.map((cat: string) => ({ value: cat, label: cat }))]} />
                           </div>
                         </div>
                         <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
                           {subCategories.length === 0 ? (
                             <p className="text-center text-muted-foreground py-6">No subcategories created yet</p>
                           ) : (
-                            subCategories
-                              .filter(sub => {
-                                const matchesSearch = smartSearch(searchSubCategories, sub.name);
-                                const matchesCategory = filterSubCategoryByCategory === "all" ||
-                                  (filterSubCategoryByCategory === "uncategorized" ? !sub.category : sub.category === filterSubCategoryByCategory);
-                                return matchesSearch && matchesCategory;
-                              })
-                              .map((sub: any) => (
-                                <div key={sub.id} className="p-4 border rounded-lg bg-white hover:border-green-400 transition">
-                                  <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-3">
-                                      <Layers className="h-5 w-5 text-green-600" />
+                            visibleSubCategoriesList.map((sub: any) => (
+                              <div key={sub.id} className="p-4 border rounded-lg bg-white hover:border-green-400 transition">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-3">
+                                    <Layers className="h-5 w-5 text-green-600" />
+                                    <div>
+                                      <span className="font-medium">{sub.name}</span>
+                                      <span className="text-sm text-muted-foreground ml-2">
+                                        (Category: {sub.category})
+                                      </span>
+                                    </div>
+                                  </div>
+                                  {(canEditSubcategories || canDeleteSubcategories) && (
+                                    <div className="flex gap-2">
+                                      {canEditSubcategories && (
+                                        <Button size="sm" variant="outline" onClick={() => {
+                                          setEditingSubCategoryId(sub.id);
+                                          setEditingSubCategoryName(sub.name);
+                                          setEditingSubCategoryCategory(sub.category);
+                                        }}>
+                                          Edit
+                                        </Button>
+                                      )}
+                                      {canDeleteSubcategories && (
+                                        <Button size="sm" variant="destructive" onClick={() => requestDeleteSubCategory(sub)}>
+                                          <Trash2 className="h-4 w-4" />
+                                        </Button>
+                                      )}
+                                    </div>
+                                  )}
+                                  {editingSubCategoryId === sub.id && (
+                                    <div className="mt-3 p-3 bg-gray-100 rounded border col-span-full w-full space-y-3">
                                       <div>
-                                        <span className="font-medium">{sub.name}</span>
-                                        <span className="text-sm text-muted-foreground ml-2">
-                                          (Category: {sub.category})
-                                        </span>
+                                        <Label className="text-sm">Category</Label>
+                                        <SearchableSelect value={editingSubCategoryCategory} onValueChange={setEditingSubCategoryCategory} placeholder="Choose a category..." searchPlaceholder="Search categories..." options={categories.map((cat: string) => ({ value: cat, label: cat }))} />
+                                      </div>
+                                      <div>
+                                        <Label className="text-sm">Subcategory Name</Label>
+                                        <Input
+                                          value={editingSubCategoryName}
+                                          onChange={(e) => setEditingSubCategoryName(e.target.value)}
+                                          placeholder="Subcategory name"
+                                          className="text-sm"
+                                        />
+                                      </div>
+                                      <div className="flex gap-2">
+                                        <Button size="sm" onClick={async () => {
+                                          const newName = editingSubCategoryName.trim();
+                                          if (!newName) {
+                                            toast({ title: 'Error', description: 'Subcategory name cannot be empty', variant: 'destructive' });
+                                            return;
+                                          }
+                                          if (!editingSubCategoryCategory) {
+                                            toast({ title: 'Error', description: 'Please select a category', variant: 'destructive' });
+                                            return;
+                                          }
+                                          try {
+                                            const res = await apiFetch(`/subcategories/${sub.id}`, {
+                                              method: 'PUT',
+                                              body: JSON.stringify({ name: newName, category: editingSubCategoryCategory }),
+                                            });
+                                            if (res.ok) {
+                                              setSubCategories(prev => prev.map(s => s.id === sub.id ? { ...s, name: newName, category: editingSubCategoryCategory } : s));
+                                              setEditingSubCategoryId(null);
+                                              setEditingSubCategoryName("");
+                                              setEditingSubCategoryCategory("");
+                                              toast({ title: 'Success', description: `Subcategory updated` });
+                                            }
+                                          } catch (err) {
+                                            console.error('update subcategory error', err);
+                                            toast({ title: 'Error', description: 'Failed to update subcategory', variant: 'destructive' });
+                                          }
+                                        }}>Save</Button>
+                                        <Button size="sm" variant="ghost" onClick={() => {
+                                          setEditingSubCategoryId(null);
+                                          setEditingSubCategoryName("");
+                                          setEditingSubCategoryCategory("");
+                                        }}>Cancel</Button>
                                       </div>
                                     </div>
-                                    {(canEditSubcategories || canDeleteSubcategories) && (
-                                      <div className="flex gap-2">
-                                        {canEditSubcategories && (
-                                          <Button size="sm" variant="outline" onClick={() => {
-                                            setEditingSubCategoryId(sub.id);
-                                            setEditingSubCategoryName(sub.name);
-                                            setEditingSubCategoryCategory(sub.category);
-                                          }}>
-                                            Edit
-                                          </Button>
-                                        )}
-                                        {canDeleteSubcategories && (
-                                          <Button size="sm" variant="destructive" onClick={() => requestDeleteSubCategory(sub)}>
-                                            <Trash2 className="h-4 w-4" />
-                                          </Button>
-                                        )}
-                                      </div>
-                                    )}
-                                    {editingSubCategoryId === sub.id && (
-                                      <div className="mt-3 p-3 bg-gray-100 rounded border col-span-full w-full space-y-3">
-                                        <div>
-                                          <Label className="text-sm">Category</Label>
-                                          <Select
-                                            value={editingSubCategoryCategory}
-                                            onValueChange={setEditingSubCategoryCategory}
-                                          >
-                                            <SelectTrigger>
-                                              <SelectValue placeholder="Choose a category..." />
-                                            </SelectTrigger>
-                                            <SelectContent className="max-h-64">
-                                              {categories.map((cat: string) => (
-                                                <SelectItem key={cat} value={cat}>
-                                                  {cat}
-                                                </SelectItem>
-                                              ))}
-                                            </SelectContent>
-                                          </Select>
-                                        </div>
-                                        <div>
-                                          <Label className="text-sm">Subcategory Name</Label>
-                                          <Input
-                                            value={editingSubCategoryName}
-                                            onChange={(e) => setEditingSubCategoryName(e.target.value)}
-                                            placeholder="Subcategory name"
-                                            className="text-sm"
-                                          />
-                                        </div>
-                                        <div className="flex gap-2">
-                                          <Button size="sm" onClick={async () => {
-                                            const newName = editingSubCategoryName.trim();
-                                            if (!newName) {
-                                              toast({ title: 'Error', description: 'Subcategory name cannot be empty', variant: 'destructive' });
-                                              return;
-                                            }
-                                            if (!editingSubCategoryCategory) {
-                                              toast({ title: 'Error', description: 'Please select a category', variant: 'destructive' });
-                                              return;
-                                            }
-                                            try {
-                                              const res = await apiFetch(`/subcategories/${sub.id}`, {
-                                                method: 'PUT',
-                                                body: JSON.stringify({ name: newName, category: editingSubCategoryCategory }),
-                                              });
-                                              if (res.ok) {
-                                                setSubCategories(prev => prev.map(s => s.id === sub.id ? { ...s, name: newName, category: editingSubCategoryCategory } : s));
-                                                setEditingSubCategoryId(null);
-                                                setEditingSubCategoryName("");
-                                                setEditingSubCategoryCategory("");
-                                                toast({ title: 'Success', description: `Subcategory updated` });
-                                              }
-                                            } catch (err) {
-                                              console.error('update subcategory error', err);
-                                              toast({ title: 'Error', description: 'Failed to update subcategory', variant: 'destructive' });
-                                            }
-                                          }}>Save</Button>
-                                          <Button size="sm" variant="ghost" onClick={() => {
-                                            setEditingSubCategoryId(null);
-                                            setEditingSubCategoryName("");
-                                            setEditingSubCategoryCategory("");
-                                          }}>Cancel</Button>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
+                                  )}
                                 </div>
-                              ))
+                              </div>
+                            ))
+                          )}
+                          {filteredSubCategoriesList.length > subLimit && (
+                            <div className="pt-2 text-center">
+                              <Button type="button" variant="outline" size="sm" onClick={() => setSubLimit((c: number) => c + LIST_PAGE)}>
+                                Show more ({filteredSubCategoriesList.length - subLimit} remaining)
+                              </Button>
+                            </div>
                           )}
                         </div>
                       </CardContent>
@@ -3481,27 +3539,7 @@ export default function AdminDashboard() {
                                   </div>
                                   <div className="space-y-2">
                                     <Label>Select Subcategory <Required /></Label>
-                                    <Select
-                                      value={newProduct.subcategory}
-                                      onValueChange={(value) => {
-                                        setNewProduct((prev) => ({ ...prev, subcategory: value }));
-                                      }}
-                                    >
-                                      <SelectTrigger>
-                                        <SelectValue placeholder="Choose a subcategory..." />
-                                      </SelectTrigger>
-                                      <SelectContent className="max-h-64">
-                                        {subCategories.length === 0 ? (
-                                          <div className="p-2 text-sm text-muted-foreground">No subcategories available</div>
-                                        ) : (
-                                          subCategories.map((sub: any) => (
-                                            <SelectItem key={sub.id} value={`${sub.name}::${sub.id}`}>
-                                              {sub.name} <span className="text-xs text-muted-foreground">({sub.category})</span>
-                                            </SelectItem>
-                                          ))
-                                        )}
-                                      </SelectContent>
-                                    </Select>
+                                    <SearchableSelect value={newProduct.subcategory} onValueChange={(value) => { setNewProduct((prev) => ({ ...prev, subcategory: value })); }} placeholder="Choose a subcategory..." searchPlaceholder="Search subcategories..." emptyText="No subcategories found" options={subCategories.map((sub: any) => ({ value: `${sub.name}::${sub.id}`, label: sub.name, sublabel: sub.category }))} />
                                   </div>
                                   {/*
 <div className="flex items-center justify-between">
@@ -3519,23 +3557,7 @@ export default function AdminDashboard() {
                                   {showAddSubInline && (
                                     <div className="space-y-2 p-3 border rounded">
                                       <Label>Select Category <Required /></Label>
-                                      <Select
-                                        value={selectedCategoryForSubCategory}
-                                        onValueChange={setSelectedCategoryForSubCategory}
-                                      >
-                                        <SelectTrigger>
-                                          <SelectValue placeholder="Choose a category..." />
-                                        </SelectTrigger>
-                                        <SelectContent className="max-h-44">
-                                          {categories.length === 0 ? (
-                                            <div className="p-2 text-sm text-muted-foreground">No categories available</div>
-                                          ) : (
-                                            categories.map((cat: string) => (
-                                              <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                                            ))
-                                          )}
-                                        </SelectContent>
-                                      </Select>
+                                      <SearchableSelect value={selectedCategoryForSubCategory} onValueChange={setSelectedCategoryForSubCategory} placeholder="Choose a category..." searchPlaceholder="Search categories..." emptyText="No categories found" options={categories.map((cat: string) => ({ value: cat, label: cat }))} />
                                       <div className="space-y-2">
                                         <Label>Subcategory Name <Required /></Label>
                                         <Input value={newSubCategory} onChange={(e) => setNewSubCategory(e.target.value)} placeholder="e.g. Commercial, Residential" />
@@ -3646,146 +3668,99 @@ export default function AdminDashboard() {
                       <CardContent>
                         <div className="mb-4 flex flex-col md:flex-row gap-4">
                           <div className="flex-1">
-                            <Input
+                            <DebouncedInput
                               value={searchProducts}
-                              onChange={(e) => setSearchProducts(e.target.value)}
+                              onValueChange={setSearchProducts}
                               placeholder="Search products..."
                             />
                           </div>
                           <div className="w-full md:w-48">
-                            <Select
-                              value={filterProductByCategory}
-                              onValueChange={(val) => {
-                                setFilterProductByCategory(val);
-                                setFilterProductBySubCategory("all");
-                              }}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Filter by Category" />
-                              </SelectTrigger>
-                              <SelectContent className="max-h-64">
-                                <SelectItem value="all">All Categories</SelectItem>
-                                <SelectItem value="uncategorized" className="text-destructive font-medium italic">Uncategorized</SelectItem>
-                                {categories.map((cat: string) => (
-                                  <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                            <SearchableSelect value={filterProductByCategory} onValueChange={(val) => { setFilterProductByCategory(val); setFilterProductBySubCategory("all"); }} placeholder="Filter by Category" searchPlaceholder="Search categories..." options={[{ value: "all", label: "All Categories" }, { value: "uncategorized", label: "Uncategorized", className: "text-destructive font-medium italic" }, ...categories.map((cat: string) => ({ value: cat, label: cat }))]} />
                           </div>
                           <div className="w-full md:w-48">
-                            <Select
-                              value={filterProductBySubCategory}
-                              onValueChange={setFilterProductBySubCategory}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Filter by Subcategory" />
-                              </SelectTrigger>
-                              <SelectContent className="max-h-64">
-                                <SelectItem value="all">All Subcategories</SelectItem>
-                                <SelectItem value="uncategorized" className="text-destructive font-medium italic">Uncategorized</SelectItem>
-                                {subCategories
-                                  .filter(sub => filterProductByCategory === "all" || (filterProductByCategory === "uncategorized" ? !sub.category : sub.category === filterProductByCategory))
-                                  .map((sub: any) => (
-                                    <SelectItem key={sub.id} value={sub.name}>{sub.name}</SelectItem>
-                                  ))}
-                              </SelectContent>
-                            </Select>
+                            <SearchableSelect value={filterProductBySubCategory} onValueChange={setFilterProductBySubCategory} placeholder="Filter by Subcategory" searchPlaceholder="Search subcategories..." options={[{ value: "all", label: "All Subcategories" }, { value: "uncategorized", label: "Uncategorized", className: "text-destructive font-medium italic" }, ...subCategories.filter((sub: any) => filterProductByCategory === "all" || (filterProductByCategory === "uncategorized" ? !sub.category : sub.category === filterProductByCategory)).map((sub: any) => ({ value: sub.name, label: sub.name }))]} />
                           </div>
                         </div>
                         <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
                           {products.length === 0 ? (
                             <p className="text-center text-muted-foreground py-6">No products created yet</p>
                           ) : (
-                            products
-                              .filter(prod => {
-                                const matchesSearch = smartSearch(searchProducts, prod.name);
-
-                                let matchesSubCategory = filterProductBySubCategory === "all";
-                                if (filterProductBySubCategory === "uncategorized") {
-                                  matchesSubCategory = !prod.subcategory;
-                                } else if (filterProductBySubCategory !== "all") {
-                                  matchesSubCategory = prod.subcategory === filterProductBySubCategory;
-                                }
-
-                                const prodSub = subCategories.find(s => s.name === prod.subcategory);
-                                let matchesCategory = filterProductByCategory === "all";
-                                if (filterProductByCategory === "uncategorized") {
-                                  matchesCategory = !prod.subcategory || (prodSub && !prodSub.category);
-                                } else if (filterProductByCategory !== "all") {
-                                  matchesCategory = !!(prodSub && prodSub.category === filterProductByCategory);
-                                }
-
-                                return matchesSearch && matchesSubCategory && matchesCategory;
-                              })
-                              .map((product: any) => (
-                                <div key={product.id} className="p-4 border rounded-lg bg-white hover:border-blue-400 transition">
-                                  <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-3 flex-1">
-                                      <div
-                                        className="h-14 w-14 border rounded-lg bg-gray-100 overflow-hidden flex items-center justify-center shrink-0 cursor-pointer hover:border-blue-500 hover:bg-white transition-all group shadow-sm"
-                                        onClick={() => {
-                                          setProductForTemplate(product);
-                                          setShowTemplateSelector(true);
-                                        }}
-                                        title="Click to select or change template icon"
-                                      >
-                                        {product.image ? (
-                                          <img
-                                            src={parseImages(product.image)[0]}
-                                            alt=""
-                                            className="max-w-full max-h-full object-contain group-hover:scale-110 transition-transform"
-                                          />
-                                        ) : (
-                                          <Package className="h-6 w-6 text-blue-600 group-hover:rotate-12 transition-transform" />
-                                        )}
-                                      </div>
-                                      <div className="flex-1">
-                                        <span className="font-medium block">{product.name}</span>
-                                        <span className="text-sm text-muted-foreground">
-                                          Subcategories: {product.subcategory || "-"}
-                                        </span>
-                                        {product.taxCodeType && product.taxCodeValue && (
-                                          <div className="text-sm text-muted-foreground mt-1">
-                                            {product.taxCodeType.toUpperCase()}: {product.taxCodeValue}
-                                          </div>
-                                        )}
-                                      </div>
+                            visibleProductsList.map((product: any) => (
+                              <div key={product.id} className="p-4 border rounded-lg bg-white hover:border-blue-400 transition">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-3 flex-1">
+                                    <div
+                                      className="h-14 w-14 border rounded-lg bg-gray-100 overflow-hidden flex items-center justify-center shrink-0 cursor-pointer hover:border-blue-500 hover:bg-white transition-all group shadow-sm"
+                                      onClick={() => {
+                                        setProductForTemplate(product);
+                                        setShowTemplateSelector(true);
+                                      }}
+                                      title="Click to select or change template icon"
+                                    >
+                                      {product.image ? (
+                                        <img
+                                          src={parseImages(product.image)[0]}
+                                          alt=""
+                                          className="max-w-full max-h-full object-contain group-hover:scale-110 transition-transform"
+                                        />
+                                      ) : (
+                                        <Package className="h-6 w-6 text-blue-600 group-hover:rotate-12 transition-transform" />
+                                      )}
                                     </div>
-                                    {(canAddProducts || canEditProducts || canDeleteProducts) && (
-                                      <div className="flex gap-2">
-                                        {canAddProducts && (
-                                          <Button size="sm" variant="ghost" onClick={() => handleCloneProduct(product)} title="Clone Product">
-                                            <Copy className="h-4 w-4" />
-                                          </Button>
-                                        )}
-                                        {canEditProducts && (
-                                          <Button size="sm" variant="outline" onClick={() => {
-                                            const mapped = mapProduct(product);
-                                            // Convert subcategory name to composite name::id for unique Select matching
-                                            if (mapped.subcategory) {
-                                              const match = subCategories.find((s: any) =>
-                                                s.name?.trim().toLowerCase() === mapped.subcategory?.trim().toLowerCase() &&
-                                                (!mapped.category_name || s.category?.trim().toLowerCase() === mapped.category_name?.trim().toLowerCase())
-                                              ) || subCategories.find((s: any) => s.name?.trim().toLowerCase() === mapped.subcategory?.trim().toLowerCase());
-                                              if (match) {
-                                                mapped.subcategory = `${match.name}::${match.id}`;
-                                              }
-                                            }
-                                            setEditingProduct(mapped);
-                                          }}>
-                                            Edit
-                                          </Button>
-                                        )}
-                                        {canDeleteProducts && (
-                                          <Button size="sm" variant="destructive" onClick={() => handleDeleteProduct(product.id)}>
-                                            <Trash2 className="h-4 w-4" />
-                                          </Button>
-                                        )}
-                                      </div>
-                                    )}
+                                    <div className="flex-1">
+                                      <span className="font-medium block">{product.name}</span>
+                                      <span className="text-sm text-muted-foreground">
+                                        Subcategories: {product.subcategory || "-"}
+                                      </span>
+                                      {product.taxCodeType && product.taxCodeValue && (
+                                        <div className="text-sm text-muted-foreground mt-1">
+                                          {product.taxCodeType.toUpperCase()}: {product.taxCodeValue}
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
+                                  {(canAddProducts || canEditProducts || canDeleteProducts) && (
+                                    <div className="flex gap-2">
+                                      {canAddProducts && (
+                                        <Button size="sm" variant="ghost" onClick={() => handleCloneProduct(product)} title="Clone Product">
+                                          <Copy className="h-4 w-4" />
+                                        </Button>
+                                      )}
+                                      {canEditProducts && (
+                                        <Button size="sm" variant="outline" onClick={() => {
+                                          const mapped = mapProduct(product);
+                                          // Convert subcategory name to composite name::id for unique Select matching
+                                          if (mapped.subcategory) {
+                                            const match = subCategories.find((s: any) =>
+                                              s.name?.trim().toLowerCase() === mapped.subcategory?.trim().toLowerCase() &&
+                                              (!mapped.category_name || s.category?.trim().toLowerCase() === mapped.category_name?.trim().toLowerCase())
+                                            ) || subCategories.find((s: any) => s.name?.trim().toLowerCase() === mapped.subcategory?.trim().toLowerCase());
+                                            if (match) {
+                                              mapped.subcategory = `${match.name}::${match.id}`;
+                                            }
+                                          }
+                                          setEditingProduct(mapped);
+                                        }}>
+                                          Edit
+                                        </Button>
+                                      )}
+                                      {canDeleteProducts && (
+                                        <Button size="sm" variant="destructive" onClick={() => handleDeleteProduct(product.id)}>
+                                          <Trash2 className="h-4 w-4" />
+                                        </Button>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
-                              ))
+                              </div>
+                            ))
+                          )}
+                          {filteredProductsList.length > prodLimit && (
+                            <div className="pt-2 text-center">
+                              <Button type="button" variant="outline" size="sm" onClick={() => setProdLimit((c: number) => c + LIST_PAGE)}>
+                                Show more ({filteredProductsList.length - prodLimit} remaining)
+                              </Button>
+                            </div>
                           )}
                         </div>
                       </CardContent>
@@ -3811,23 +3786,7 @@ export default function AdminDashboard() {
                             </div>
                             <div className="space-y-2">
                               <Label>Select Subcategory <Required /></Label>
-                              <Select
-                                value={editingProduct.subcategory}
-                                onValueChange={(value) => {
-                                  setEditingProduct((prev: any) => ({ ...prev, subcategory: value }));
-                                }}
-                              >
-                                <SelectTrigger className="max-h-64 overflow-y-auto">
-                                  <SelectValue placeholder="Select subcategory" />
-                                </SelectTrigger>
-                                <SelectContent className="max-h-64">
-                                  {subCategories.map((sub: any) => (
-                                    <SelectItem key={sub.id} value={`${sub.name}::${sub.id}`}>
-                                      {sub.name} ({sub.category})
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                              <SearchableSelect value={editingProduct.subcategory} onValueChange={(value) => { setEditingProduct((prev: any) => ({ ...prev, subcategory: value })); }} placeholder="Select subcategory" searchPlaceholder="Search subcategories..." emptyText="No subcategories found" options={subCategories.map((sub: any) => ({ value: `${sub.name}::${sub.id}`, label: sub.name, sublabel: sub.category }))} />
                             </div>
                             <div className="space-y-2">
                               <Label>Tax Codes</Label>
@@ -4011,13 +3970,13 @@ export default function AdminDashboard() {
                     </div>
                     <div className="space-y-2 md:col-span-3">
                       <Label>Description</Label>
-                      <Textarea
+                      <DebouncedDescription
                         value={newMasterMaterial.technicalSpecification}
-                        onChange={(e) =>
-                          setNewMasterMaterial({
-                            ...newMasterMaterial,
-                            technicalSpecification: e.target.value,
-                          })
+                        onCommit={(v) =>
+                          setNewMasterMaterial((prev) => ({
+                            ...prev,
+                            technicalSpecification: v,
+                          }))
                         }
                         placeholder="Enter item description..."
                         className="min-h-[80px]"
@@ -4097,10 +4056,10 @@ export default function AdminDashboard() {
                     Manage all material templates created for suppliers
                   </CardDescription>
                   <div className="mt-4 flex flex-wrap items-center gap-4">
-                    <Input
+                    <DebouncedInput
                       placeholder="Search materials..."
                       value={masterSearch}
-                      onChange={(e) => setMasterSearch(e.target.value)}
+                      onValueChange={setMasterSearch}
                       className="max-w-sm"
                     />
                     <div className="flex items-center space-x-2">
@@ -4122,14 +4081,7 @@ export default function AdminDashboard() {
                     </div>
                   ) : (
                     <div className="space-y-2 max-h-80 overflow-y-auto p-2">
-                      {masterMaterials
-                        .filter((t: any) => {
-                          const matchesSearch = smartSearch(masterSearch, [t.name || "", t.code || "", t.category || ""]);
-                          if (showOnlyUnlinked) {
-                            return matchesSearch && !usedTemplateIds.has(t.id);
-                          }
-                          return matchesSearch;
-                        })
+                      {filteredMasterMaterials
                         .map((template: any) => (
                           <div key={template.id} className={`px-3 py-2.5 border rounded flex items-center gap-3 ${!usedTemplateIds.has(template.id) ? 'bg-amber-50/40' : 'bg-white'}`}>
                             <div className="flex-1 min-w-0">
@@ -4333,12 +4285,12 @@ export default function AdminDashboard() {
                                   <div className="h-10 w-10 border rounded bg-gray-50 overflow-hidden flex items-center justify-center shrink-0">
                                     {template.image ? (
                                       <img
-                                        src={parseImages(template.image)[0]}
+                                        src={masterFirstImage.get(template.id)}
                                         alt=""
                                         className="max-w-full max-h-full object-contain cursor-pointer"
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          setSelectedPreviewImage(parseImages(template.image)[0]);
+                                          setSelectedPreviewImage(masterFirstImage.get(template.id) as string);
                                         }}
                                       />
                                     ) : (
