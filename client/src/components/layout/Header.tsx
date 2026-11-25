@@ -2,12 +2,32 @@ import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import { ChevronDown, Bell, Search, LogOut, Zap } from "lucide-react";
 import { useData } from "@/lib/store";
+import { queryClient } from "@/lib/queryClient";
+import { getPageRefresh } from "@/lib/pageRefresh";
+import { PageRefreshButton } from "@/components/PageRefreshButton";
 import apiFetch from "@/lib/api";
 import { PoNotificationsPanel, usePoNotifications } from "@/components/PoNotificationsPanel";
 
 export function Header() {
   const [, setLocation] = useLocation();
-  const { user, logout } = useData();
+  const { user, logout, refreshMaterials, refreshProducts, refreshPendingApprovals } = useData();
+
+  // Refresh icon: runs the open page's own refresh if it registered one
+  // (usePageRefresh); otherwise refreshes the shared materials/products/
+  // approvals and re-fetches only the react-query data the page is using.
+  const handlePageRefresh = async () => {
+    const pageRefresh = getPageRefresh();
+    if (pageRefresh) {
+      await pageRefresh();
+      return;
+    }
+    await Promise.all([
+      refreshMaterials(),
+      refreshProducts(),
+      refreshPendingApprovals(),
+      queryClient.invalidateQueries(),
+    ]);
+  };
 
   // Permission state — same as Sidebar.tsx
   const [customModules, setCustomModules] = useState<Set<string>>(new Set());
@@ -429,6 +449,7 @@ export function Header() {
       <header className="sticky top-0 z-40 w-full h-12 bg-white border-b border-[#E5E7EB] px-4 flex items-center justify-between no-print">
         {/* CENTER-RIGHT SECTION */}
         <div className="flex items-center gap-2 ml-auto">
+          <PageRefreshButton onRefresh={handlePageRefresh} title="Refresh this page" />
           {/* Easy Access Dropdown */}
           <div className="relative" ref={easyAccessRef}>
             <button
@@ -571,37 +592,37 @@ export function Header() {
 
           {/* 2. NOTIFICATION BELL */}
           <div className="relative" ref={poNotifRef}>
-          <button
-            onClick={() => {
-              if (canSeePoNotifications) {
-                setPoNotifOpen((p) => !p);
-                if (!poNotifOpen) poNotif.reload();
-              } else {
-                console.log("notifications");
-              }
-            }}
-            className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-[#F3F4F6] transition-colors relative"
-            title="Notifications"
-          >
-            <Bell className="h-4 w-4 text-[#6B7280] hover:text-[#111827] transition-colors" />
-            {alertsCount > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#EF4444] ring-1 ring-white" />
+            <button
+              onClick={() => {
+                if (canSeePoNotifications) {
+                  setPoNotifOpen((p) => !p);
+                  if (!poNotifOpen) poNotif.reload();
+                } else {
+                  console.log("notifications");
+                }
+              }}
+              className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-[#F3F4F6] transition-colors relative"
+              title="Notifications"
+            >
+              <Bell className="h-4 w-4 text-[#6B7280] hover:text-[#111827] transition-colors" />
+              {alertsCount > 0 && (
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#EF4444] ring-1 ring-white" />
+              )}
+              {canSeePoNotifications && poNotif.unread > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-[#6366f1] text-white text-[10px] font-semibold flex items-center justify-center ring-1 ring-white">
+                  {poNotif.unread > 9 ? "9+" : poNotif.unread}
+                </span>
+              )}
+            </button>
+            {canSeePoNotifications && (
+              <PoNotificationsPanel
+                open={poNotifOpen}
+                list={poNotif.list}
+                setList={poNotif.setList}
+                setUnread={poNotif.setUnread}
+                onClose={() => setPoNotifOpen(false)}
+              />
             )}
-            {canSeePoNotifications && poNotif.unread > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-[#6366f1] text-white text-[10px] font-semibold flex items-center justify-center ring-1 ring-white">
-                {poNotif.unread > 9 ? "9+" : poNotif.unread}
-              </span>
-            )}
-          </button>
-          {canSeePoNotifications && (
-            <PoNotificationsPanel
-              open={poNotifOpen}
-              list={poNotif.list}
-              setList={poNotif.setList}
-              setUnread={poNotif.setUnread}
-              onClose={() => setPoNotifOpen(false)}
-            />
-          )}
           </div>
 
           {/* 3. USER AVATAR & DROPDOWN */}

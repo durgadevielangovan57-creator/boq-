@@ -85,6 +85,7 @@ import { AllMaterialsSplitView } from "@/components/admin/AllMaterialsSplitView"
 import { AllProductsSplitView } from "@/components/admin/AllProductsSplitView";
 import { MaterialPriceValidityPanel } from "@/components/admin/MaterialPriceValidityPanel";
 import OverviewTabBar from "@/components/OverviewTabBar";
+import { usePageRefresh } from "@/lib/pageRefresh";
 import CreationsTabBar from "@/components/CreationsTabBar";
 
 /* 🔴 REQUIRED ASTERISK */
@@ -207,6 +208,14 @@ const DebouncedDescription = ({ value, onCommit, placeholder, className }: { val
   );
 };
 
+// Remembers the material-templates list (with images) for the rest of the
+// browser session. The Creations tabs "Create Project" and "Vendor Category"
+// are separate routes, so this page is unmounted/remounted when you come back
+// to it; without this, every return re-downloaded and re-parsed every template
+// image, which made switching tabs feel like it hung.
+let masterTemplatesCache: any[] | null = null;
+const MASTER_PAGE_SIZE = 40;
+
 export default function AdminDashboard() {
   const { toast } = useToast();
   const {
@@ -236,6 +245,9 @@ export default function AdminDashboard() {
     refreshPendingApprovals,
   } = useData();
 
+  // Header refresh icon: re-fetch the materials/rates and pending approvals this page shows.
+  usePageRefresh(() => Promise.all([refreshMaterials(), refreshPendingApprovals(), loadMasterMaterials(true)]));
+
   const [rejectReason, setRejectReason] = useState("");
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [selectedMaterialRequestIds, setSelectedMaterialRequestIds] = useState<string[]>([]);
@@ -259,7 +271,19 @@ export default function AdminDashboard() {
   const [localMaterials, setLocalMaterials] = useState(() => [] as Array<any>);
   const [localShops, setLocalShops] = useState(() => [] as Array<any>);
   const [alerts, setAlerts] = useState<Array<any>>([]);
-  const [masterMaterials, setMasterMaterials] = useState<any[]>([]);
+  const [masterMaterials, setMasterMaterials] = useState<any[]>(() => masterTemplatesCache || []);
+  const masterMaterialsRef = useRef<any[]>(masterMaterials);
+  masterMaterialsRef.current = masterMaterials;
+  // True until the first /api/material-templates response arrives, so the
+  // Created Material Templates card shows "Loading…" instead of the
+  // "No material templates created yet" empty message.
+  const [masterLoading, setMasterLoading] = useState(() => !masterTemplatesCache);
+  // Template images (large base64 strings) are fetched in the background after
+  // the lightweight list is already on screen. Edit stays disabled until they
+  // arrive so saving a template can never overwrite its image with an empty one.
+  const [masterImagesLoaded, setMasterImagesLoaded] = useState(() => !!masterTemplatesCache);
+  // Only render the first N templates; "Show more" reveals the rest.
+  const [masterLimit, setMasterLimit] = useState(MASTER_PAGE_SIZE);
   const [supportMsgs, setSupportMsgs] = useState<any[]>([]);
 
   const [displayShops, setDisplayShops] = useState(0);
@@ -1054,20 +1078,59 @@ export default function AdminDashboard() {
   const [showOnlyUnlinked, setShowOnlyUnlinked] = useState(false);
 
   // Load master materials from API
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch('/api/material-templates');
-        if (res.ok) {
-          const data = await res.json();
-          setMasterMaterials(data?.templates || []);
-        }
-      } catch (e) {
-        console.warn('load master materials failed', e);
-        setMasterMaterials([]);
+  const loadMasterMaterials = async (force = false) => {
+    let needImages = true;
+    try {
+      // 1) Fast: the list WITHOUT the heavy "image" column, so it shows quickly.
+      const res = await fetch('/api/material-templates?lite=1');
+      if (res.ok) {
+        const data = await res.json();
+        const list: any[] = data?.templates || [];
+        // Keep images we already have (cache / previous load) to avoid flicker
+        // and to skip re-downloading them.
+        const known = new Map(masterMaterialsRef.current.map((t: any) => [t.id, t.image]));
+        const merged = list.map((t: any) => (known.get(t.id) !== undefined ? { ...t, image: known.get(t.id) } : t));
+        needImages = force || merged.some((t: any) => t.image === undefined);
+        setMasterMaterials(merged);
+        setMasterImagesLoaded(!needImages);
       }
-    })();
-  }, []);
+    } catch (e) {
+      console.warn('load master materials failed', e);
+      setMasterMaterials([]);
+      return;
+    } finally {
+      setMasterLoading(false);
+    }
+
+    if (!needImages) return;
+
+    // 2) Background: the full list, used only to fill in the images. Wait until
+    // the browser is idle so the (large) download/parse doesn't compete with
+    // rendering the tab the user just switched to.
+    try {
+      await new Promise<void>((resolve) => {
+        const ric = (window as any).requestIdleCallback;
+        if (typeof ric === 'function') ric(() => resolve(), { timeout: 1500 });
+        else setTimeout(resolve, 300);
+      });
+      const resFull = await fetch('/api/material-templates');
+      if (resFull.ok) {
+        const full = await resFull.json();
+        const imageById = new Map<any, any>((full?.templates || []).map((t: any) => [t.id, t.image ?? null]));
+        setMasterMaterials((prev: any[]) =>
+          prev.map((t: any) => (imageById.has(t.id) ? { ...t, image: imageById.get(t.id) } : t))
+        );
+        setMasterImagesLoaded(true);
+      }
+    } catch (e) {
+      console.warn('load master material images failed', e);
+    }
+  };
+  // Keep the session cache in sync (only once images are known, so it is never partial).
+  useEffect(() => {
+    if (masterImagesLoaded) masterTemplatesCache = masterMaterials;
+  }, [masterMaterials, masterImagesLoaded]);
+  useEffect(() => { loadMasterMaterials(); }, []);
 
   // Load template usage summary
   useEffect(() => {
@@ -1086,6 +1149,7 @@ export default function AdminDashboard() {
 
   const [expandedShops, setExpandedShops] = useState<string[]>([]);
   const [masterSearch, setMasterSearch] = useState("");
+  useEffect(() => { setMasterLimit(MASTER_PAGE_SIZE); }, [masterSearch, showOnlyUnlinked]);
   const [masterView, setMasterView] = useState<'grid' | 'list'>('grid');
 
   // Search inputs for dashboard lists
@@ -1630,6 +1694,8 @@ export default function AdminDashboard() {
           // update local UI state with server response
           setLocalMaterials((prev: any[]) => prev.map((m: any) => (m.id === editingMaterialId ? { ...m, ...normalized } : m)));
           setEditingMaterialId(null);
+          // Sync the shared store so Manage Product / other pages see the saved rate and details.
+          if (typeof refreshMaterials === 'function') refreshMaterials();
           toast({ title: "Success", description: "Material updated successfully" });
         } else {
           // log server error body
@@ -4075,13 +4141,19 @@ export default function AdminDashboard() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  {masterMaterials.length === 0 ? (
+                  {masterMaterials.length === 0 && masterLoading ? (
+                    <div className="flex items-center justify-center gap-2 text-muted-foreground py-8" role="status">
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      Loading material templates…
+                    </div>
+                  ) : masterMaterials.length === 0 ? (
                     <div className="text-center text-muted-foreground py-8">
                       No material templates created yet. Create one above.
                     </div>
                   ) : (
                     <div className="space-y-2 max-h-80 overflow-y-auto p-2">
                       {filteredMasterMaterials
+                        .slice(0, masterLimit)
                         .map((template: any) => (
                           <div key={template.id} className={`px-3 py-2.5 border rounded flex items-center gap-3 ${!usedTemplateIds.has(template.id) ? 'bg-amber-50/40' : 'bg-white'}`}>
                             <div className="flex-1 min-w-0">
@@ -4287,6 +4359,8 @@ export default function AdminDashboard() {
                                       <img
                                         src={masterFirstImage.get(template.id)}
                                         alt=""
+                                        loading="lazy"
+                                        decoding="async"
                                         className="max-w-full max-h-full object-contain cursor-pointer"
                                         onClick={(e) => {
                                           e.stopPropagation();
@@ -4338,7 +4412,7 @@ export default function AdminDashboard() {
                                     >
                                       <Copy className="h-4 w-4" />
                                     </Button>
-                                    <Button size="sm" onClick={() => {
+                                    <Button size="sm" disabled={!masterImagesLoaded} onClick={() => {
                                       setEditingMaterialId(template.id);
                                       setNewMaterial({
                                         ...newMaterial,
@@ -4355,7 +4429,7 @@ export default function AdminDashboard() {
                                         image: template.image || null
                                       });
                                     }}
-                                      title="Edit"
+                                      title={masterImagesLoaded ? "Edit" : "Loading images… Edit will be available in a moment"}
                                     >
                                       <Edit className="h-4 w-4" />
                                     </Button>
@@ -4390,6 +4464,17 @@ export default function AdminDashboard() {
                             )}
                           </div>
                         ))}
+                      {filteredMasterMaterials.length > masterLimit && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="w-full"
+                          onClick={() => setMasterLimit((l) => l + MASTER_PAGE_SIZE)}
+                        >
+                          Show more ({filteredMasterMaterials.length - masterLimit} remaining)
+                        </Button>
+                      )}
                     </div>
                   )}
                 </CardContent>

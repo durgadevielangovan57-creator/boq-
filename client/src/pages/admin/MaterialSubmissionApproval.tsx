@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
+import { useData } from "@/lib/store";
 import {
   AlertCircle,
   CheckCircle2,
@@ -57,6 +58,7 @@ export default function MaterialSubmissionApproval() {
   const [bulkApproving, setBulkApproving] = useState(false);
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const queryClient = useQueryClient();
+  const { refreshMaterials } = useData();
 
   const authHeaders = (): Record<string, string> => {
     const token = localStorage.getItem("authToken");
@@ -103,6 +105,8 @@ export default function MaterialSubmissionApproval() {
       clearSelection();
       setBulkApproving(false);
       queryClient.invalidateQueries({ queryKey: ["pending-material-submissions"] });
+      // Approved catalog changed (or may have): re-sync the shared materials store.
+      refreshMaterials();
     } catch (error) {
       console.error("Error bulk approving submissions:", error);
       toast({
@@ -146,6 +150,8 @@ export default function MaterialSubmissionApproval() {
       setBulkRejecting(false);
       setBulkRejectReason("");
       queryClient.invalidateQueries({ queryKey: ["pending-material-submissions"] });
+      // Approved catalog changed (or may have): re-sync the shared materials store.
+      refreshMaterials();
     } catch (error) {
       console.error("Error bulk rejecting submissions:", error);
       toast({
@@ -214,6 +220,8 @@ export default function MaterialSubmissionApproval() {
 
       // Reload submissions
       queryClient.invalidateQueries({ queryKey: ["pending-material-submissions"] });
+      // Approved catalog changed (or may have): re-sync the shared materials store.
+      refreshMaterials();
     } catch (error) {
       console.error("Error approving submission:", error);
       toast({
@@ -262,6 +270,8 @@ export default function MaterialSubmissionApproval() {
       setRejectReason("");
       // Reload submissions
       queryClient.invalidateQueries({ queryKey: ["pending-material-submissions"] });
+      // Approved catalog changed (or may have): re-sync the shared materials store.
+      refreshMaterials();
     } catch (error) {
       console.error("Error rejecting submission:", error);
       toast({

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect } from "react";
 import { getJSON, postJSON, apiFetch } from "./api";
 import { useAuth } from "./auth-context";
+import { queryClient } from "./queryClient";
 
 export type Role = "admin" | "supplier" | "user" | "purchase_team" | "software_team" | "pre_sales" | "contractor" | "product_manager" | "site_engineer" | "finance_team" | "client" | "vendor" | null;
 
@@ -56,6 +57,7 @@ interface DataContextType {
   updateSupportMessage?: (id: string, updates: { info?: string, admin_reply?: string, is_read?: boolean }) => Promise<any>;
   deleteMessage?: (id: string) => Promise<void>;
   refreshMaterials: () => Promise<void>;
+  refreshProducts: () => Promise<void>;
   refreshPendingApprovals: () => Promise<void>;
   assignedProjects: string[];
   currentProjectId: string | null;
@@ -198,14 +200,38 @@ export function DataProvider({ children }: { children: ReactNode }) {
     technicalspecification: mat.technicalspecification || mat.technicalSpecification || "",
   } as Material);
 
+  // Single, cache-bypassing refresh of the approved-materials catalog.
+  // GET /api/materials is served with "Cache-Control: public, max-age=60,
+  // stale-while-revalidate=300", so a plain fetch made right after an
+  // approve/edit is answered from the browser's HTTP cache and returns the
+  // OLD list. cache: 'reload' skips that cache for this request and stores
+  // the fresh response, so later normal fetches (initial loads, react-query
+  // consumers of the same URL) also see the new data.
   const refreshMaterials = async () => {
     try {
-      const dd = await getJSON('/api/materials');
+      const res = await apiFetch('/api/materials', { method: 'GET', cache: 'reload' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const dd = await res.json();
       if (dd?.materials) {
         setMaterials(dd.materials.map(normalizeMaterial));
       }
+      // Any react-query consumer of the same endpoint (e.g. RaisePORequest)
+      // is otherwise pinned by the global staleTime: Infinity.
+      queryClient.invalidateQueries({ queryKey: ['/api/materials'] });
     } catch (e) {
       console.warn('refreshMaterials failed', e);
+    }
+  };
+
+  // Re-fetch the products list held in the store (loaded only once at app start).
+  const refreshProducts = async () => {
+    try {
+      const dd = await getJSON('/api/products');
+      if (dd?.products) {
+        setProducts(dd.products.sort((a: any, b: any) => (a.name || "").localeCompare(b.name || "")));
+      }
+    } catch (e) {
+      console.warn('refreshProducts failed', e);
     }
   };
 
@@ -509,8 +535,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       // Refresh EVERYTHING to ensure sync
       try {
         await refreshPendingApprovals(); // Clear from "pending" list
-        const dd = await getJSON('/api/materials');
-        if (dd?.materials) setMaterials(dd.materials.map(normalizeMaterial));
+        await refreshMaterials();
       } catch (e) { console.warn('approveMaterial refresh failed', e); }
       return res.json();
     }
@@ -539,8 +564,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       // Refresh pending list to ensure it disappears locally
       try {
         await refreshPendingApprovals();
-        const dd = await getJSON('/api/materials');
-        if (dd?.materials) setMaterials(dd.materials.map(normalizeMaterial));
+        await refreshMaterials();
       } catch (e) { console.warn('rejectMaterial refresh failed', e); }
       return res.json();
     }
@@ -627,6 +651,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     updateSupportMessage,
     deleteMessage,
     refreshMaterials,
+    refreshProducts,
     refreshPendingApprovals,
     assignedProjects,
     currentProjectId,

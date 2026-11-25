@@ -157,6 +157,45 @@ const appendAuthToken = (url: string) => {
   return rest ? `${base}?${rest}&token=${token}` : `${base}?token=${token}`;
 };
 
+// Saves an uploaded plan/row photo to the user's device.
+// A plain <a download> is ignored for images hosted on another domain (e.g.
+// Supabase storage), so fetch the file and save it as a blob. If that is not
+// possible (blocked / offline), fall back to opening the image in a new tab.
+const downloadImage = async (img: { url?: string; name?: string } | null | undefined) => {
+  const rawUrl = img?.url;
+  if (!rawUrl) return;
+
+  const extFromType = (t: string) =>
+    ({ "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif", "image/svg+xml": "svg" } as Record<string, string>)[t] || "png";
+
+  const save = (blob: Blob) => {
+    let fileName = (img?.name || "image").trim().replace(/[\\/:*?"<>|]+/g, "_") || "image";
+    if (!/\.[a-z0-9]{2,5}$/i.test(fileName)) fileName += "." + extFromType(blob.type);
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  };
+
+  // Same URL first, then the token-normalised URL (same retry the <img> tags use).
+  for (const candidate of [rawUrl, appendAuthToken(rawUrl.split("?")[0])]) {
+    try {
+      const res = await fetch(candidate);
+      if (res.ok) {
+        save(await res.blob());
+        return;
+      }
+    } catch {
+      /* try next candidate */
+    }
+  }
+  window.open(rawUrl, "_blank", "noopener");
+};
+
 // Helper Component for Image Columns (Pre/Post)
 const PhotoColumn = ({
   item, idx, displayIdx, category, images, isLocked, isCompact,
@@ -255,9 +294,18 @@ const PhotoColumn = ({
                   el.src = appendAuthToken(img.url.split("?")[0]);
                 }}
               />
-              <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[8px] p-1 truncate opacity-0 group-hover:opacity-100 transition-opacity pr-6 pointer-events-none">
+              <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[8px] p-1 truncate opacity-0 group-hover:opacity-100 transition-opacity pl-6 pr-6 pointer-events-none">
                 {img.name}
               </div>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); downloadImage(img); }}
+                className="absolute bottom-1 left-1 bg-emerald-600 text-white p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity z-10"
+                title="Download photo"
+                aria-label="Download photo"
+              >
+                <Download className="w-3 h-3" />
+              </button>
               {!isLocked && (
                 <div className="absolute top-1 left-1 flex gap-1 z-10">
                   <button onClick={() => {
@@ -4917,9 +4965,18 @@ export default function CreateSketchPlan() {
                               el.src = appendAuthToken(img.url.split("?")[0]);
                             }}
                           />
-                          <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[8px] p-1 truncate opacity-0 group-hover:opacity-100 transition-opacity pr-6 pointer-events-none">
+                          <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[8px] p-1 truncate opacity-0 group-hover:opacity-100 transition-opacity pl-6 pr-6 pointer-events-none">
                             {img.name}
                           </div>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); downloadImage(img); }}
+                            className="absolute bottom-1 left-1 bg-emerald-600 text-white p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity z-10"
+                            title="Download photo"
+                            aria-label="Download photo"
+                          >
+                            <Download className="w-3 h-3" />
+                          </button>
                           {!(isLocked || isSupplierReadOnly) && (
                             <div className="absolute top-1 left-1 flex gap-1 z-10">
                               <button onClick={() => {
@@ -5201,6 +5258,14 @@ export default function CreateSketchPlan() {
                 {previewImage && (
                   <div className="relative flex flex-col items-center justify-center w-full h-full min-h-[50vh]">
                     <img src={previewImage.url} alt={previewImage.name} className="max-w-full max-h-[85vh] object-contain rounded-md shadow-2xl bg-white/5" />
+                    <button
+                      type="button"
+                      onClick={() => downloadImage(previewImage)}
+                      className="absolute top-3 right-14 z-[210] flex items-center gap-1.5 rounded-full bg-black/50 hover:bg-black/80 text-white px-3 py-2 text-xs font-semibold"
+                      title="Download image"
+                    >
+                      <Download className="w-4 h-4" /> Download
+                    </button>
                     <div className="absolute bottom-4 bg-black/70 text-white px-4 py-2 rounded-full text-sm font-medium backdrop-blur-sm border border-white/10 shadow-lg">
                       {previewImage.name}
                     </div>

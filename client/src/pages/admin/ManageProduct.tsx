@@ -19,6 +19,8 @@ import ManagementTabBar from "@/components/ManagementTabBar";
 import { SupplierLayout } from "@/components/layout/SupplierLayout";
 import { useAuth } from "@/lib/auth-context";
 import { useData } from "@/lib/store";
+import { queryClient } from "@/lib/queryClient";
+import { usePageRefresh } from "@/lib/pageRefresh";
 import { useLocation } from "wouter";
 import { computeBoq, UnitType } from "@/lib/boqCalc";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogFooter } from "@/components/ui/dialog";
@@ -63,7 +65,22 @@ const parseImages = (imageField: string | null | undefined): string[] => {
 
 export default function ManageProduct() {
     const { user } = useAuth();
-    const { materials: storeMaterials, products: storeProducts } = useData();
+    const { materials: storeMaterials, products: storeProducts, refreshMaterials, refreshProducts } = useData();
+
+    // Header refresh icon: re-fetch only what this page reads — the approved
+    // materials/rates and products in the store, plus the category lists and
+    // approval lists held in react-query (otherwise pinned by the global
+    // staleTime: Infinity). Local Step 1-3 selections are untouched.
+    usePageRefresh(async () => {
+        await Promise.all([
+            refreshMaterials(),
+            refreshProducts(),
+            queryClient.invalidateQueries({ queryKey: ["/api/material-categories"] }),
+            queryClient.invalidateQueries({ queryKey: ["/api/material-subcategories"] }),
+            queryClient.invalidateQueries({ queryKey: ["/api/product-approvals-all"] }),
+            queryClient.invalidateQueries({ queryKey: ["/api/product-approvals-approved"] }),
+        ]);
+    });
     const isSupplier = user?.role === "supplier";
     const [location] = useLocation();
     const [step, setStep] = useState(1);

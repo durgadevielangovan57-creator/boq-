@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch, getJSON } from "@/lib/api";
+import { useData } from "@/lib/store";
 
 /**
  * Material Price Validity (90 days) + full price history.
@@ -93,6 +94,7 @@ const safeDate = (v: string, pattern: string) => {
 
 export function MaterialPriceValidityPanel({ canEdit = false }: { canEdit?: boolean }) {
     const { toast } = useToast();
+    const { refreshMaterials } = useData();
     const [open, setOpen] = useState(false);
     const [loading, setLoading] = useState(false);
     const [items, setItems] = useState<PriceRow[]>([]);
@@ -188,6 +190,8 @@ export function MaterialPriceValidityPanel({ canEdit = false }: { canEdit?: bool
                 description: `${editRow.name}: 90-day validity restarted.`,
             });
             setEditRow(null);
+            // A rate change must reach the shared catalog used by Manage Product Step 2.
+            if (!unchanged) refreshMaterials();
             await load();
         } catch (e: any) {
             toast({ title: "Could not update rate", description: e?.message || "Please try again", variant: "destructive" });

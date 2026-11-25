@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useData } from "@/lib/store";
 import { Package, Plus, Loader2, AlertTriangle } from "lucide-react";
 import { postJSON } from "@/lib/api";
+import { usePageRefresh } from "@/lib/pageRefresh";
 
 interface MaterialTemplate { id: string; name: string; code: string; category?: string; subcategory?: string; vendor_category?: string; created_at: string; image?: string; }
 
@@ -48,7 +49,7 @@ function validateQuantityRangeInput(minQuantity: string, maxQuantity: string): s
 
 export default function ManageMaterials() {
   const { toast } = useToast();
-  const { user, shops, products } = useData();
+  const { user, shops, products, refreshMaterials, refreshPendingApprovals } = useData();
   const [templates, setTemplates] = useState<MaterialTemplate[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(true);
   const [templatesSearch, setTemplatesSearch] = useState("");
@@ -77,6 +78,13 @@ export default function ManageMaterials() {
   useEffect(() => { loadMaterialTemplates(); loadCategories(); }, []);
   useEffect(() => { if (templates.length > 0) loadVendorCategories(); }, [templates]);
   useEffect(() => { setPage(0); }, [templatesSearch, selectedVendorCategory]);
+
+  // Header refresh icon: re-fetch only what this page reads (templates and
+  // categories) plus the shared approved-materials catalog so the latest
+  // approved rates are what every other page sees too.
+  usePageRefresh(async () => {
+    await Promise.all([loadMaterialTemplates(), loadCategories(), refreshMaterials()]);
+  });
 
   const scrollToForm = () => setTimeout(() => document.getElementById("material-form")?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
 
@@ -215,6 +223,8 @@ export default function ManageMaterials() {
       if (token) headers.Authorization = `Bearer ${token}`;
       for (const payload of toSubmit) { const r = await fetch("/api/material-submissions", { method: "POST", headers, body: JSON.stringify(payload) }); if (!r.ok) throw new Error(); }
       toast({ title: "Success", description: `${toSubmit.length} material(s) submitted for approval` });
+      // Keep the shared pending-approval list current for the Admin Dashboard.
+      refreshPendingApprovals();
       setSelectedTemplate(null); setEntriesList([]); setFormData({ ...EMPTY_FORM });
     } catch { toast({ title: "Error", description: "Failed to submit material", variant: "destructive" }); }
     finally { setSubmitting(false); submittingRef.current = false; }

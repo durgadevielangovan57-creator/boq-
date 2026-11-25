@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getJSON, putJSON } from "@/lib/api";
+import { useData } from "@/lib/store";
 import {
   Dialog,
   DialogContent,
@@ -16,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 
 export default function ManageCategories() {
+  const { refreshMaterials } = useData();
   const [materials, setMaterials] = useState<any[]>([]);
   const [filtered, setFiltered] = useState<any[]>([]);
   const [search, setSearch] = useState("");
@@ -197,6 +199,9 @@ export default function ManageCategories() {
   const finishAssignment = async () => {
     setInProgress(false);
     alert("Category assignment completed");
+    // Refresh the shared store first (bypasses the HTTP cache and re-primes it),
+    // so the local reload below and Manage Product Step 2 filters see the new categories.
+    await refreshMaterials();
     try {
       const data = await getJSON("/api/materials");
       setMaterials(data.materials || []);
